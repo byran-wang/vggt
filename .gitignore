@@ -151,3 +151,4 @@ skyseg.onnx
 examples/
 input_images*
 examples_ZED/
+output*

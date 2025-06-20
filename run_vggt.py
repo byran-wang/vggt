@@ -103,7 +103,7 @@ class run_wonder_hoi:
         if self.rebuild:
             os.remove(f"{self.out_dir}/{seq}")
         os.makedirs(f"{self.out_dir}/{seq}", exist_ok=True)
-        cmd = f"python demo_colmap.py --scene_dir={scene_dir} --use_ba --max_query_pts 200 --query_frame_num 10 --vis_thresh 0.20 --max_reproj_error 1000 --shared_camera --output_dir={self.out_dir}/{seq}"
+        cmd = f"python demo_colmap.py --scene_dir={scene_dir} --use_ba --max_query_pts 200 --query_frame_num 10 --vis_thresh 0.20 --max_reproj_error 1000 --shared_camera --use_calibrated_intrinsic --output_dir={self.out_dir}/{seq}"
         print(cmd)
         os.system(cmd)
 

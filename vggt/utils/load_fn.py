@@ -8,7 +8,12 @@ import torch
 from PIL import Image
 from torchvision import transforms as TF
 import numpy as np
+import pickle
 
+def load_intrinsics(intrinsics_path):
+    with open(intrinsics_path, 'rb') as f:
+        intrinsics = np.array(pickle.load(f)['camMat'])
+    return intrinsics
 
 def load_and_preprocess_images_square(image_path_list, target_size=1024):
     """

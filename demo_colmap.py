@@ -21,10 +21,10 @@ import argparse
 from pathlib import Path
 import trimesh
 import pycolmap
-
+from PIL import Image
 
 from vggt.models.vggt import VGGT
-from vggt.utils.load_fn import load_and_preprocess_images_square
+from vggt.utils.load_fn import load_and_preprocess_images_square, load_intrinsics
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.geometry import unproject_depth_map_to_point_map
 from vggt.utils.helper import create_pixel_coordinate_grid, randomly_limit_trues
@@ -61,6 +61,7 @@ def parse_args():
         "--conf_thres_value", type=float, default=5.0, help="Confidence threshold value for depth filtering (wo BA)"
     )
     parser.add_argument("--output_dir", type=str, default="output", help="Output directory")
+    parser.add_argument("--use_calibrated_intrinsic", action="store_true", default=False, help="Use calibrated intrinsic for reconstruction")
     return parser.parse_args()
 
 
@@ -132,7 +133,8 @@ def demo_fn(args):
     # Load images and original coordinates
     # Load Image in 1024, while running VGGT with 518
     vggt_fixed_resolution = 518
-    img_load_resolution = 1024
+
+    img_load_resolution = Image.open(image_path_list[0]).size[0]
 
     images, original_coords = load_and_preprocess_images_square(image_path_list, img_load_resolution)
     images = images.to(device)
@@ -178,6 +180,11 @@ def demo_fn(args):
         track_mask = pred_vis_scores > args.vis_thresh
         visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_vis_thresh")            
         # TODO: radial distortion, iterative BA, masks
+        print(f"vggt intrinsic:\n{intrinsic[0]}")
+        if args.use_calibrated_intrinsic:
+            print(f"Using calibrated intrinsic for reconstruction")
+            intrinsic = (load_intrinsics(os.path.join(args.scene_dir, "meta", "0000.pkl"))[None]).repeat(len(images), 0)
+            print(f"calibrated intrinsic:\n{intrinsic[0]}")
         reconstruction, valid_track_mask = batch_np_matrix_to_pycolmap(
             points_3d,
             extrinsic,
