@@ -35,14 +35,13 @@ def load_and_preprocess_images_square(image_path_list, target_size=1024):
     images = []
     original_coords = []  # Renamed from position_info to be more descriptive
     to_tensor = TF.ToTensor()
-
     for image_path in image_path_list:
         # Open image
         img = Image.open(image_path)
 
-        # If there's an alpha channel, blend onto white background
+        # If there's an alpha channel, blend onto black background
         if img.mode == "RGBA":
-            background = Image.new("RGBA", img.size, (255, 255, 255, 255))
+            background = Image.new("RGBA", img.size, (0, 0, 0, 255))
             img = Image.alpha_composite(background, img)
 
         # Convert to RGB
@@ -139,10 +138,10 @@ def load_and_preprocess_images(image_path_list, mode="crop"):
         # Open image
         img = Image.open(image_path)
 
-        # If there's an alpha channel, blend onto white background:
+        # If there's an alpha channel, blend onto black background:
         if img.mode == "RGBA":
             # Create white background
-            background = Image.new("RGBA", img.size, (255, 255, 255, 255))
+            background = Image.new("RGBA", img.size, (0, 0, 0, 255))
             # Alpha composite onto the white background
             img = Image.alpha_composite(background, img)
 
