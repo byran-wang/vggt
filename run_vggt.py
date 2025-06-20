@@ -49,11 +49,12 @@ class run_wonder_hoi:
 
     def copy_data(self, seq, **extras):
         self.print_header('copy_data for {}'.format(seq))
+        seq_config = self.get_seq_config(seq)
+
         ########## copy images ##########
         src_dir = os.path.join(extras['src_dir'], seq, 'mask_obj')
         dst_dir = os.path.join(self.dataset_dir, seq, 'images_origin')
         
-        seq_config = self.get_seq_config(seq)
         # remove the dst_dir if it exists
         if self.rebuild:
             if os.path.exists(dst_dir):
@@ -69,19 +70,19 @@ class run_wonder_hoi:
                     shutil.copy(os.path.join(src_dir, file), os.path.join(dst_dir, file))
         ########## copy metadata ##########
         src_dir = os.path.join(extras['src_dir'], seq, 'meta')
-        dst_dir = os.path.join(self.dataset_dir, seq, 'meta')
+        dst_dir = os.path.join(self.dataset_dir, seq, 'meta_origin')
         if self.rebuild:
             if os.path.exists(dst_dir):
                 shutil.rmtree(dst_dir)
             os.makedirs(dst_dir, exist_ok=True)
-        for i, file in enumerate(sorted(os.listdir(src_dir))):
-            if i < seq_config['frame_star']:
-                continue
-            if i > seq_config['frame_end']:
-                break
-            if i % seq_config['frame_interval'] == 0:
-                if os.path.exists(os.path.join(src_dir, file)) and (file.endswith('.pkl')):
-                    shutil.copy(os.path.join(src_dir, file), os.path.join(dst_dir, file))
+        # copy the 0000.pkl file
+        file_name = '0000.pkl'
+        if os.path.exists(os.path.join(src_dir, file_name)):
+            shutil.copy(os.path.join(src_dir, file_name), os.path.join(dst_dir, file_name))
+        for i, file in enumerate(sorted(os.listdir(os.path.join(self.dataset_dir, seq, 'images_origin')))):
+            file_name = file.split('.')[0] + '.pkl'
+            if os.path.exists(os.path.join(src_dir, file_name)):
+                shutil.copy(os.path.join(src_dir, file_name), os.path.join(dst_dir, file_name))
 
 
     def crop_image(self, seq, **extras):
