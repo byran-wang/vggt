@@ -200,9 +200,12 @@ def visualize_tracks_on_images(
         frame_path = os.path.join(out_dir, f"frame_{s:04d}.png")
         # Convert to BGR for OpenCV imwrite
         frame_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-        cv2.imwrite(frame_path, frame_bgr)
+        # save the image with the original image img in the left and the frame_bgr in the right
+        img_BGR = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        img_concat = np.concatenate([img_BGR, frame_bgr], axis=1)
+        cv2.imwrite(frame_path, img_concat)
 
-        frame_images.append(img_rgb)
+        frame_images.append(img_concat)
 
     # Only create and save the grid image if save_grid is True
     if save_grid:
@@ -220,7 +223,7 @@ def visualize_tracks_on_images(
 
             # If this row has fewer than frames_per_row images, pad with black
             if end_idx - start_idx < frames_per_row:
-                padding_width = (frames_per_row - (end_idx - start_idx)) * W
+                padding_width = (frames_per_row - (end_idx - start_idx)) * frame_images[0].shape[1]
                 padding = np.zeros((H, padding_width, 3), dtype=np.uint8)
                 row_img = np.concatenate([row_img, padding], axis=1)
 

@@ -70,7 +70,7 @@ def batch_np_matrix_to_pycolmap(
 
     assert masks is not None
     if scene_dir is not None and images is not None:
-        visualize_tracks_on_images(images[None], torch.from_numpy(tracks[None]), torch.from_numpy(masks[None]), out_dir=f"{scene_dir}/track_max_proj_err_{max_reproj_error}")            
+        visualize_tracks_on_images(images[None], torch.from_numpy(tracks[None]), torch.from_numpy(masks[None]), out_dir=f"{scene_dir}/track_filter_max_proj_err")            
 
     if masks.sum(1).min() < min_inlier_per_frame:
         print(f"Not enough inliers per frame, skip BA.")
