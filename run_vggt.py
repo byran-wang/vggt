@@ -23,7 +23,7 @@ class run_wonder_hoi:
         self.extras = extras
         self.process_mapping = {
             "data_process": {
-                "copy_image": self.copy_image,
+                "copy_data": self.copy_data,
                 "crop_image": self.crop_image,
             },
             "vggt_process": {
@@ -47,16 +47,18 @@ class run_wonder_hoi:
 
 
 
-    def copy_image(self, seq, **extras):
-        self.print_header('copy_image for {}'.format(seq))
+    def copy_data(self, seq, **extras):
+        self.print_header('copy_data for {}'.format(seq))
+        ########## copy images ##########
         src_dir = os.path.join(extras['src_dir'], seq, 'mask_obj')
         dst_dir = os.path.join(self.dataset_dir, seq, 'images_origin')
         
         seq_config = self.get_seq_config(seq)
         # remove the dst_dir if it exists
-        if os.path.exists(dst_dir):
-            shutil.rmtree(dst_dir)
-        os.makedirs(dst_dir, exist_ok=True)
+        if self.rebuild:
+            if os.path.exists(dst_dir):
+                shutil.rmtree(dst_dir)
+            os.makedirs(dst_dir, exist_ok=True)
         for i, file in enumerate(sorted(os.listdir(src_dir))):
             if i < seq_config['frame_star']:
                 continue
@@ -65,6 +67,22 @@ class run_wonder_hoi:
             if i % seq_config['frame_interval'] == 0:
                 if os.path.exists(os.path.join(src_dir, file)) and (file.endswith('.png') or file.endswith('.jpg')):
                     shutil.copy(os.path.join(src_dir, file), os.path.join(dst_dir, file))
+        ########## copy metadata ##########
+        src_dir = os.path.join(extras['src_dir'], seq, 'meta')
+        dst_dir = os.path.join(self.dataset_dir, seq, 'meta')
+        if self.rebuild:
+            if os.path.exists(dst_dir):
+                shutil.rmtree(dst_dir)
+            os.makedirs(dst_dir, exist_ok=True)
+        for i, file in enumerate(sorted(os.listdir(src_dir))):
+            if i < seq_config['frame_star']:
+                continue
+            if i > seq_config['frame_end']:
+                break
+            if i % seq_config['frame_interval'] == 0:
+                if os.path.exists(os.path.join(src_dir, file)) and (file.endswith('.pkl')):
+                    shutil.copy(os.path.join(src_dir, file), os.path.join(dst_dir, file))
+
 
     def crop_image(self, seq, **extras):
         self.print_header('crop_image for {}'.format(seq))
@@ -159,7 +177,7 @@ if __name__ == "__main__":
         required=False  # This makes the argument mandatory
     )
     parser.add_argument('--process_list', 
-        choices=["copy_image", 
+        choices=["copy_data", 
                 "crop_image", 
                 "vggt_colmap",
                 ],
