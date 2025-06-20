@@ -30,6 +30,7 @@ from vggt.utils.geometry import unproject_depth_map_to_point_map
 from vggt.utils.helper import create_pixel_coordinate_grid, randomly_limit_trues
 from vggt.dependency.track_predict import predict_tracks
 from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap, batch_np_matrix_to_pycolmap_wo_track
+from vggt.utils.visual_track import visualize_tracks_on_images
 
 
 # TODO: add support for masks
@@ -162,14 +163,17 @@ def demo_fn(args):
                 query_frame_num=args.query_frame_num,
                 keypoint_extractor="aliked+sp",
                 fine_tracking=args.fine_tracking,
+                complete_non_vis=True,
             )
+            
+            visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(pred_vis_scores[None])>= pred_vis_scores.min(), out_dir=f"{args.scene_dir}/track_raw")            
 
             torch.cuda.empty_cache()
 
         # rescale the intrinsic matrix from 518 to 1024
         intrinsic[:, :2, :] *= scale
         track_mask = pred_vis_scores > args.vis_thresh
-
+        visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.scene_dir}/track_vis_thresh_{args.vis_thresh}")            
         # TODO: radial distortion, iterative BA, masks
         reconstruction, valid_track_mask = batch_np_matrix_to_pycolmap(
             points_3d,
@@ -182,6 +186,8 @@ def demo_fn(args):
             shared_camera=shared_camera,
             camera_type=args.camera_type,
             points_rgb=points_rgb,
+            images=images,
+            scene_dir=args.scene_dir,
         )
 
         if reconstruction is None:

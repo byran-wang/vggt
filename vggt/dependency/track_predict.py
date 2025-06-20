@@ -177,6 +177,16 @@ def _forward_on_query(
     pred_color = images[query_index][:, query_points_long[:, 1], query_points_long[:, 0]]
     pred_color = (pred_color.permute(1, 0).cpu().numpy() * 255).astype(np.uint8)
 
+    # # plot query points on the image
+    # import matplotlib.pyplot as plt
+    # plt.imshow(query_image.permute(1, 2, 0).cpu().numpy())
+    # # Remove batch dimension and plot points with their actual colors
+    # points_to_plot = query_points[0].cpu().numpy()  # Shape: [1930, 2]
+    # # Normalize colors from [0, 255] to [0, 1] for matplotlib
+    # colors_normalized = pred_color / 255.0
+    # plt.scatter(points_to_plot[:, 0], points_to_plot[:, 1], c='red', s=10)
+    # plt.savefig(f"query_points_{query_index}.png")
+    # plt.close()    
     # Query the confidence and points_3d at the keypoint locations
     if (conf is not None) and (points_3d is not None):
         assert height == width

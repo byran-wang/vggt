@@ -7,7 +7,8 @@
 import numpy as np
 import pycolmap
 from .projection import project_3D_points_np
-
+from vggt.utils.visual_track import visualize_tracks_on_images
+import torch
 
 def batch_np_matrix_to_pycolmap(
     points3d,
@@ -23,6 +24,8 @@ def batch_np_matrix_to_pycolmap(
     extra_params=None,
     min_inlier_per_frame=64,
     points_rgb=None,
+    images=None,
+    scene_dir=None,
 ):
     """
     Convert Batched NumPy Arrays to PyCOLMAP
@@ -51,6 +54,7 @@ def batch_np_matrix_to_pycolmap(
     assert len(points3d) == P
     assert image_size.shape[0] == 2
 
+    reproj_mask = None
     if max_reproj_error is not None:
         projected_points_2d, projected_points_cam = project_3D_points_np(points3d, extrinsics, intrinsics)
         projected_diff = np.linalg.norm(projected_points_2d - tracks, axis=-1)
@@ -65,6 +69,8 @@ def batch_np_matrix_to_pycolmap(
         masks = reproj_mask
 
     assert masks is not None
+    if scene_dir is not None and images is not None:
+        visualize_tracks_on_images(images[None], torch.from_numpy(tracks[None]), torch.from_numpy(masks[None]), out_dir=f"{scene_dir}/track_max_proj_err_{max_reproj_error}")            
 
     if masks.sum(1).min() < min_inlier_per_frame:
         print(f"Not enough inliers per frame, skip BA.")
