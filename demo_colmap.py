@@ -60,6 +60,7 @@ def parse_args():
     parser.add_argument(
         "--conf_thres_value", type=float, default=5.0, help="Confidence threshold value for depth filtering (wo BA)"
     )
+    parser.add_argument("--output_dir", type=str, default="output", help="Output directory")
     return parser.parse_args()
 
 
@@ -94,6 +95,8 @@ def run_VGGT(model, images, dtype, resolution=518):
 def demo_fn(args):
     # Print configuration
     print("Arguments:", vars(args))
+
+    os.makedirs(args.output_dir, exist_ok=True)
 
     # Set seed for reproducibility
     np.random.seed(args.seed)
@@ -166,14 +169,14 @@ def demo_fn(args):
                 complete_non_vis=True,
             )
             
-            visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(pred_vis_scores[None])>= pred_vis_scores.min(), out_dir=f"{args.scene_dir}/track_raw")            
+            visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(pred_vis_scores[None])>= pred_vis_scores.min(), out_dir=f"{args.output_dir}/track_raw")            
 
             torch.cuda.empty_cache()
 
         # rescale the intrinsic matrix from 518 to 1024
         intrinsic[:, :2, :] *= scale
         track_mask = pred_vis_scores > args.vis_thresh
-        visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.scene_dir}/track_filter_vis_thresh")            
+        visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_vis_thresh")            
         # TODO: radial distortion, iterative BA, masks
         reconstruction, valid_track_mask = batch_np_matrix_to_pycolmap(
             points_3d,
@@ -187,7 +190,7 @@ def demo_fn(args):
             camera_type=args.camera_type,
             points_rgb=points_rgb,
             images=images,
-            scene_dir=args.scene_dir,
+            out_dir=args.output_dir,
         )
 
         if reconstruction is None:
@@ -247,13 +250,13 @@ def demo_fn(args):
         shared_camera=shared_camera,
     )
 
-    print(f"Saving reconstruction to {args.scene_dir}/sparse")
-    sparse_reconstruction_dir = os.path.join(args.scene_dir, "sparse")
+    print(f"Saving reconstruction to {args.output_dir}/sparse")
+    sparse_reconstruction_dir = os.path.join(args.output_dir, "sparse")
     os.makedirs(sparse_reconstruction_dir, exist_ok=True)
     reconstruction.write(sparse_reconstruction_dir)
 
     # Save point cloud for fast visualization
-    trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(args.scene_dir, "sparse/points.ply"))
+    trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(args.output_dir, "sparse/points.ply"))
 
     return True
 
