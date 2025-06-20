@@ -232,7 +232,8 @@ def visualize_tracks_on_images(
                 grid_img = row_img
             else:
                 grid_img = np.concatenate([grid_img, row_img], axis=0)
-
+        # compress track_visuals_concat_by_xy to 1/4 of the original size
+        grid_img = cv2.resize(grid_img, (0, 0), fx=0.25, fy=0.25)
         out_path = os.path.join(out_dir, "tracks_grid.png")
         # Convert back to BGR for OpenCV imwrite
         grid_img_bgr = cv2.cvtColor(grid_img, cv2.COLOR_RGB2BGR)
