@@ -126,6 +126,7 @@ def demo_fn(args):
     image_dir = os.path.join(args.scene_dir, "images")
     image_path_list = glob.glob(os.path.join(image_dir, "*"))
     image_path_list = [path for path in image_path_list if path.endswith(".jpg") or path.endswith(".png")]
+    image_path_list = sorted(image_path_list)
     if len(image_path_list) == 0:
         raise ValueError(f"No images found in {image_dir}")
     base_image_path_list = [os.path.basename(path) for path in image_path_list]
@@ -181,10 +182,6 @@ def demo_fn(args):
         visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_vis_thresh")            
         # TODO: radial distortion, iterative BA, masks
         print(f"vggt intrinsic:\n{intrinsic[0]}")
-        if args.use_calibrated_intrinsic:
-            print(f"Using calibrated intrinsic for reconstruction")
-            intrinsic = (load_intrinsics(os.path.join(args.scene_dir, "meta", "0000.pkl"))[None]).repeat(len(images), 0)
-            print(f"calibrated intrinsic:\n{intrinsic[0]}")
         reconstruction, valid_track_mask = batch_np_matrix_to_pycolmap(
             points_3d,
             extrinsic,
