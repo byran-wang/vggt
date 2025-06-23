@@ -175,7 +175,7 @@ def demo_fn(args):
                 query_frame_num=args.query_frame_num,
                 keypoint_extractor="aliked+sp",
                 fine_tracking=args.fine_tracking,
-                complete_non_vis=True,
+                complete_non_vis=False,
             )
             
             visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(pred_vis_scores[None])>= pred_vis_scores.min(), out_dir=f"{args.output_dir}/track_raw")            
@@ -187,7 +187,7 @@ def demo_fn(args):
         track_mask = pred_vis_scores > args.vis_thresh
         visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_vis_thresh")            
         # TODO: radial distortion, iterative BA, masks
-        print(f"vggt intrinsic:\n{intrinsic[0]}")
+        
         reconstruction, track_masks = batch_np_matrix_to_pycolmap(
             points_3d,
             extrinsic,
@@ -230,6 +230,7 @@ def demo_fn(args):
                             feats_file=sfm_feats_f,
                             matches_file=sfm_matches_f)
             
+            print(f"vggt intrinsic:\n{intrinsic[0]}")
             if args.use_calibrated_intrinsic:
                 print(f"Using calibrated intrinsic for reconstruction")
                 intrinsic = (load_intrinsics(os.path.join(args.scene_dir, "meta", "0000.pkl"))[None]).repeat(len(images), 0)
@@ -292,7 +293,7 @@ def demo_fn(args):
     reconstruction.write(ba_out_dir)
 
     # Save point cloud for fast visualization
-    trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(args.output_dir, "sparse/points.ply"))
+    trimesh.PointCloud(points_3d, colors=points_rgb).export(ba_out_dir / "points.ply")
 
     return True
 
