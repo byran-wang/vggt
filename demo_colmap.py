@@ -31,7 +31,7 @@ from vggt.utils.helper import create_pixel_coordinate_grid, randomly_limit_trues
 from vggt.dependency.track_predict import predict_tracks
 from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap, batch_np_matrix_to_pycolmap_wo_track
 from vggt.utils.visual_track import visualize_tracks_on_images
-
+from vggt.dependency.sfm_prepair import prepare_features, prepare_matches, prepare_pairs
 
 # TODO: add support for masks
 # TODO: add iterative BA
@@ -45,6 +45,7 @@ def parse_args():
     parser.add_argument("--scene_dir", type=str, required=True, help="Directory containing the scene images")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--use_ba", action="store_true", default=False, help="Use BA for reconstruction")
+    parser.add_argument("--use_sfm", action="store_true", default=False, help="Use SfM for reconstruction")
     ######### BA parameters #########
     parser.add_argument(
         "--max_reproj_error", type=float, default=8.0, help="Maximum reprojection error for reconstruction"
@@ -183,7 +184,7 @@ def demo_fn(args):
         visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_vis_thresh")            
         # TODO: radial distortion, iterative BA, masks
         print(f"vggt intrinsic:\n{intrinsic[0]}")
-        reconstruction, valid_track_mask = batch_np_matrix_to_pycolmap(
+        reconstruction, track_masks = batch_np_matrix_to_pycolmap(
             points_3d,
             extrinsic,
             intrinsic,
@@ -206,6 +207,27 @@ def demo_fn(args):
         pycolmap.bundle_adjustment(reconstruction, ba_options)
 
         reconstruction_resolution = img_load_resolution
+        if args.use_sfm:
+            sfm_out_dir = f"{args.output_dir}/sfm"
+            os.makedirs(sfm_out_dir, exist_ok=True)
+
+            prepare_pairs(image_path_list, 
+                          pairs_file=f"{sfm_out_dir}/pairs.txt")
+            prepare_features(pred_tracks, 
+                             track_masks,
+                             image_path_list,
+                             image_size=images.shape[-2:],        
+                             feats_file=f"{sfm_out_dir}/feats.h5")
+            prepare_matches(pred_tracks, 
+                            pairs_file=f"{sfm_out_dir}/pairs.txt", 
+                            feats_file=f"{sfm_out_dir}/feats.h5",
+                            matches_file=f"{sfm_out_dir}/matches.h5")
+            
+            if args.use_calibrated_intrinsic:
+                print(f"Using calibrated intrinsic for reconstruction")
+                intrinsic = (load_intrinsics(os.path.join(args.scene_dir, "meta", "0000.pkl"))[None]).repeat(len(images), 0)
+                print(f"calibrated intrinsic:\n{intrinsic[0]}")
+
     else:
         conf_thres_value = args.conf_thres_value
         max_points_for_colmap = 100000  # randomly sample 3D points

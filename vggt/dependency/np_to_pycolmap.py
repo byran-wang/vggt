@@ -146,7 +146,7 @@ def batch_np_matrix_to_pycolmap(
         # add image
         reconstruction.add_image(image)
 
-    return reconstruction, valid_mask
+    return reconstruction, masks
 
 
 def pycolmap_to_batch_np_matrix(reconstruction, device="cpu", camera_type="SIMPLE_PINHOLE"):
