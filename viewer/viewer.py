@@ -1,0 +1,175 @@
+import argparse
+import os
+from typing import Optional, Type
+
+import rerun as rr  # @manual
+from tqdm import tqdm
+
+from visulizer import Visualizer
+from data_provider import DataProvider
+from reconstruct_provider import ReconstructProvider
+from meshlab_vis import MeshLabVis
+import re
+from pathlib import Path
+import numpy as np
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--sequence_folder",
+        type=str,
+        help="path to data sequence",
+        required=True,
+    )
+    parser.add_argument(
+        "--reconstruction_folder",
+        type=str,
+        help="path to reconstruction folder",
+        required=True,
+    )
+    parser.add_argument(
+        "--show_on_mesh_lab",
+        action="store_true",
+        help="show the mesh on mesh lab",
+    )
+
+    parser.add_argument("--jpeg_quality", type=int, default=30, help=argparse.SUPPRESS)
+
+    # If this path is set, we will save the rerun (.rrd) file to the given path
+    parser.add_argument(
+        "--rrd_output_path", type=str, default=None, help=argparse.SUPPRESS
+    )
+
+    parser.add_argument(
+        "--world_coordinate", type=str, default="object", help=argparse.SUPPRESS
+    )
+
+
+    return parser.parse_args()
+
+def execute_rerun(
+    sequence_folder: str,
+    reconstruction_folder: str,
+    rrd_output_path: Optional[str],
+    jpeg_quality: int,
+    timestamps_slice: Type[slice],
+    show_on_mesh_lab: bool = False,
+    world_coordinate: str = "object",
+    filter_output: bool = False,
+):
+    if not os.path.exists(sequence_folder):
+        raise RuntimeError(f"Sequence folder {sequence_folder} does not exist")
+    if not os.path.exists(reconstruction_folder):
+        raise RuntimeError(
+            f"Reconstruction folder {reconstruction_folder} does not exist"
+        )
+
+
+    #
+    # Initialize hot3d data provider
+    #
+
+    reconstruct_provider = ReconstructProvider(
+        reconstruct_folder=Path(reconstruction_folder),
+    )
+
+    if filter_output:
+        # Filter out noisy points
+        points3D = {id: point for id, point in reconstruct_provider.get_point3D().items() if point.rgb.any() and len(point.image_ids) > 4}
+
+
+    if show_on_mesh_lab:
+        MeshLabVis(reconstruct_provider).show()
+        return
+
+    data_provider = DataProvider(
+        sequence_folder=sequence_folder,
+    )        
+    #
+    # Initialize the rerun hot3d visualizer interface
+    #
+    rr_visualizer = Visualizer(data_provider, reconstruct_provider, jpeg_quality, rrd_output_path, world_coordinate=world_coordinate)
+    # Log static assets (aka Timeless assets)
+
+    
+    #
+    # Visualize the dataset sequence
+    #
+    # Loop over the timestamps of the sequence and visualize corresponding data
+    rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
+    images = reconstruct_provider.get_image()
+    points3D = reconstruct_provider.get_point3D()
+    cameras = reconstruct_provider.get_camera()
+    breakpoint()
+    for image in tqdm(sorted(images.values(), key=lambda im: im.name)):  # type: ignore[no-any-return]
+        image_file, frame_idx = data_provider.get_image_file(image.name)
+
+        if image_file is None:
+            continue
+        rr.set_time_sequence("frame", frame_idx)
+        visible = [id != -1 and points3D.get(id) is not None for id in image.point3D_ids]        
+        visible_ids = image.point3D_ids[visible]
+
+        visible_xyzs = [points3D[id] for id in visible_ids]
+        visible_xys = image.xys[visible]
+    
+
+        points = [point.xyz for point in visible_xyzs]
+        point_colors = [point.rgb for point in visible_xyzs]
+        point_errors = [point.error for point in visible_xyzs]
+
+        rr.log("points", rr.Points3D(points, colors=point_colors), rr.AnyValues(error=point_errors))
+
+        quat_xyzw, tvec = reconstruct_provider.get_image_pose(image)
+        rr.log(
+            "camera", rr.Transform3D(translation=image.tvec, rotation=rr.Quaternion(xyzw=quat_xyzw), from_parent=True)
+        )
+        rr.log("camera", rr.ViewCoordinates.RDF, static=True)  # X=Right, Y=Down, Z=Forward
+
+        # Log camera intrinsics
+        camera = cameras[image.camera_id]
+        if camera.model == "PINHOLE":
+            rr.log(
+                "camera/image",
+                rr.Pinhole(
+                resolution=[camera.width, camera.height],
+                focal_length=camera.params[:2],
+                principal_point=camera.params[2:],
+                ),
+            )
+        elif camera.model == "SIMPLE_RADIAL":
+            rr.log(
+                "camera/image",
+                rr.Pinhole(
+                    resolution=[camera.width, camera.height],
+                    focal_length=[camera.params[0], camera.params[0]],
+                    principal_point=camera.params[1:3],
+                ),
+            )
+        else:
+            raise ValueError(f"Unsupported camera model: {camera.model}")
+
+        rr.log("camera/image", rr.ImageEncoded(path=image_file))
+        # rr.log("camera/image", rr.Image(image_file))
+        
+        rr.log("camera/image/keypoints", rr.Points2D(visible_xys, colors=[34, 138, 167]))
+
+def main():
+    args = parse_args()
+    print(f"args provided: {args}")
+
+    try:
+        execute_rerun(
+            sequence_folder=args.sequence_folder,
+            reconstruction_folder=args.reconstruction_folder,
+            rrd_output_path=args.rrd_output_path,
+            jpeg_quality=args.jpeg_quality,
+            timestamps_slice=slice(None, None, None),
+            show_on_mesh_lab=args.show_on_mesh_lab,
+            world_coordinate=args.world_coordinate,
+        )
+    except Exception as error:
+        print(f"An exception occurred: {error}")
+
+
+if __name__ == "__main__":
+    main()
