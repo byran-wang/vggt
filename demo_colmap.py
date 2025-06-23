@@ -33,6 +33,10 @@ from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap, batch_np
 from vggt.utils.visual_track import visualize_tracks_on_images
 from vggt.dependency.sfm_prepair import prepare_features, prepare_matches, prepare_pairs
 
+import sys
+sys.path.append("third_party/Hierarchical-Localization/")
+from hloc.reconstruction import main as hloc_reconstruction_main
+
 # TODO: add support for masks
 # TODO: add iterative BA
 # TODO: add support for radial distortion, which needs extra_params
@@ -124,7 +128,7 @@ def demo_fn(args):
     print(f"Model loaded")
 
     # Get image paths and preprocess them
-    image_dir = os.path.join(args.scene_dir, "images")
+    image_dir = Path(os.path.join(args.scene_dir, "images"))
     image_path_list = glob.glob(os.path.join(image_dir, "*"))
     image_path_list = [path for path in image_path_list if path.endswith(".jpg") or path.endswith(".png")]
     image_path_list = sorted(image_path_list)
@@ -208,25 +212,30 @@ def demo_fn(args):
 
         reconstruction_resolution = img_load_resolution
         if args.use_sfm:
-            sfm_out_dir = f"{args.output_dir}/sfm"
-            os.makedirs(sfm_out_dir, exist_ok=True)
+            sfm_dir = Path(f"{args.output_dir}/sfm")
+            sfm_pairs_f = Path(sfm_dir / "pairs.txt")
+            sfm_feats_f = Path(sfm_dir / "feats.h5")
+            sfm_matches_f = Path(sfm_dir / "matches.h5")
+            os.makedirs(sfm_dir, exist_ok=True)
 
             prepare_pairs(image_path_list, 
-                          pairs_file=f"{sfm_out_dir}/pairs.txt")
+                          pairs_file=sfm_pairs_f)
             prepare_features(pred_tracks, 
                              track_masks,
                              image_path_list,
                              image_size=images.shape[-2:],        
-                             feats_file=f"{sfm_out_dir}/feats.h5")
+                             feats_file=sfm_feats_f)
             prepare_matches(pred_tracks, 
-                            pairs_file=f"{sfm_out_dir}/pairs.txt", 
-                            feats_file=f"{sfm_out_dir}/feats.h5",
-                            matches_file=f"{sfm_out_dir}/matches.h5")
+                            pairs_file=sfm_pairs_f, 
+                            feats_file=sfm_feats_f,
+                            matches_file=sfm_matches_f)
             
             if args.use_calibrated_intrinsic:
                 print(f"Using calibrated intrinsic for reconstruction")
                 intrinsic = (load_intrinsics(os.path.join(args.scene_dir, "meta", "0000.pkl"))[None]).repeat(len(images), 0)
                 print(f"calibrated intrinsic:\n{intrinsic[0]}")
+            
+            model = hloc_reconstruction_main(sfm_dir/"sparse", image_dir, sfm_pairs_f, sfm_feats_f, sfm_matches_f, camera_mode=pycolmap.CameraMode.SINGLE)
 
     else:
         conf_thres_value = args.conf_thres_value
@@ -277,10 +286,10 @@ def demo_fn(args):
         shared_camera=shared_camera,
     )
 
-    print(f"Saving reconstruction to {args.output_dir}/sparse")
-    sparse_reconstruction_dir = os.path.join(args.output_dir, "sparse")
-    os.makedirs(sparse_reconstruction_dir, exist_ok=True)
-    reconstruction.write(sparse_reconstruction_dir)
+    ba_out_dir = Path(args.output_dir) / "ba" / "sparse"
+    print(f"Saving ba reconstruction to {ba_out_dir}")
+    os.makedirs(ba_out_dir, exist_ok=True)
+    reconstruction.write(ba_out_dir)
 
     # Save point cloud for fast visualization
     trimesh.PointCloud(points_3d, colors=points_rgb).export(os.path.join(args.output_dir, "sparse/points.ply"))
