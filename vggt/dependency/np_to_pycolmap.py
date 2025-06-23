@@ -22,7 +22,7 @@ def batch_np_matrix_to_pycolmap(
     shared_camera=False,
     camera_type="SIMPLE_PINHOLE",
     extra_params=None,
-    min_inlier_per_frame=64,
+    min_inlier_per_frame=0,
     points_rgb=None,
     images=None,
     out_dir=None,
