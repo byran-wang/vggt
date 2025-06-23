@@ -38,11 +38,18 @@ def load_and_preprocess_images_square(image_path_list, target_size=1024):
         raise ValueError("At least 1 image is required")
 
     images = []
+    masks = []
     original_coords = []  # Renamed from position_info to be more descriptive
     to_tensor = TF.ToTensor()
     for image_path in image_path_list:
         # Open image
         img = Image.open(image_path)
+
+        if img.mode == "RGBA":
+            mask = np.array(img.getchannel('A'))
+        else:
+            mask = np.ones((img.size[1], img.size[0]))
+        mask = mask > 0
 
         # If there's an alpha channel, blend onto black background
         if img.mode == "RGBA":
@@ -84,18 +91,22 @@ def load_and_preprocess_images_square(image_path_list, target_size=1024):
         # Convert to tensor
         img_tensor = to_tensor(square_img)
         images.append(img_tensor)
+        mask_tensor = to_tensor(mask)
+        masks.append(mask_tensor)
 
     # Stack all images
     images = torch.stack(images)
     original_coords = torch.from_numpy(np.array(original_coords)).float()
+    masks = torch.stack(masks)
 
     # Add additional dimension if single image to ensure correct shape
     if len(image_path_list) == 1:
         if images.dim() == 3:
             images = images.unsqueeze(0)
             original_coords = original_coords.unsqueeze(0)
+            masks = masks.unsqueeze(0)
 
-    return images, original_coords
+    return images, original_coords, masks
 
 
 def load_and_preprocess_images(image_path_list, mode="crop"):

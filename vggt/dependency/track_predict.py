@@ -11,9 +11,9 @@ from .vggsfm_utils import *
 
 def predict_tracks(
     images,
+    image_masks=None,
     conf=None,
     points_3d=None,
-    masks=None,
     max_query_pts=2048,
     query_frame_num=5,
     keypoint_extractor="aliked+sp",
@@ -92,6 +92,7 @@ def predict_tracks(
             max_points_num,
             fine_tracking,
             device,
+            image_masks,
         )
 
         pred_tracks.append(pred_track)
@@ -118,6 +119,7 @@ def predict_tracks(
             min_vis=500,
             non_vis_thresh=0.1,
             device=device,
+            image_masks=image_masks,
         )
 
     pred_tracks = np.concatenate(pred_tracks, axis=1)
@@ -143,6 +145,7 @@ def _forward_on_query(
     max_points_num,
     fine_tracking,
     device,
+    image_masks=None,
 ):
     """
     Process a single query frame for track prediction.
@@ -158,6 +161,7 @@ def _forward_on_query(
         max_points_num: Maximum number of points to process at once
         fine_tracking: Whether to use fine tracking
         device: Device to use for computation
+        image_masks: Tensor of shape [S, 1, H, W] containing the masks
 
     Returns:
         pred_track: Predicted tracks
@@ -199,7 +203,29 @@ def _forward_on_query(
 
         pred_conf = conf[query_index][query_points_scaled[:, 1], query_points_scaled[:, 0]]
         pred_point_3d = points_3d[query_index][query_points_scaled[:, 1], query_points_scaled[:, 0]]
+        # # plot query conf and pred_conf in the same figure
+        # import matplotlib.pyplot as plt
+        # plt.subplot(1, 4, 1)
+        # plt.imshow(conf[query_index])
+        # plt.subplot(1, 4, 2)
+        # pred_conf_plot = np.zeros((conf[0].shape[0], conf[0].shape[1]))
+        # pred_conf_plot[query_points_scaled[:, 1], query_points_scaled[:, 0]] = pred_conf
+        # plt.imshow(pred_conf_plot)
+        # plt.subplot(1, 4, 3)
+        # plt.imshow(image_masks[query_index][0].cpu().numpy())
 
+        if image_masks is not None:
+            image_masks = image_masks.cpu().numpy()
+            query_points_raw = query_points.squeeze(0).round().long().cpu().numpy()
+            pred_conf = pred_conf * image_masks[query_index][0][query_points_raw[:, 1], query_points_raw[:, 0]]
+
+            # # plot the pred_conf
+            # pred_conf_plot = np.zeros((height, width))
+            # pred_conf_plot[query_points_raw[:, 1], query_points_raw[:, 0]] = pred_conf
+            # plt.subplot(1, 4, 4)
+            # plt.imshow(pred_conf_plot)
+            # plt.show()
+        
         # heuristic to remove low confidence points
         # should I export this as an input parameter?
         valid_mask = pred_conf > 1.2
@@ -257,6 +283,7 @@ def _augment_non_visible_frames(
     min_vis: int = 500,
     non_vis_thresh: float = 0.1,
     device: torch.device = None,
+    image_masks=None,
 ):
     """
     Augment tracking for frames with insufficient visibility.
@@ -323,6 +350,7 @@ def _augment_non_visible_frames(
                 max_points_num,
                 fine_tracking,
                 device,
+                image_masks,
             )
             pred_tracks.append(new_track)
             pred_vis_scores.append(new_vis)

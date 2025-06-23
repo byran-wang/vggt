@@ -137,9 +137,10 @@ def demo_fn(args):
 
     img_load_resolution = Image.open(image_path_list[0]).size[0]
 
-    images, original_coords = load_and_preprocess_images_square(image_path_list, img_load_resolution)
+    images, original_coords, image_masks = load_and_preprocess_images_square(image_path_list, img_load_resolution)
     images = images.to(device)
     original_coords = original_coords.to(device)
+    image_masks = image_masks.to(device)
     print(f"Loaded {len(images)} images from {image_dir}")
 
     # Run VGGT to estimate camera and depth
@@ -162,9 +163,9 @@ def demo_fn(args):
             # e.g., from COLMAP, from CoTracker, or by chaining 2D matches from Lightglue/LoFTR.
             pred_tracks, pred_vis_scores, pred_confs, points_3d, points_rgb = predict_tracks(
                 images,
+                image_masks=image_masks,
                 conf=depth_conf,
                 points_3d=points_3d,
-                masks=None,
                 max_query_pts=args.max_query_pts,
                 query_frame_num=args.query_frame_num,
                 keypoint_extractor="aliked+sp",
