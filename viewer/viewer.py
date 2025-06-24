@@ -99,8 +99,16 @@ def execute_rerun(
     images = reconstruct_provider.get_image()
     points3D = reconstruct_provider.get_point3D()
     cameras = reconstruct_provider.get_camera()
-    breakpoint()
-    for image in tqdm(sorted(images.values(), key=lambda im: im.name)):  # type: ignore[no-any-return]
+    # points = [point.xyz for point in visible_xyzs]
+    # point_colors = [point.rgb for point in visible_xyzs]
+    # point_errors = [point.error for point in visible_xyzs]
+    points = np.array([point.xyz for point in points3D.values()])
+    point_colors = np.array([point.rgb for point in points3D.values()])
+    point_errors = np.array([point.error for point in points3D.values()])
+    rr.log("points", rr.Points3D(points, colors=point_colors), rr.AnyValues(error=point_errors), static=True)
+    rr.log("camera", rr.ViewCoordinates.RDF, static=True)  # X=Right, Y=Down, Z=Forward
+
+    for i, image in enumerate(sorted(images.values(), key=lambda im: im.name)):  # type: ignore[no-any-return]
         image_file, frame_idx = data_provider.get_image_file(image.name)
 
         if image_file is None:
@@ -113,42 +121,65 @@ def execute_rerun(
         visible_xys = image.xys[visible]
     
 
-        points = [point.xyz for point in visible_xyzs]
-        point_colors = [point.rgb for point in visible_xyzs]
-        point_errors = [point.error for point in visible_xyzs]
+        # points = [point.xyz for point in visible_xyzs]
+        # point_colors = [point.rgb for point in visible_xyzs]
+        # point_errors = [point.error for point in visible_xyzs]
 
-        rr.log("points", rr.Points3D(points, colors=point_colors), rr.AnyValues(error=point_errors))
-
+        # rr.log("points", rr.Points3D(points, colors=point_colors), rr.AnyValues(error=point_errors))
         quat_xyzw, tvec = reconstruct_provider.get_image_pose(image)
         rr.log(
-            "camera", rr.Transform3D(translation=image.tvec, rotation=rr.Quaternion(xyzw=quat_xyzw), from_parent=True)
+            "camera/image", rr.Transform3D(translation=image.tvec, rotation=rr.Quaternion(xyzw=quat_xyzw), from_parent=True)
         )
-        rr.log("camera", rr.ViewCoordinates.RDF, static=True)  # X=Right, Y=Down, Z=Forward
+        rr.log(
+            f"camera/image_{i}", rr.Transform3D(translation=image.tvec, rotation=rr.Quaternion(xyzw=quat_xyzw), from_parent=True), static=True
+        )        
+        
 
         # Log camera intrinsics
         camera = cameras[image.camera_id]
         if camera.model == "PINHOLE":
             rr.log(
-                "camera/image",
+                f"camera/image_{i}",
                 rr.Pinhole(
                 resolution=[camera.width, camera.height],
                 focal_length=camera.params[:2],
                 principal_point=camera.params[2:],
                 ),
+                static=True
             )
+            rr.log(
+                f"camera/image",
+                rr.Pinhole(
+                resolution=[camera.width, camera.height],
+                focal_length=camera.params[:2],
+                principal_point=camera.params[2:],
+                ),
+                static=False
+            )            
         elif camera.model == "SIMPLE_RADIAL":
             rr.log(
-                "camera/image",
+                f"camera/image_{i}",
                 rr.Pinhole(
                     resolution=[camera.width, camera.height],
                     focal_length=[camera.params[0], camera.params[0]],
                     principal_point=camera.params[1:3],
                 ),
+                static=True
             )
+            rr.log(
+                f"camera/image",
+                rr.Pinhole(
+                    resolution=[camera.width, camera.height],
+                    focal_length=[camera.params[0], camera.params[0]],
+                    principal_point=camera.params[1:3],
+                ),
+                static=False
+            )            
         else:
             raise ValueError(f"Unsupported camera model: {camera.model}")
 
-        rr.log("camera/image", rr.ImageEncoded(path=image_file))
+        rr.log(f"camera/image_{i}", rr.ImageEncoded(path=image_file), static=True)
+        rr.log(f"camera/image", rr.ImageEncoded(path=image_file), static=False)
         # rr.log("camera/image", rr.Image(image_file))
         
         rr.log("camera/image/keypoints", rr.Points2D(visible_xys, colors=[34, 138, 167]))

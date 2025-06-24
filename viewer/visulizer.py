@@ -45,9 +45,17 @@ class Visualizer:
         # Prepare the rerun rerun log configuration
         #
         blueprint = rrb.Vertical(
-            rrb.Spatial3DView(name="3D", origin="/"),
             rrb.Horizontal(
-                rrb.TextDocumentView(name="README", origin="/description"),
+            rrb.Spatial3DView(name="3D", origin="/"),
+            rrb.Vertical(
+                rrb.Grid(
+                    *[rrb.Spatial2DView(name=f"image_{i}", origin=f"/camera/image_{i}") for i in range(40)],
+                    grid_columns=10,
+                ),
+            ),            
+            column_shares=[5, 10],                                                      
+            ),
+            rrb.Horizontal(
                 rrb.Spatial2DView(name="Camera", origin="/camera/image"),
                 rrb.TimeSeriesView(origin="/plot"),
             ),
