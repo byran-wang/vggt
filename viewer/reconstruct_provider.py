@@ -46,7 +46,7 @@ class ReconstructProvider:
         self.scene = self.reconstruct_folder.parent.name
         self.test_name = self.reconstruct_folder.parent.parent.name   
         
-        self.cameras, self.images, self.points3D = read_model(reconstruct_folder / "sparse", ext=".bin")
+        self.cameras, self.images, self.points3D = read_model(reconstruct_folder, ext=".bin")
 
     def get_test_name(self):
         return self.test_name

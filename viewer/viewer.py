@@ -183,6 +183,7 @@ def execute_rerun(
         # rr.log("camera/image", rr.Image(image_file))
         
         rr.log("camera/image/keypoints", rr.Points2D(visible_xys, colors=[34, 138, 167]))
+        rr.log(f"camera/image_{i}/keypoints", rr.Points2D(visible_xys, colors=[34, 138, 167]))
 
 def main():
     args = parse_args()

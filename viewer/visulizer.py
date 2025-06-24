@@ -46,27 +46,31 @@ class Visualizer:
         #
         blueprint = rrb.Vertical(
             rrb.Horizontal(
-            rrb.Spatial3DView(name="3D", origin="/"),
-            rrb.Vertical(
+                rrb.Spatial3DView(name="3D", origin="/"),
+                rrb.Spatial2DView(name="Camera", origin="/camera/image"),
+                column_shares=[10, 5],
+            ),
+            # rrb.Vertical(
+            rrb.Horizontal(
                 rrb.Grid(
                     *[rrb.Spatial2DView(name=f"image_{i}", origin=f"/camera/image_{i}") for i in range(40)],
                     grid_columns=10,
                 ),
-            ),            
-            column_shares=[5, 10],                                                      
             ),
-            rrb.Horizontal(
-                rrb.Spatial2DView(name="Camera", origin="/camera/image"),
-                rrb.TimeSeriesView(origin="/plot"),
-            ),
-            row_shares=[3, 2],
+
+            # ),            
+            # column_shares=[5, 10],                                                      
+            # ),
+            # rrb.Horizontal(
+            #     rrb.Spatial2DView(name="Camera", origin="/camera/image"),
+            #     rrb.TimeSeriesView(origin="/plot"),
+            # ),
+            row_shares=[3, 3],
         )
         
-        # viewer_name = self._reconstruct_provider.get_test_name() + "_" + self._reconstruct_provider.get_scene_name() + "_" + self._reconstruct_provider.get_opti_type()
-        # rr.init(viewer_name, spawn=True)
-        # rr.send_blueprint(blueprint)
-        rr.init("rerun_example_structure_from_motion", spawn=True)
-        rr.send_blueprint(blueprint)                  
+        viewer_name = self._reconstruct_provider.get_test_name() + "_" + self._reconstruct_provider.get_scene_name() + "_" + self._reconstruct_provider.get_opti_type()
+        rr.init(viewer_name, spawn=True)
+        rr.send_blueprint(blueprint)
 
         # rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_UP, static=True)
         # rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
