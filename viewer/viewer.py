@@ -141,21 +141,40 @@ def execute_rerun(
             rr.log(
                 f"camera/image_{i}",
                 rr.Pinhole(
-                resolution=[camera.width, camera.height],
-                focal_length=camera.params[:2],
-                principal_point=camera.params[2:],
+                    resolution=[camera.width, camera.height],
+                    focal_length=camera.params[:2],
+                    principal_point=camera.params[2:],
                 ),
                 static=True
             )
             rr.log(
                 f"camera/image",
                 rr.Pinhole(
-                resolution=[camera.width, camera.height],
-                focal_length=camera.params[:2],
-                principal_point=camera.params[2:],
+                    resolution=[camera.width, camera.height],
+                    focal_length=camera.params[:2],
+                    principal_point=camera.params[2:],
                 ),
                 static=False
-            )            
+            )
+        elif camera.model == "SIMPLE_PINHOLE":
+            rr.log(
+                f"camera/image_{i}",
+                rr.Pinhole(
+                    resolution=[camera.width, camera.height],
+                    focal_length=[camera.params[0], camera.params[0]],
+                    principal_point=camera.params[1:3],
+                ),
+                static=True
+            )
+            rr.log(
+                f"camera/image",
+                rr.Pinhole(
+                    resolution=[camera.width, camera.height],
+                    focal_length=[camera.params[0], camera.params[0]],
+                    principal_point=camera.params[1:3],
+                ),
+                static=False
+            )                        
         elif camera.model == "SIMPLE_RADIAL":
             rr.log(
                 f"camera/image_{i}",
