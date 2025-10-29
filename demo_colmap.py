@@ -98,7 +98,17 @@ def run_VGGT(model, images, dtype, resolution=518):
     depth_map = depth_map.squeeze(0).cpu().numpy()
     depth_conf = depth_conf.squeeze(0).cpu().numpy()
     return extrinsic, intrinsic, depth_map, depth_conf
-
+def save_intrinsics(intrinsic, filepath):
+    fx, fy, cx, cy = intrinsic[0][0], intrinsic[1][1], intrinsic[0, 2], intrinsic[1, 2]
+    K = np.array(
+        [
+            [fx, 0.0, cx],
+            [0.0, fy, cy],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    np.savetxt(filepath, K, fmt="%.8f")
 
 def demo_fn(args):
     # Print configuration
@@ -237,10 +247,13 @@ def demo_fn(args):
             print(f"vggt intrinsic:\n{intrinsic[0]}")
             if args.use_calibrated_intrinsic:
                 print(f"Using calibrated intrinsic for reconstruction")
-                intrinsic = (load_intrinsics(os.path.join(args.scene_dir, "meta", "0000.pkl"))[None]).repeat(len(images), 0)
+                intrinsic = load_intrinsics(os.path.join(args.scene_dir, "meta", "0000.pkl"))
                 print(f"calibrated intrinsic:\n{intrinsic[0]}")
-            
-            model = hloc_reconstruction_main(sfm_dir/"sparse", image_dir, sfm_pairs_f, sfm_feats_f, sfm_matches_f, camera_mode=pycolmap.CameraMode.SINGLE)
+                # convert the intrinsic to a text file which can be read by hloc
+                intrinsic_f = sfm_dir / "intrinsics.txt"
+                save_intrinsics(intrinsic, intrinsic_f)
+
+            model = hloc_reconstruction_main(sfm_dir/"sparse", image_dir, sfm_pairs_f, sfm_feats_f, sfm_matches_f, camera_mode=pycolmap.CameraMode.SINGLE, intrinsic_f=intrinsic_f)
 
     else:
         conf_thres_value = args.conf_thres_value
