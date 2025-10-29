@@ -304,11 +304,15 @@ def demo_fn(args):
         shared_camera=shared_camera,
     )
 
-    ba_out_dir = Path(args.output_dir) / "ba" / "sparse"
+    ba_out_dir = Path(args.output_dir) / "vggt_ba" / "sparse"
     print(f"Saving ba reconstruction to {ba_out_dir}")
     os.makedirs(ba_out_dir, exist_ok=True)
     reconstruction.write(ba_out_dir)
 
+    vggt_out_dir = Path(args.output_dir) / "vggt"
+    print(f"Saving vggt reconstruction to {vggt_out_dir}")
+    os.makedirs(vggt_out_dir, exist_ok=True)
+    
     # Save point cloud for fast visualization
     trimesh.PointCloud(points_3d, colors=points_rgb).export(ba_out_dir / "points.ply")
 
