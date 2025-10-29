@@ -67,6 +67,8 @@ def parse_args():
     )
     parser.add_argument("--output_dir", type=str, default="output", help="Output directory")
     parser.add_argument("--use_calibrated_intrinsic", action="store_true", default=False, help="Use calibrated intrinsic for reconstruction")
+    parser.add_argument("--min_inlier_per_frame", type=int, default=0, help="Minimum inliers per frame for BA")
+    parser.add_argument("--min_inlier_per_track", type=int, default=2, help="Minimum inliers per track for BA")
     return parser.parse_args()
 
 
@@ -196,6 +198,8 @@ def demo_fn(args):
             image_size,
             masks=track_mask,
             max_reproj_error=args.max_reproj_error,
+            min_inlier_per_frame=args.min_inlier_per_frame,
+            min_inlier_per_track=args.min_inlier_per_track,
             shared_camera=shared_camera,
             camera_type=args.camera_type,
             points_rgb=points_rgb,

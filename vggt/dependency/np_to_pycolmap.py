@@ -23,6 +23,7 @@ def batch_np_matrix_to_pycolmap(
     camera_type="SIMPLE_PINHOLE",
     extra_params=None,
     min_inlier_per_frame=0,
+    min_inlier_per_track=2,
     points_rgb=None,
     images=None,
     out_dir=None,
@@ -80,7 +81,7 @@ def batch_np_matrix_to_pycolmap(
     reconstruction = pycolmap.Reconstruction()
 
     inlier_num = masks.sum(0)
-    valid_mask = inlier_num >= 2  # a track is invalid if without two inliers
+    valid_mask = inlier_num >= min_inlier_per_track  # a track is invalid if without two inliers
     valid_idx = np.nonzero(valid_mask)[0]
 
     # Only add 3D points that have sufficient 2D points
