@@ -69,6 +69,7 @@ def parse_args():
     parser.add_argument("--use_calibrated_intrinsic", action="store_true", default=False, help="Use calibrated intrinsic for reconstruction")
     parser.add_argument("--min_inlier_per_frame", type=int, default=0, help="Minimum inliers per frame for BA")
     parser.add_argument("--min_inlier_per_track", type=int, default=2, help="Minimum inliers per track for BA")
+    parser.add_argument("--instance_id", type=int, default=0, help="Instance ID for image preprocessing")
     return parser.parse_args()
 
 
@@ -146,7 +147,9 @@ def demo_fn(args):
     image_path_list = sorted(image_path_list)
     if len(image_path_list) == 0:
         raise ValueError(f"No images found in {image_dir}")
+    # check the frame index range
     base_image_path_list = [os.path.basename(path) for path in image_path_list]
+    print(f"Processing images in {image_dir} with the list  {base_image_path_list}")
 
     # Load images and original coordinates
     # Load Image in 1024, while running VGGT with 518
@@ -154,7 +157,7 @@ def demo_fn(args):
 
     img_load_resolution = Image.open(image_path_list[0]).size[0]
 
-    images, original_coords, image_masks = load_and_preprocess_images_square(image_path_list, img_load_resolution)
+    images, original_coords, image_masks = load_and_preprocess_images_square(image_path_list, args.instance_id, img_load_resolution)
     images = images.to(device)
     original_coords = original_coords.to(device)
     image_masks = image_masks.to(device)
@@ -253,7 +256,7 @@ def demo_fn(args):
                 intrinsic_f = sfm_dir / "intrinsics.txt"
                 save_intrinsics(intrinsic, intrinsic_f)
 
-            model = hloc_reconstruction_main(sfm_dir/"sparse", image_dir, sfm_pairs_f, sfm_feats_f, sfm_matches_f, camera_mode=pycolmap.CameraMode.SINGLE, intrinsic_f=intrinsic_f)
+            model = hloc_reconstruction_main(sfm_dir/"sparse", image_dir, sfm_pairs_f, sfm_feats_f, sfm_matches_f, camera_mode=pycolmap.CameraMode.SINGLE, intrinsic_f=intrinsic_f, image_list=base_image_path_list)
 
     else:
         conf_thres_value = args.conf_thres_value

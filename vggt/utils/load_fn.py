@@ -9,13 +9,35 @@ from PIL import Image
 from torchvision import transforms as TF
 import numpy as np
 import pickle
+from pathlib import Path
+import yaml
 
 def load_intrinsics(intrinsics_path):
-    with open(intrinsics_path, 'rb') as f:
-        intrinsics = np.array(pickle.load(f)['camMat'])
-    return intrinsics
+    try:
+        with open(intrinsics_path, 'rb') as f:
+            intrinsics = np.array(pickle.load(f)['camMat'])
+        return intrinsics
+    except FileNotFoundError as e:
+        yaml_path = Path(intrinsics_path).with_name("intrinsics.yaml")
+        if not yaml_path.exists():
+            raise e
 
-def load_and_preprocess_images_square(image_path_list, target_size=1024):
+        with open(yaml_path, "r") as f:
+            data = yaml.safe_load(f) or {}
+
+        try:
+            first_entry = next(iter(data.values()))
+            fx, fy, cx, cy = first_entry["params"]
+        except Exception as parse_error:
+            raise ValueError(f"Invalid intrinsics format in {yaml_path}") from parse_error
+
+        intrinsics = np.array(
+            [[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]],
+            dtype=np.float64,
+        )
+        return intrinsics
+
+def load_and_preprocess_images_square(image_path_list, instance_id, target_size=1024):
     """
     Load and preprocess images by center padding to square and resizing to target size.
     Also returns the position information of original pixels after transformation.
@@ -44,9 +66,14 @@ def load_and_preprocess_images_square(image_path_list, target_size=1024):
     for image_path in image_path_list:
         # Open image
         img = Image.open(image_path)
+        mask_path = Path(image_path.replace('images', 'masks'))
 
         if img.mode == "RGBA":
             mask = np.array(img.getchannel('A'))
+        elif mask_path.exists:
+            mask_img = Image.open(mask_path)
+            mask = np.array(mask_img)
+            mask[mask != instance_id] = 0      
         else:
             mask = np.ones((img.size[1], img.size[0]))
         mask = mask > 0
@@ -55,10 +82,13 @@ def load_and_preprocess_images_square(image_path_list, target_size=1024):
         if img.mode == "RGBA":
             background = Image.new("RGBA", img.size, (0, 0, 0, 255))
             img = Image.alpha_composite(background, img)
-
-        # Convert to RGB
-        img = img.convert("RGB")
-
+            # Convert to RGB
+            img = img.convert("RGB")
+        else:
+            # TODO mask the image and composite onto black background
+            img = img * mask[..., None]
+            img = Image.fromarray(np.uint8(img))
+        
         # Get original dimensions
         width, height = img.size
 
