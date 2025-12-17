@@ -157,7 +157,7 @@ def demo_fn(args):
 
     img_load_resolution = Image.open(image_path_list[0]).size[0]
 
-    images, original_coords, image_masks = load_and_preprocess_images_square(image_path_list, args.instance_id, img_load_resolution)
+    images, original_coords, image_masks, depth_prior = load_and_preprocess_images_square(image_path_list, args.instance_id, img_load_resolution)
     images = images.to(device)
     original_coords = original_coords.to(device)
     image_masks = image_masks.to(device)

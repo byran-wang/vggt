@@ -1,3 +1,6 @@
 [submodule "third_party/Hierarchical-Localization"]
 	path = third_party/Hierarchical-Localization
 	url = git@github.com/byran-wang/Hierarchical-Localization.git
+[submodule "third_party/utils_simba"]
+	path = third_party/utils_simba
+	url = git@github.com:byran-wang/utils_simba.git
