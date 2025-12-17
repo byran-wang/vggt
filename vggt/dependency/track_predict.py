@@ -97,9 +97,11 @@ def predict_tracks(
 
         pred_tracks.append(pred_track)
         pred_vis_scores.append(pred_vis)
-        pred_confs.append(pred_conf)
-        pred_points_3d.append(pred_point_3d)
         pred_colors.append(pred_color)
+        if pred_point_3d is not None:
+            pred_points_3d.append(pred_point_3d)
+        if pred_conf is not None:
+            pred_confs.append(pred_conf)
 
     if complete_non_vis:
         pred_tracks, pred_vis_scores, pred_confs, pred_points_3d, pred_colors = _augment_non_visible_frames(

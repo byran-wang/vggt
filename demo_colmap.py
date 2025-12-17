@@ -21,6 +21,7 @@ import argparse
 from pathlib import Path
 import trimesh
 import pycolmap
+import cv2
 from PIL import Image
 
 from vggt.models.vggt import VGGT
@@ -112,10 +113,146 @@ def save_intrinsics(intrinsic, filepath):
     np.savetxt(filepath, K, fmt="%.8f")
 
 def estimate_extrinsic(depth_map, intrinsic, tracks, track_mask):
-    breakpoint()
-    pass
-    # TODO: first frame is identity
-    # TODO: estimate extrinsics using RANSAC PnP for better robustness
+    """
+    Estimate per-frame camera extrinsics (camera-from-world, OpenCV convention).
+
+    Assumptions:
+    - Frame 0 defines the world coordinate system (identity extrinsic).
+    - `tracks[t, j]` provides the (x, y) pixel of track j in frame t in the same
+      pixel coordinate system as `depth_map` and `intrinsic`.
+    - `depth_map[t]` gives metric depth along camera Z (OpenCV: z-forward).
+    """
+
+    depth_map = np.asarray(depth_map)
+    tracks = np.asarray(tracks)
+    track_mask = np.asarray(track_mask).astype(bool)
+    intrinsic = np.asarray(intrinsic, dtype=np.float64)
+
+    if depth_map.ndim == 2:
+        depth_map = depth_map[None]
+    if tracks.ndim != 3 or tracks.shape[-1] != 2:
+        raise ValueError(f"`tracks` must have shape (T, P, 2), got {tracks.shape}")
+    if track_mask.shape[:2] != tracks.shape[:2]:
+        raise ValueError(f"`track_mask` must have shape (T, P), got {track_mask.shape}")
+    if intrinsic.shape != (3, 3):
+        raise ValueError(f"`intrinsic` must have shape (3, 3), got {intrinsic.shape}")
+
+    num_frames = tracks.shape[0]
+    height, width = depth_map.shape[-2:]
+
+    fx = float(intrinsic[0, 0])
+    fy = float(intrinsic[1, 1])
+    cx = float(intrinsic[0, 2])
+    cy = float(intrinsic[1, 2])
+
+    def _sample_depth_nearest(depth_hw: np.ndarray, xy: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        x = np.rint(xy[:, 0]).astype(np.int32)
+        y = np.rint(xy[:, 1]).astype(np.int32)
+        in_bounds = (x >= 0) & (x < width) & (y >= 0) & (y < height)
+        d = np.zeros((xy.shape[0],), dtype=np.float32)
+        valid = in_bounds.copy()
+        if valid.any():
+            d[valid] = depth_hw[y[valid], x[valid]].astype(np.float32, copy=False)
+            valid &= d > 0.0
+        return d, valid
+
+    def _unproject(xy: np.ndarray, depth: np.ndarray) -> np.ndarray:
+        x = xy[:, 0].astype(np.float64, copy=False)
+        y = xy[:, 1].astype(np.float64, copy=False)
+        z = depth.astype(np.float64, copy=False)
+        X = (x - cx) / fx * z
+        Y = (y - cy) / fy * z
+        return np.stack([X, Y, z], axis=1)
+
+    def _cam_to_world(points_cam: np.ndarray, extri: np.ndarray) -> np.ndarray:
+        R = extri[:, :3].astype(np.float64, copy=False)
+        t = extri[:, 3].astype(np.float64, copy=False)
+        # X_world = R^T (X_cam - t)
+        return (points_cam - t[None, :]) @ R
+
+    extrinsics = np.zeros((num_frames, 3, 4), dtype=np.float64)
+    extrinsics[0, :3, :3] = np.eye(3, dtype=np.float64)
+    extrinsics[0, :3, 3] = 0.0
+
+    dist_coeffs = None  # assume no distortion
+    ransac_reproj_threshold = 8.0
+
+    for frame_idx in range(1, num_frames):
+        estimated = False
+
+        for ref_idx in (frame_idx - 1, 0):
+            vis = track_mask[ref_idx] & track_mask[frame_idx]
+            if not np.any(vis):
+                continue
+
+            xy_ref = tracks[ref_idx, vis]
+            xy_cur = tracks[frame_idx, vis]
+            depth_ref, valid_depth = _sample_depth_nearest(depth_map[ref_idx], xy_ref)
+            if not np.any(valid_depth):
+                continue
+
+            xy_ref = xy_ref[valid_depth]
+            xy_cur = xy_cur[valid_depth]
+            depth_ref = depth_ref[valid_depth]
+
+            if xy_cur.shape[0] < 6:
+                continue
+
+            points_ref_cam = _unproject(xy_ref, depth_ref)
+            points_world = _cam_to_world(points_ref_cam, extrinsics[ref_idx])
+
+            object_points = points_world.astype(np.float32, copy=False).reshape(-1, 1, 3)
+            image_points = xy_cur.astype(np.float32, copy=False).reshape(-1, 1, 2)
+
+            R_ref = extrinsics[ref_idx, :3, :3]
+            t_ref = extrinsics[ref_idx, :3, 3]
+            rvec_ref, _ = cv2.Rodrigues(R_ref.astype(np.float64))
+            tvec_ref = t_ref.reshape(3, 1).astype(np.float64)
+
+            ok, rvec, tvec, inliers = cv2.solvePnPRansac(
+                object_points,
+                image_points,
+                intrinsic,
+                dist_coeffs,
+                rvec=rvec_ref,
+                tvec=tvec_ref,
+                useExtrinsicGuess=True,
+                iterationsCount=1000,
+                reprojectionError=ransac_reproj_threshold,
+                confidence=0.999,
+                flags=cv2.SOLVEPNP_EPNP,
+            )
+
+            if not ok or inliers is None or len(inliers) < 6:
+                continue
+
+            inlier_obj = object_points[inliers[:, 0]]
+            inlier_img = image_points[inliers[:, 0]]
+            ok_refine, rvec_refined, tvec_refined = cv2.solvePnP(
+                inlier_obj,
+                inlier_img,
+                intrinsic,
+                dist_coeffs,
+                rvec=rvec,
+                tvec=tvec,
+                useExtrinsicGuess=True,
+                flags=cv2.SOLVEPNP_ITERATIVE,
+            )
+            if not ok_refine:
+                continue
+
+            R, _ = cv2.Rodrigues(rvec_refined)
+            extrinsics[frame_idx, :3, :3] = R.astype(np.float64)
+            extrinsics[frame_idx, :3, 3] = tvec_refined.reshape(3).astype(np.float64)
+            estimated = True
+            break
+
+        if not estimated:
+            extrinsics[frame_idx] = extrinsics[frame_idx - 1]
+            print(
+                f"[estimate_extrinsic] Warning: PnP failed for frame {frame_idx}, "
+                f"carrying pose from frame {frame_idx - 1}."
+            )
 
     return extrinsics
 
@@ -154,7 +291,6 @@ def demo_fn(args):
     image_path_list = glob.glob(os.path.join(image_dir, "*"))
     image_path_list = [path for path in image_path_list if path.endswith(".jpg") or path.endswith(".png")]
     image_path_list = sorted(image_path_list)
-    image_path_list = image_path_list[:10]
     if len(image_path_list) == 0:
         raise ValueError(f"No images found in {image_dir}")
     # check the frame index range
@@ -193,8 +329,10 @@ def demo_fn(args):
             complete_non_vis=False,
         )
         track_mask = pred_vis_scores > args.vis_thresh
-
         extrinsic = estimate_extrinsic(depth_prior, intrinsic, pred_tracks, track_mask)
+        intrinsic = np.tile(intrinsic[None, :, :], (len(images), 1, 1))
+        points_3d = unproject_depth_map_to_point_map(depth_prior[..., None], extrinsic, intrinsic)
+        vggt_fixed_resolution = img_load_resolution
 
     if args.use_ba:
         image_size = np.array(images.shape[-2:])
@@ -253,9 +391,12 @@ def demo_fn(args):
 
         # Bundle Adjustment
         ba_options = pycolmap.BundleAdjustmentOptions()
+        ba_options.refine_focal_length = not args.use_calibrated_intrinsic
+        ba_options.refine_principal_point = not args.use_calibrated_intrinsic
         pycolmap.bundle_adjustment(reconstruction, ba_options)
 
         reconstruction_resolution = img_load_resolution
+
         if args.use_sfm:
             sfm_dir = Path(f"{args.output_dir}/sfm")
             sfm_pairs_f = Path(sfm_dir / "pairs.txt")
@@ -348,14 +489,15 @@ def demo_fn(args):
     print(f"Saving ba reconstruction to {ba_out_dir}")
     os.makedirs(ba_out_dir, exist_ok=True)
     reconstruction.write(ba_out_dir)
-
-    vggt_out_dir = Path(args.output_dir) / "vggt"
-    print(f"Saving vggt reconstruction to {vggt_out_dir}")
-    os.makedirs(vggt_out_dir, exist_ok=True)
     
     # Save point cloud for fast visualization
     trimesh.PointCloud(points_3d, colors=points_rgb).export(ba_out_dir / "points.ply")
-
+    #TODO print reconstruction summary
+    if reconstruction is not None:
+        print(
+            f"Reconstruction statistics:\n{reconstruction.summary()}"
+            + f"\n\tnum_input_images = {len(images)}"
+        )
     return True
 
 
