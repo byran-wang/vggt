@@ -12,6 +12,7 @@ def parse_args():
     parser.add_argument("--crop_size", type=int, default=700, help="Random seed for reproducibility")
     parser.add_argument("--image_dir", type=str, default=None, help="Directory containing the scene images")
     parser.add_argument("--output_dir", type=str, default=None, help="Directory to save the cropped images")
+    parser.add_argument("--meta_path", type=str, default=None, help="Path to the meta file containing camera intrinsics")
     return parser.parse_args()
 
 def load_meta(meta_path):
@@ -28,7 +29,7 @@ if __name__ == "__main__":
     if len(image_path_list) == 0:
         raise ValueError(f"No images found in {image_dir}")
 
-    meta_origin_path = os.path.join(image_dir.replace("images_origin", "meta_origin"), "0000.pkl")
+    meta_origin_path = args.meta_path
     meta_origin = load_meta(meta_origin_path)
     intrinsics_origin = np.array(meta_origin['camMat'])
 
@@ -36,7 +37,8 @@ if __name__ == "__main__":
     cx, cy = intrinsics_origin[0, 2], intrinsics_origin[1, 2]
 
     # crop the image to the crop size from the principal point
-    # show the cropped progress    
+    # show the cropped progress
+    os.makedirs(args.output_dir, exist_ok=True)    
     for image_path in tqdm(image_path_list, desc="Cropping images", total=len(image_path_list)):
         image = Image.open(image_path)
         width, height = image.size
