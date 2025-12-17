@@ -248,6 +248,7 @@ def demo_fn(args):
                             matches_file=sfm_matches_f)
             
             print(f"vggt intrinsic:\n{intrinsic[0]}")
+            intrinsic_f = None
             if args.use_calibrated_intrinsic:
                 print(f"Using calibrated intrinsic for reconstruction")
                 intrinsic = load_intrinsics(os.path.join(args.scene_dir, "meta", "0000.pkl"))
@@ -257,6 +258,14 @@ def demo_fn(args):
                 save_intrinsics(intrinsic, intrinsic_f)
 
             model = hloc_reconstruction_main(sfm_dir/"sparse", image_dir, sfm_pairs_f, sfm_feats_f, sfm_matches_f, camera_mode=pycolmap.CameraMode.SINGLE, intrinsic_f=intrinsic_f, image_list=base_image_path_list)
+            if model is not None:
+                ply_path = sfm_dir / "sparse" / "points.ply"
+                ply_path.parent.mkdir(parents=True, exist_ok=True)
+                model.export_PLY(ply_path)
+                print(f"Exported SfM point cloud to {ply_path}")
+            else:
+                print("SfM reconstruction failed; skip exporting point cloud.")
+            
 
     else:
         conf_thres_value = args.conf_thres_value
