@@ -111,6 +111,15 @@ def save_intrinsics(intrinsic, filepath):
     )
     np.savetxt(filepath, K, fmt="%.8f")
 
+def estimate_extrinsic(depth_map, intrinsic, tracks, track_mask):
+    breakpoint()
+    pass
+    # TODO: first frame is identity
+    # TODO: estimate extrinsics using RANSAC PnP for better robustness
+
+    return extrinsics
+
+
 def demo_fn(args):
     # Print configuration
     print("Arguments:", vars(args))
@@ -145,6 +154,7 @@ def demo_fn(args):
     image_path_list = glob.glob(os.path.join(image_dir, "*"))
     image_path_list = [path for path in image_path_list if path.endswith(".jpg") or path.endswith(".png")]
     image_path_list = sorted(image_path_list)
+    image_path_list = image_path_list[:10]
     if len(image_path_list) == 0:
         raise ValueError(f"No images found in {image_dir}")
     # check the frame index range
@@ -163,10 +173,28 @@ def demo_fn(args):
     image_masks = image_masks.to(device)
     print(f"Loaded {len(images)} images from {image_dir}")
 
-    # Run VGGT to estimate camera and depth
-    # Run with 518x518 images
-    extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
-    points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
+    if 0:
+        # Run VGGT to estimate camera and depth
+        # Run with 518x518 images
+        extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
+        points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
+    else:
+        intrinsic = load_intrinsics(os.path.join(args.scene_dir, "meta", "0000.pkl"))
+        depth_conf = np.ones_like(depth_prior)
+        pred_tracks, pred_vis_scores, _, _, points_rgb = predict_tracks(
+            images,
+            image_masks=image_masks,
+            conf=None,
+            points_3d=None,
+            max_query_pts=args.max_query_pts,
+            query_frame_num=args.query_frame_num,
+            keypoint_extractor="aliked+sp",
+            fine_tracking=args.fine_tracking,
+            complete_non_vis=False,
+        )
+        track_mask = pred_vis_scores > args.vis_thresh
+
+        extrinsic = estimate_extrinsic(depth_prior, intrinsic, pred_tracks, track_mask)
 
     if args.use_ba:
         image_size = np.array(images.shape[-2:])
