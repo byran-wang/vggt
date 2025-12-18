@@ -43,6 +43,10 @@ def parse_args():
         "--world_coordinate", type=str, default="object", help=argparse.SUPPRESS
     )
 
+    parser.add_argument(
+        "--image_plane_distance", type=float, default=0.05, help=argparse.SUPPRESS
+    )
+
 
     return parser.parse_args()
 
@@ -55,6 +59,7 @@ def execute_rerun(
     show_on_mesh_lab: bool = False,
     world_coordinate: str = "object",
     filter_output: bool = False,
+    image_plane_distance: float = 1.0,
 ):
     if not os.path.exists(sequence_folder):
         raise RuntimeError(f"Sequence folder {sequence_folder} does not exist")
@@ -144,6 +149,7 @@ def execute_rerun(
                     resolution=[camera.width, camera.height],
                     focal_length=camera.params[:2],
                     principal_point=camera.params[2:],
+                    image_plane_distance=image_plane_distance,
                 ),
                 static=True
             )
@@ -153,6 +159,7 @@ def execute_rerun(
                     resolution=[camera.width, camera.height],
                     focal_length=camera.params[:2],
                     principal_point=camera.params[2:],
+                    image_plane_distance=image_plane_distance,
                 ),
                 static=False
             )
@@ -163,6 +170,7 @@ def execute_rerun(
                     resolution=[camera.width, camera.height],
                     focal_length=[camera.params[0], camera.params[0]],
                     principal_point=camera.params[1:3],
+                    image_plane_distance=image_plane_distance,
                 ),
                 static=True
             )
@@ -172,6 +180,7 @@ def execute_rerun(
                     resolution=[camera.width, camera.height],
                     focal_length=[camera.params[0], camera.params[0]],
                     principal_point=camera.params[1:3],
+                    image_plane_distance=image_plane_distance,
                 ),
                 static=False
             )                        
@@ -182,6 +191,7 @@ def execute_rerun(
                     resolution=[camera.width, camera.height],
                     focal_length=[camera.params[0], camera.params[0]],
                     principal_point=camera.params[1:3],
+                    image_plane_distance=image_plane_distance,
                 ),
                 static=True
             )
@@ -191,6 +201,7 @@ def execute_rerun(
                     resolution=[camera.width, camera.height],
                     focal_length=[camera.params[0], camera.params[0]],
                     principal_point=camera.params[1:3],
+                    image_plane_distance=image_plane_distance,
                 ),
                 static=False
             )            
@@ -217,6 +228,7 @@ def main():
             timestamps_slice=slice(None, None, None),
             show_on_mesh_lab=args.show_on_mesh_lab,
             world_coordinate=args.world_coordinate,
+            image_plane_distance=args.image_plane_distance,
         )
     except Exception as error:
         print(f"An exception occurred: {error}")
