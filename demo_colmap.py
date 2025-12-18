@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import random
+import imageio
 import numpy as np
 import glob
 import os
@@ -261,7 +262,7 @@ def optimize_poses_with_losses(
         loss = rep_loss + 0.1 * ray_loss
         loss.backward()
         optim.step()
-
+    # propagate uncertainties
     with torch.no_grad():
         R_final = axis_angle_to_matrix(rvecs_t)
         extr_final = torch.cat([R_final, tvecs_t.unsqueeze(-1)], dim=-1)
@@ -290,17 +291,103 @@ def optimize_poses_with_losses(
         depth_unc = None
         if torch.is_tensor(depth_prior):
             H, W = depth_prior.shape[-2:]
-            grid = torch.empty((B, 1, P, 2), device=device, dtype=dtype)
-            grid[..., 0] = ((tracks_t[..., 0] / (W - 1)) * 2 - 1).unsqueeze(1)
-            grid[..., 1] = ((tracks_t[..., 1] / (H - 1)) * 2 - 1).unsqueeze(1)
-            sampled_depth = torch.nn.functional.grid_sample(
-                depth_prior.to(device=device, dtype=dtype).unsqueeze(1), grid, align_corners=False, mode="bilinear"
-            ).squeeze(1).squeeze(1)
-            depth_valid = (sampled_depth > 0) & mask_t
-            depth_resid = (z.squeeze(1) - sampled_depth) * depth_valid
-            depth_unc = torch.sqrt(
-                (depth_resid.pow(2)).sum(1) / depth_valid.sum(1).clamp(min=1)
-            ).cpu().numpy()
+            ys, xs = torch.meshgrid(
+                torch.arange(H, device=device, dtype=dtype),
+                torch.arange(W, device=device, dtype=dtype),
+                indexing="ij",
+            )
+            depth_unc = torch.zeros_like(depth_prior, dtype=dtype, device=device)
+            depth_cnt = torch.zeros_like(depth_prior, dtype=dtype, device=device)
+            for ref in range(B):
+                fx_r, fy_r = intr_t[ref, 0, 0], intr_t[ref, 1, 1]
+                cx_r, cy_r = intr_t[ref, 0, 2], intr_t[ref, 1, 2]
+                Rr = extr_final[ref, :3, :3]
+                tr = extr_final[ref, :3, 3]
+                unc_flat = depth_unc[ref].view(-1)
+                cnt_flat = depth_cnt[ref].view(-1)
+                for src in range(B):
+                    if src == ref:
+                        continue
+                    if rep_unc_frame[src] > 5.0 or rep_unc_frame[src] == 0.: # 0 means no extrinsic estimated
+                        continue
+                    depth_src = depth_prior[src].to(device=device, dtype=dtype)
+                    valid_src = depth_src > 0
+                    if not valid_src.any():
+                        continue
+                    fx_s, fy_s = intr_t[src, 0, 0], intr_t[src, 1, 1]
+                    cx_s, cy_s = intr_t[src, 0, 2], intr_t[src, 1, 2]
+                    Rs = extr_final[src, :3, :3]
+                    ts = extr_final[src, :3, 3]
+                    X = (xs - cx_s) / fx_s * depth_src
+                    Y = (ys - cy_s) / fy_s * depth_src
+                    Z = depth_src
+                    pts_cam_s = torch.stack([X, Y, Z], dim=-1)
+                    pts_cam_s = pts_cam_s[valid_src]  # M,3
+                    if pts_cam_s.numel() == 0:
+                        continue
+                    
+                    if 0:
+                        w2c_s = torch.eye(4)
+                        w2c_s[:3, :3] = Rs
+                        w2c_s[:3, 3] = ts
+                        w2c_s = w2c_s.to(device=device, dtype=dtype)
+                        ones = torch.ones((pts_cam_s.shape[0], 1), device=device, dtype=dtype)
+                        pts_cam_s = torch.cat([pts_cam_s, ones], dim=-1).transpose(0, 1)  # 4,M
+                        pts_world = w2c_s.inverse() @ pts_cam_s  # M,4
+                        
+                        # transform pts_world to ref camera
+                        w2c_r = torch.eye(4)
+                        w2c_r[:3, :3] = Rr
+                        w2c_r[:3, 3] = tr
+                        w2c_r = w2c_r.to(device=device, dtype=dtype)
+                        pts_cam_r = w2c_r @ pts_world  # 4,M
+                        pts_cam_r = pts_cam_r.transpose(0, 1)  # M,4
+                        pts_cam_r = pts_cam_r[:, :3]
+                    else:
+                        pts_world = torch.matmul(pts_cam_s - ts, Rs.transpose(0, 1))
+                        # transform pts_world to ref camera
+                        pts_cam_r = torch.matmul(pts_world, Rr.transpose(0, 1)) + tr
+                    zr = pts_cam_r[:, 2]
+                    positive = zr > 0
+                    if not positive.any():
+                        continue
+                    pts_cam_r = pts_cam_r[positive]
+                    zr = zr[positive]
+                    u = (pts_cam_r[:, 0] / zr) * fx_r + cx_r
+                    v = (pts_cam_r[:, 1] / zr) * fy_r + cy_r
+                    in_bounds = (u >= 0) & (u <= W - 1) & (v >= 0) & (v <= H - 1)
+                    if not in_bounds.any():
+                        continue
+                    u = u[in_bounds]
+                    v = v[in_bounds]
+                    zr = zr[in_bounds]
+                    u_round = u.round().long()
+                    v_round = v.round().long()
+                    flat_idx = (v_round * W + u_round)
+                    grid = torch.empty((1, 1, u.shape[0], 2), device=device, dtype=dtype)
+                    grid[..., 0] = (u / (W - 1)) * 2 - 1
+                    grid[..., 1] = (v / (H - 1)) * 2 - 1
+                    depth_ref_sampled = torch.nn.functional.grid_sample(
+                        depth_prior[ref].to(device=device, dtype=dtype).unsqueeze(0).unsqueeze(0),
+                        grid,
+                        align_corners=False,
+                        mode="bilinear",
+                    ).view(-1)
+                    valid_ref_depth = depth_ref_sampled > 0
+                    if not valid_ref_depth.any():
+                        continue
+                    depth_ref_sampled = depth_ref_sampled[valid_ref_depth]
+                    zr = zr[valid_ref_depth]
+                    flat_idx = flat_idx[valid_ref_depth]
+                    resid = (depth_ref_sampled - zr)
+                    unc_flat.scatter_add_(0, flat_idx, resid.pow(2))
+                    cnt_flat.scatter_add_(0, flat_idx, torch.ones_like(resid))
+                    
+                    # save depth_unc to a png for visualization
+                    # depth_unc_debug = (depth_unc / depth_cnt.clamp(min=1)).sqrt().cpu().numpy()
+                    # save_depth_prior_with_uncertainty(depth_unc_debug[:1], out_dir="depth_uncertainty_vis")
+
+            depth_unc = (depth_unc / depth_cnt.clamp(min=1)).sqrt().cpu().numpy()
 
     uncertainties = {
         "extrinsic": rep_unc_frame,
@@ -704,7 +791,9 @@ def demo_fn(args):
     ba_out_dir = Path(args.output_dir) / "vggt_ba" / "sparse"
     print(f"Saving ba reconstruction to {ba_out_dir}")
     os.makedirs(ba_out_dir, exist_ok=True)
-    save_point_cloud_with_conf(points_3d, points_rgb, uncertainties if "uncertainties" in locals() else None, ba_out_dir / "points.ply")
+    save_point_cloud_with_conf(points_3d, points_rgb, uncertainties["points3d"], ba_out_dir / "points.ply")
+    save_depth_prior_with_uncertainty(depth_prior, uncertainties["depth_prior"], Path(args.output_dir) / "vggt_ba" / "depth_conf")
+
 
     reconstruction.write(ba_out_dir)
     if reconstruction is not None:
@@ -758,24 +847,37 @@ def rename_colmap_recons_and_rescale_camera(
 
 def save_point_cloud_with_conf(points_3d, points_rgb, uncertainties, ply_path):
     """Save point cloud; color by uncertainty if provided, else by rgb."""
-    if uncertainties is not None and uncertainties.get("points3d") is not None:
-        conf = uncertainties["points3d"]
-        conf = conf.astype(np.float64)
-        conf_norm = conf / (conf.max() + 1e-8)
-        conf_colors = np.stack(
-            [
-                (conf_norm) * 255.0,  # high confidence -> green
-                (1- conf_norm) * 255.0,        # low confidence -> red
-                np.zeros_like(conf_norm),
-            ],
-            axis=-1,
-        ).clip(0, 255).astype(np.uint8)
-        if len(conf_colors) != len(points_3d):
-            conf_colors = conf_colors[: len(points_3d)]
-        trimesh.PointCloud(points_3d, colors=conf_colors).export(ply_path)
-    else:
-        trimesh.PointCloud(points_3d, colors=points_rgb).export(ply_path)
 
+    conf = uncertainties.astype(np.float64)
+    conf_norm = conf / (conf.max() + 1e-8)
+    conf_colors = np.stack(
+        [
+            conf_norm * 255.0,          # green channel high -> high confidence
+            (1.0 - conf_norm) * 255.0,  # red channel high -> low confidence
+            np.zeros_like(conf_norm),
+        ],
+        axis=-1,
+    ).clip(0, 255).astype(np.uint8)
+    if len(conf_colors) != len(points_3d):
+        conf_colors = conf_colors[: len(points_3d)]
+    trimesh.PointCloud(points_3d, colors=conf_colors).export(ply_path)
+
+
+def save_depth_prior_with_uncertainty(depth, depth_unc, out_dir):
+    """Save per-pixel depth uncertainty maps as color PNGs (green=high confidence, red=low)."""
+    os.makedirs(out_dir, exist_ok=True)
+    for i in range(depth_unc.shape[0]):
+        unc = depth_unc[i]
+        d = np.asarray(depth[i])
+        unc_norm = unc / (unc.max() + 1e-8)
+        # invert so high confidence => green high, red low
+        red = (unc_norm * 255.0).astype(np.uint8)
+        green = ((1.0 - unc_norm) * 255.0).astype(np.uint8)
+        blue = np.zeros_like(red, dtype=np.uint8)
+        rgb = np.stack([red, green, blue], axis=-1)
+        alpha = np.where(d > 0, 255, 0).astype(np.uint8)
+        rgba = np.concatenate([rgb, alpha[..., None]], axis=-1)
+        Image.fromarray(rgba, mode="RGBA").save(Path(out_dir) / f"depth_unc_{i:04d}.png")
 
 if __name__ == "__main__":
     args = parse_args()
