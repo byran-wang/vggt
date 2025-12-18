@@ -206,7 +206,7 @@ def optimize_poses_with_losses(
     iters=5,
     lr=1e-3,
 ):
-    """Lightweight pose refinement using reprojection, depth, and point-to-plane losses."""
+    """Lightweight pose refinement using reprojection and point-to-ray losses; also returns simple uncertainty estimates."""
     device = depth_prior.device if torch.is_tensor(depth_prior) else "cpu"
     dtype = torch.float32
 
@@ -262,9 +262,53 @@ def optimize_poses_with_losses(
         loss.backward()
         optim.step()
 
-    R_final = axis_angle_to_matrix(rvecs_t)
-    extr_final = torch.cat([R_final, tvecs_t.unsqueeze(-1)], dim=-1)
-    return extr_final.detach().cpu().numpy(), points3d_t.detach().cpu().numpy()
+    with torch.no_grad():
+        R_final = axis_angle_to_matrix(rvecs_t)
+        extr_final = torch.cat([R_final, tvecs_t.unsqueeze(-1)], dim=-1)
+
+        ones = torch.ones((B, P, 1), device=device, dtype=dtype)
+        pts_h = torch.cat([points3d_t.unsqueeze(0).expand(B, -1, -1), ones], dim=-1)
+        cam_pts = torch.bmm(extr_final, pts_h.transpose(1, 2))
+
+        z = cam_pts[:, 2:3, :]
+        uv = cam_pts[:, :2, :] / (z + 1e-6)
+        ones2 = torch.ones((B, 1, P), device=device, dtype=dtype)
+        uv_h = torch.cat([uv, ones2], dim=1)
+        proj = torch.bmm(intr_t, uv_h)[:, :2, :].transpose(1, 2)
+
+        rep_err = (proj - tracks_t) * mask_t.unsqueeze(-1)
+        rep_l2 = torch.linalg.norm(rep_err, dim=-1)
+        rep_unc_frame = torch.sqrt((rep_l2.pow(2) * mask_t).sum(-1) / mask_t.sum(-1).clamp(min=1)).cpu().numpy()
+
+        uv1 = torch.cat([tracks_t, torch.ones((B, P, 1), device=device, dtype=dtype)], dim=-1)
+        rays = torch.bmm(inv_intr_t, uv1.transpose(1, 2))
+        rays = torch.nn.functional.normalize(rays, dim=1, eps=1e-6)
+        cross = torch.cross(cam_pts, rays, dim=1)
+        ray_err = torch.linalg.norm(cross, dim=1) * mask_t
+        pts_unc = torch.sqrt((ray_err.pow(2)).sum(0) / mask_t.sum(0).clamp(min=1)).cpu().numpy()
+
+        depth_unc = None
+        if torch.is_tensor(depth_prior):
+            H, W = depth_prior.shape[-2:]
+            grid = torch.empty((B, 1, P, 2), device=device, dtype=dtype)
+            grid[..., 0] = ((tracks_t[..., 0] / (W - 1)) * 2 - 1).unsqueeze(1)
+            grid[..., 1] = ((tracks_t[..., 1] / (H - 1)) * 2 - 1).unsqueeze(1)
+            sampled_depth = torch.nn.functional.grid_sample(
+                depth_prior.to(device=device, dtype=dtype).unsqueeze(1), grid, align_corners=False, mode="bilinear"
+            ).squeeze(1).squeeze(1)
+            depth_valid = (sampled_depth > 0) & mask_t
+            depth_resid = (z.squeeze(1) - sampled_depth) * depth_valid
+            depth_unc = torch.sqrt(
+                (depth_resid.pow(2)).sum(1) / depth_valid.sum(1).clamp(min=1)
+            ).cpu().numpy()
+
+    uncertainties = {
+        "extrinsic": rep_unc_frame,
+        "points3d": pts_unc,
+        "depth_prior": depth_unc,
+    }
+
+    return extr_final.detach().cpu().numpy(), points3d_t.detach().cpu().numpy(), uncertainties
 
 
 def build_reconstruction_from_tracks(
@@ -592,7 +636,7 @@ def demo_fn(args):
         visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_frame_track_inlier")
 
         # step: optimize 3D points and camera poses using sparse reprojection and point-to-ray losses
-        extrinsic, points_3d = optimize_poses_with_losses(
+        extrinsic, points_3d, uncertainties = optimize_poses_with_losses(
             points_3d,
             extrinsic,
             intrinsic,
@@ -660,11 +704,9 @@ def demo_fn(args):
     ba_out_dir = Path(args.output_dir) / "vggt_ba" / "sparse"
     print(f"Saving ba reconstruction to {ba_out_dir}")
     os.makedirs(ba_out_dir, exist_ok=True)
+    save_point_cloud_with_conf(points_3d, points_rgb, uncertainties if "uncertainties" in locals() else None, ba_out_dir / "points.ply")
+
     reconstruction.write(ba_out_dir)
-    
-    # Save point cloud for fast visualization
-    trimesh.PointCloud(points_3d, colors=points_rgb).export(ba_out_dir / "points.ply")
-    #TODO print reconstruction summary
     if reconstruction is not None:
         print(
             f"Reconstruction statistics:\n{reconstruction.summary()}"
@@ -712,6 +754,27 @@ def rename_colmap_recons_and_rescale_camera(
             rescale_camera = False
 
     return reconstruction
+
+
+def save_point_cloud_with_conf(points_3d, points_rgb, uncertainties, ply_path):
+    """Save point cloud; color by uncertainty if provided, else by rgb."""
+    if uncertainties is not None and uncertainties.get("points3d") is not None:
+        conf = uncertainties["points3d"]
+        conf = conf.astype(np.float64)
+        conf_norm = conf / (conf.max() + 1e-8)
+        conf_colors = np.stack(
+            [
+                (conf_norm) * 255.0,  # high confidence -> green
+                (1- conf_norm) * 255.0,        # low confidence -> red
+                np.zeros_like(conf_norm),
+            ],
+            axis=-1,
+        ).clip(0, 255).astype(np.uint8)
+        if len(conf_colors) != len(points_3d):
+            conf_colors = conf_colors[: len(points_3d)]
+        trimesh.PointCloud(points_3d, colors=conf_colors).export(ply_path)
+    else:
+        trimesh.PointCloud(points_3d, colors=points_rgb).export(ply_path)
 
 
 if __name__ == "__main__":
