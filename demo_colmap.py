@@ -167,6 +167,30 @@ def compute_normals_from_depth(depth_map, intrinsics):
     return normals.permute(0, 3, 1, 2)  # B,3,H,W
 
 
+def axis_angle_to_matrix(rvecs):
+    """Convert batched axis-angle vectors to rotation matrices."""
+    device, dtype = rvecs.device, rvecs.dtype
+    B = rvecs.shape[0]
+    theta = torch.linalg.norm(rvecs, dim=1, keepdim=True).clamp(min=1e-9)  # (B,1)
+    k = rvecs / theta
+    kx, ky, kz = k[:, 0], k[:, 1], k[:, 2]
+    zero = torch.zeros_like(kx)
+    K = torch.stack(
+        [
+            torch.stack([zero, -kz, ky], dim=-1),
+            torch.stack([kz, zero, -kx], dim=-1),
+            torch.stack([-ky, kx, zero], dim=-1),
+        ],
+        dim=1,
+    )  # (B,3,3)
+    I = torch.eye(3, device=device, dtype=dtype).expand(B, 3, 3)
+    sin_t = torch.sin(theta).view(B, 1, 1)
+    cos_t = torch.cos(theta).view(B, 1, 1)
+    k_outer = (k[:, :, None] * k[:, None, :])  # (B,3,3)
+    R = cos_t * I + (1 - cos_t) * k_outer + sin_t * K
+    return R
+
+
 def optimize_poses_with_losses(
     points_3d,
     extrinsic,
@@ -191,20 +215,27 @@ def optimize_poses_with_losses(
     mask_t = torch.from_numpy(track_mask).to(device=device)
 
     intr_t = torch.from_numpy(intrinsic).to(device=device, dtype=dtype)
-    extr_t = torch.from_numpy(extrinsic).to(device=device, dtype=dtype)
-    extr_t.requires_grad_(True)
+    rvecs = []
+    tvecs = []
+    for i in range(B):
+        rvec, _ = cv2.Rodrigues(extrinsic[i, :3, :3])
+        rvecs.append(rvec.reshape(-1))
+        tvecs.append(extrinsic[i, :3, 3])
+    rvecs_t = torch.from_numpy(np.stack(rvecs)).to(device=device, dtype=dtype)
+    tvecs_t = torch.from_numpy(np.stack(tvecs)).to(device=device, dtype=dtype)
+    rvecs_t.requires_grad_(True)
+    tvecs_t.requires_grad_(True)
 
-    optim = torch.optim.Adam([extr_t, points3d_t], lr=lr)
+    optim = torch.optim.Adam([rvecs_t, tvecs_t, points3d_t], lr=lr)
     inv_intr_t = torch.inverse(intr_t)
-    H = W = None
-    if torch.is_tensor(depth_prior):
-        H, W = depth_prior.shape[-2:]
 
     for _ in range(iters):
         optim.zero_grad(set_to_none=True)
+        R = axis_angle_to_matrix(rvecs_t)
+        extr_mat = torch.cat([R, tvecs_t.unsqueeze(-1)], dim=-1)  # B,3,4
         ones = torch.ones((B, P, 1), device=device, dtype=dtype)
         pts_h = torch.cat([points3d_t.unsqueeze(0).expand(B, -1, -1), ones], dim=-1)  # B,P,4
-        cam_pts = torch.bmm(extr_t, pts_h.transpose(1, 2))  # B,3,P
+        cam_pts = torch.bmm(extr_mat, pts_h.transpose(1, 2))  # B,3,P
 
         z = cam_pts[:, 2:3, :]
         uv = cam_pts[:, :2, :] / (z + 1e-6)
@@ -227,7 +258,9 @@ def optimize_poses_with_losses(
         loss.backward()
         optim.step()
 
-    return extr_t.detach().cpu().numpy(), points3d_t.detach().cpu().numpy()
+    R_final = axis_angle_to_matrix(rvecs_t)
+    extr_final = torch.cat([R_final, tvecs_t.unsqueeze(-1)], dim=-1)
+    return extr_final.detach().cpu().numpy(), points3d_t.detach().cpu().numpy()
 
 
 def build_reconstruction_from_tracks(
@@ -507,7 +540,7 @@ def demo_fn(args):
         image_size = np.array(images.shape[-2:])
         scale = img_load_resolution / vggt_fixed_resolution
         shared_camera = args.shared_camera
-        breakpoint()
+
 
         with torch.cuda.amp.autocast(dtype=dtype) and torch.no_grad():
             # Predicting Tracks
