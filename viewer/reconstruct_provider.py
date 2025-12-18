@@ -66,6 +66,18 @@ class ReconstructProvider:
     def get_point3D(self):
         return self.points3D
     
+    def get_point3D_with_conf(self):
+        ply_file = self.reconstruct_folder / "points.ply"
+        if not ply_file.exists():
+            return None
+        # points from vertices, confidence from colors
+        import trimesh
+        pcd = trimesh.load(str(ply_file))
+
+        return {"points": pcd.vertices, "conf": pcd.colors}
+        
+
+    
     def get_image_pose(self, image):
         # pose from object to camera
         quat_xyzw = image.qvec[[1, 2, 3, 0]]  # COLMAP uses wxyz quaternions

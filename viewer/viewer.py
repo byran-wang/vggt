@@ -104,6 +104,7 @@ def execute_rerun(
     images = reconstruct_provider.get_image()
     points3D = reconstruct_provider.get_point3D()
     cameras = reconstruct_provider.get_camera()
+    point3D_with_conf = reconstruct_provider.get_point3D_with_conf()
     # points = [point.xyz for point in visible_xyzs]
     # point_colors = [point.rgb for point in visible_xyzs]
     # point_errors = [point.error for point in visible_xyzs]
@@ -111,6 +112,7 @@ def execute_rerun(
     point_colors = np.array([point.rgb for point in points3D.values()])
     point_errors = np.array([point.error for point in points3D.values()])
     rr.log("points", rr.Points3D(points, colors=point_colors), rr.AnyValues(error=point_errors), static=True)
+    rr.log("points_with_conf", rr.Points3D(point3D_with_conf["points"], colors=point3D_with_conf["conf"]), static=True)
     rr.log("camera", rr.ViewCoordinates.RDF, static=True)  # X=Right, Y=Down, Z=Forward
 
     for i, image in enumerate(sorted(images.values(), key=lambda im: im.name)):  # type: ignore[no-any-return]
@@ -142,28 +144,7 @@ def execute_rerun(
 
         # Log camera intrinsics
         camera = cameras[image.camera_id]
-        if camera.model == "PINHOLE":
-            rr.log(
-                f"camera/image_{i}",
-                rr.Pinhole(
-                    resolution=[camera.width, camera.height],
-                    focal_length=camera.params[:2],
-                    principal_point=camera.params[2:],
-                    image_plane_distance=image_plane_distance,
-                ),
-                static=True
-            )
-            rr.log(
-                f"camera/image",
-                rr.Pinhole(
-                    resolution=[camera.width, camera.height],
-                    focal_length=camera.params[:2],
-                    principal_point=camera.params[2:],
-                    image_plane_distance=image_plane_distance,
-                ),
-                static=False
-            )
-        elif camera.model == "SIMPLE_PINHOLE":
+        if camera.model == "SIMPLE_PINHOLE":
             rr.log(
                 f"camera/image_{i}",
                 rr.Pinhole(
@@ -183,28 +164,7 @@ def execute_rerun(
                     image_plane_distance=image_plane_distance,
                 ),
                 static=False
-            )                        
-        elif camera.model == "SIMPLE_RADIAL":
-            rr.log(
-                f"camera/image_{i}",
-                rr.Pinhole(
-                    resolution=[camera.width, camera.height],
-                    focal_length=[camera.params[0], camera.params[0]],
-                    principal_point=camera.params[1:3],
-                    image_plane_distance=image_plane_distance,
-                ),
-                static=True
-            )
-            rr.log(
-                f"camera/image",
-                rr.Pinhole(
-                    resolution=[camera.width, camera.height],
-                    focal_length=[camera.params[0], camera.params[0]],
-                    principal_point=camera.params[1:3],
-                    image_plane_distance=image_plane_distance,
-                ),
-                static=False
-            )            
+            )                              
         else:
             raise ValueError(f"Unsupported camera model: {camera.model}")
 
