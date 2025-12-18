@@ -55,23 +55,23 @@ def batch_np_matrix_to_pycolmap(
     assert len(points3d) == P
     assert image_size.shape[0] == 2
 
-    reproj_mask = None
-    if max_reproj_error is not None:
-        projected_points_2d, projected_points_cam = project_3D_points_np(points3d, extrinsics, intrinsics)
-        projected_diff = np.linalg.norm(projected_points_2d - tracks, axis=-1)
-        projected_points_2d[projected_points_cam[:, -1] <= 0] = 1e6
-        reproj_mask = projected_diff < max_reproj_error
+    # reproj_mask = None
+    # if max_reproj_error is not None:
+    #     projected_points_2d, projected_points_cam = project_3D_points_np(points3d, extrinsics, intrinsics)
+    #     projected_diff = np.linalg.norm(projected_points_2d - tracks, axis=-1)
+    #     projected_points_2d[projected_points_cam[:, -1] <= 0] = 1e6
+    #     reproj_mask = projected_diff < max_reproj_error
 
-    if masks is not None and reproj_mask is not None:
-        masks = np.logical_and(masks, reproj_mask)
-    elif masks is not None:
-        masks = masks
-    else:
-        masks = reproj_mask
+    # if masks is not None and reproj_mask is not None:
+    #     masks = np.logical_and(masks, reproj_mask)
+    # elif masks is not None:
+    #     masks = masks
+    # else:
+    #     masks = reproj_mask
 
-    assert masks is not None
-    if out_dir is not None and images is not None:
-        visualize_tracks_on_images(images[None], torch.from_numpy(tracks[None]), torch.from_numpy(masks[None]), out_dir=f"{out_dir}/track_filter_max_proj_err")            
+    # assert masks is not None
+    # if out_dir is not None and images is not None:
+    #     visualize_tracks_on_images(images[None], torch.from_numpy(tracks[None]), torch.from_numpy(masks[None]), out_dir=f"{out_dir}/track_filter_max_proj_err")            
 
     # if masks.sum(1).min() < min_inlier_per_frame:
     #     print(f"Not enough inliers per frame, skip BA.")

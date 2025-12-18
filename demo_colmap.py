@@ -33,6 +33,7 @@ from vggt.dependency.track_predict import predict_tracks
 from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap, batch_np_matrix_to_pycolmap_wo_track
 from vggt.utils.visual_track import visualize_tracks_on_images
 from vggt.dependency.sfm_prepair import prepare_features, prepare_matches, prepare_pairs
+from vggt.dependency.projection import project_3D_points_np
 
 import sys
 sys.path.append("third_party/Hierarchical-Localization/")
@@ -258,6 +259,23 @@ def estimate_extrinsic(depth_map, intrinsic, tracks, track_mask):
     return extrinsics
 
 
+def verify_tracks_by_geometry(points3d, extrinsics, intrinsics, tracks, masks=None, max_reproj_error=None):
+    reproj_mask = None
+    if max_reproj_error is not None:
+        projected_points_2d, projected_points_cam = project_3D_points_np(points3d, extrinsics, intrinsics)
+        projected_diff = np.linalg.norm(projected_points_2d - tracks, axis=-1)
+        projected_points_2d[projected_points_cam[:, -1] <= 0] = 1e6
+        reproj_mask = projected_diff < max_reproj_error
+
+    if masks is not None and reproj_mask is not None:
+        masks = np.logical_and(masks, reproj_mask)
+    elif masks is not None:
+        masks = masks
+    else:
+        masks = reproj_mask
+
+    return masks
+
 def demo_fn(args):
     # Print configuration
     print("Arguments:", vars(args))
@@ -369,7 +387,16 @@ def demo_fn(args):
         intrinsic[:, :2, :] *= scale
         track_mask = pred_vis_scores > args.vis_thresh
         visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_vis_thresh")            
-        # TODO: radial distortion, iterative BA, masks
+
+        track_mask = verify_tracks_by_geometry(
+            points_3d,
+            extrinsic,
+            intrinsic,
+            pred_tracks,
+            masks=track_mask,
+            max_reproj_error=args.max_reproj_error,
+        )
+        visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_max_proj_err")            
         
         reconstruction, track_masks = batch_np_matrix_to_pycolmap(
             points_3d,
