@@ -115,8 +115,8 @@ def save_intrinsics(intrinsic, filepath):
     np.savetxt(filepath, K, fmt="%.8f")
 
 
-def prep_valid_correspondences(track_mask, min_inlier_per_frame, min_inlier_per_track):
-    """Filter tracks by per-frame and per-track inlier counts."""
+def prep_valid_correspondences(points_3d, track_mask, min_inlier_per_frame, min_inlier_per_track):
+    """Filter tracks by per-frame/track counts and drop 3D points with no surviving tracks."""
     mask = np.copy(track_mask)
     if min_inlier_per_frame > 0:
         per_frame = mask.sum(axis=1)
@@ -129,7 +129,11 @@ def prep_valid_correspondences(track_mask, min_inlier_per_frame, min_inlier_per_
         bad_tracks = per_track < min_inlier_per_track
         if bad_tracks.any():
             mask[:, bad_tracks] = False
-    return mask
+
+    keep_pts = mask.sum(axis=0) > 0
+    mask = mask[:, keep_pts]
+    points_3d = points_3d[keep_pts]
+    return mask, points_3d, keep_pts
 
 
 def compute_normals_from_depth(depth_map, intrinsics):
@@ -578,8 +582,13 @@ def demo_fn(args):
         )
         visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_max_proj_err")            
         
-        # step: Prep valid correspondences
-        track_mask = prep_valid_correspondences(track_mask, args.min_inlier_per_frame, args.min_inlier_per_track)
+        # step: Prep valid correspondences and drop 3D points without surviving tracks
+        track_mask, points_3d, keep_pts = prep_valid_correspondences(
+            points_3d, track_mask, args.min_inlier_per_frame, args.min_inlier_per_track
+        )
+        pred_tracks = pred_tracks[:, keep_pts]
+        if points_rgb is not None:
+            points_rgb = points_rgb[keep_pts]
         visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_frame_track_inlier")
 
         # step: optimize 3D points and camera poses using sparse reprojection and point-to-ray losses
