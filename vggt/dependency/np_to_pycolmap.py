@@ -73,9 +73,9 @@ def batch_np_matrix_to_pycolmap(
     if out_dir is not None and images is not None:
         visualize_tracks_on_images(images[None], torch.from_numpy(tracks[None]), torch.from_numpy(masks[None]), out_dir=f"{out_dir}/track_filter_max_proj_err")            
 
-    if masks.sum(1).min() < min_inlier_per_frame:
-        print(f"Not enough inliers per frame, skip BA.")
-        return None, None
+    # if masks.sum(1).min() < min_inlier_per_frame:
+    #     print(f"Not enough inliers per frame, skip BA.")
+    #     return None, None
 
     # Reconstruction object, following the format of PyCOLMAP/COLMAP
     reconstruction = pycolmap.Reconstruction()
@@ -94,6 +94,9 @@ def batch_np_matrix_to_pycolmap(
     camera = None
     # frame idx
     for fidx in range(N):
+        if masks[fidx].sum() < min_inlier_per_frame:
+            print(f"Frame {fidx} does not have enough inliers, skip adding to BA.")
+            continue
         # set camera
         if camera is None or (not shared_camera):
             pycolmap_intri = _build_pycolmap_intri(fidx, intrinsics, camera_type, extra_params)
