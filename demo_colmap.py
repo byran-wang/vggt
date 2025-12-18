@@ -68,8 +68,9 @@ def parse_args():
     )
     parser.add_argument("--output_dir", type=str, default="output", help="Output directory")
     parser.add_argument("--use_calibrated_intrinsic", action="store_true", default=False, help="Use calibrated intrinsic for reconstruction")
-    parser.add_argument("--min_inlier_per_frame", type=int, default=0, help="Minimum inliers per frame for BA")
-    parser.add_argument("--min_inlier_per_track", type=int, default=2, help="Minimum inliers per track for BA")
+    parser.add_argument("--min_inlier_per_frame", type=int, default=10, help="Minimum inliers per frame for BA")
+    parser.add_argument("--min_inlier_per_track", type=int, default=4, help="Minimum inliers per track for BA")
+    parser.add_argument("--max_frames", type=int, default=50, help="Maximum number of frames to process")
     parser.add_argument("--instance_id", type=int, default=0, help="Instance ID for image preprocessing")
     return parser.parse_args()
 
@@ -291,6 +292,7 @@ def demo_fn(args):
     image_path_list = glob.glob(os.path.join(image_dir, "*"))
     image_path_list = [path for path in image_path_list if path.endswith(".jpg") or path.endswith(".png")]
     image_path_list = sorted(image_path_list)
+    image_path_list = image_path_list[:args.max_frames]
     if len(image_path_list) == 0:
         raise ValueError(f"No images found in {image_dir}")
     # check the frame index range
