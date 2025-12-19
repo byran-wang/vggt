@@ -910,29 +910,43 @@ def align_3D_model_with_images(corres, gen_3d, references, reference_idx, out_di
 
     cond_pts = corres.get("condition_points_world", None)
     ref_pts = corres.get("reference_points_world", None)
+    ref_unc = corres.get("reference_uncertainty", None)
     if cond_pts is None or ref_pts is None or len(cond_pts) < 3:
         assert False, "[align_3D_model_with_images] Insufficient 3D correspondences for alignment."
         return None
 
-    def _umeyama_alignment(src, dst):
+    def _umeyama_alignment(src, dst, weights=None):
         src = np.asarray(src, dtype=np.float64)
         dst = np.asarray(dst, dtype=np.float64)
-        mu_src = src.mean(axis=0)
-        mu_dst = dst.mean(axis=0)
+        if weights is None:
+            weights = np.ones(src.shape[0], dtype=np.float64)
+        weights = np.asarray(weights, dtype=np.float64)
+        if weights.shape[0] != src.shape[0]:
+            weights = np.ones(src.shape[0], dtype=np.float64)
+        weights = np.maximum(weights, 1e-8)
+        weights = weights / weights.sum()
+
+        mu_src = (weights[:, None] * src).sum(axis=0)
+        mu_dst = (weights[:, None] * dst).sum(axis=0)
         src_c = src - mu_src
         dst_c = dst - mu_dst
-        cov = dst_c.T @ src_c / src.shape[0]
+        cov = (dst_c * weights[:, None]).T @ src_c
         U, S, Vt = np.linalg.svd(cov)
         R = U @ Vt
         if np.linalg.det(R) < 0:
             Vt[-1] *= -1
             R = U @ Vt
-        var_src = np.sum(src_c ** 2) / src.shape[0]
+        var_src = np.sum(weights * np.sum(src_c ** 2, axis=1))
         scale = np.sum(S) / (var_src + 1e-8)
         t = mu_dst - scale * (R @ mu_src)
         return R.astype(np.float32), t.astype(np.float32), float(scale)
 
-    R, t, s = _umeyama_alignment(cond_pts, ref_pts)
+    weights = None
+    if ref_unc is not None:
+        weights = 1.0 / (np.asarray(ref_unc, dtype=np.float64) + 1e-6)
+        weights = np.maximum(weights, 1e-6)
+
+    R, t, s = _umeyama_alignment(cond_pts, ref_pts, weights)
 
     aligned_pose = {"rotation": R, "translation": t, "scale": s}
     import json
