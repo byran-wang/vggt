@@ -39,6 +39,8 @@ from vggt.dependency.projection import project_3D_points_np
 import sys
 sys.path.append("third_party/Hierarchical-Localization/")
 from hloc.reconstruction import main as hloc_reconstruction_main
+sys.path.append("third_party/utils_simba")
+from utils_simba.geometry import save_point_cloud_to_ply
 
 # TODO: add support for masks
 # TODO: add iterative BA
@@ -885,6 +887,10 @@ def eval_aligned_3D_model(cond_pts, ref_pts, aligned_pose, references, reference
     align_dir = Path(out_dir)
     align_dir.mkdir(parents=True, exist_ok=True)
     imageio.imwrite(align_dir / "transform.png", ref_viz)
+    save_point_cloud_to_ply(aligned_pts, str(align_dir / "cond_aligned.ply"))
+    save_point_cloud_to_ply(cond_pts, str(align_dir / "cond.ply"))
+    save_point_cloud_to_ply(ref_pts, str(align_dir / "ref.ply"))
+
 
 
 
@@ -934,7 +940,7 @@ def align_3D_model_with_images(corres, gen_3d, references, reference_idx, out_di
             indent=2,
         )
     print(f"[align_3D_model_with_images] Saved transform to {align_dir}")
-
+    save_aligned_3D_model(gen_3d, aligned_pose, f"{out_dir}/eval")
     eval_aligned_3D_model(cond_pts, ref_pts, aligned_pose, references, reference_idx=reference_idx, out_dir=f"{out_dir}/eval")
 
     return aligned_pose
@@ -946,7 +952,7 @@ def save_aligned_3D_model(gen_3d, aligned_pose, output_path):
     mesh_path = gen_3d.get_mesh_path()
 
     os.makedirs(output_path, exist_ok=True)
-    out_mesh = Path(output_path) / Path(mesh_path).name
+    out_mesh = Path(output_path) / f"{Path(mesh_path).stem}_aligned.obj"
     try:
         mesh = trimesh.load(mesh_path, force="mesh")
         vertices = mesh.vertices.astype(np.float32)
@@ -1181,7 +1187,6 @@ def demo_fn(args):
     os.makedirs(ba_out_dir, exist_ok=True)
     save_point_cloud_with_conf(points_3d, points_rgb, uncertainties["points3d"], ba_out_dir / "points.ply")
     save_depth_prior_with_uncertainty(depth_prior, uncertainties["depth_prior"], Path(args.output_dir) / "vggt_ba" / "depth_conf")
-    save_aligned_3D_model(gen_3d, aligned_pose, Path(args.output_dir) / "aligned")
 
 
     reconstruction.write(ba_out_dir)
