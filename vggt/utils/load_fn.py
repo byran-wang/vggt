@@ -46,7 +46,7 @@ def load_intrinsics(intrinsics_path):
 class GEN_3D:
     def __init__(self, gen_3D_dir):
         self.gen_3D_path = Path(gen_3D_dir)
-        self.mesh_path = self.gen_3D_path / "white_mesh_remesh.obj"
+        self.mesh_path = Path(str(self.gen_3D_path).replace("align_mesh_image", "3D_gen")) / "white_mesh_remesh.obj"
         self.condition_image_path = self.gen_3D_path / "image.png"
         self.camera_path = self.gen_3D_path / "camera.json"
         self.depth_path = self.gen_3D_path / "depth.png"
@@ -87,6 +87,9 @@ class GEN_3D:
             camera_data = yaml.safe_load(f)
         w2c = np.array(camera_data["blw2cvc"])
         return w2c
+    
+    def get_mesh_path(self):
+        return str(self.mesh_path)
     
 
 

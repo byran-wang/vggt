@@ -594,7 +594,9 @@ def evaluate_3d_corres(corres_3d, gen_3d, reference, reference_idx=0, out_dir=No
     if corres_3d is None:
         print("[evaluate_3d_corres] No correspondences to evaluate.")
         return None
-
+    if out_dir is None:
+        print("[evaluate_3d_corres] No output directory specified, skipping visualization.")
+        return None
     cond_pts = corres_3d.get("condition_points_world", None)
     ref_pts = corres_3d.get("reference_points_world", None)
     cond_pixels = corres_3d.get("condition_pixels", None)
@@ -656,7 +658,7 @@ def evaluate_3d_corres(corres_3d, gen_3d, reference, reference_idx=0, out_dir=No
 
     # Draw correspondence lines in concatenated space if we save visuals
     if out_dir is not None:
-        eval_dir = Path(out_dir) / "3D_corres" / "eval"
+        eval_dir = Path(out_dir) / "eval"
         eval_dir.mkdir(parents=True, exist_ok=True)
         if cond_viz.shape[0] != ref_viz.shape[0]:
             max_h = max(cond_viz.shape[0], ref_viz.shape[0])
@@ -792,9 +794,9 @@ def get_3D_correspondences(gen_3d, reference, reference_idx=0, out_dir=None, min
         )
         torch.cuda.empty_cache()
     
-    visualize_tracks_on_images(imgs_stack[None], torch.from_numpy(pred_tracks[None]), out_dir=f"{out_dir}/3D_corres/track_raw")
+    visualize_tracks_on_images(imgs_stack[None], torch.from_numpy(pred_tracks[None]), out_dir=f"{out_dir}/track_raw")
     vis_mask = pred_vis_scores > min_vis_score
-    visualize_tracks_on_images(imgs_stack[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(vis_mask[None]), out_dir=f"{out_dir}/3D_corres/track_vis")
+    visualize_tracks_on_images(imgs_stack[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(vis_mask[None]), out_dir=f"{out_dir}/track_vis")
     vis_mask = pred_vis_scores > min_vis_score
     valid = vis_mask[0] & vis_mask[1]
     if not np.any(valid):
@@ -834,13 +836,16 @@ def get_3D_correspondences(gen_3d, reference, reference_idx=0, out_dir=None, min
     ref_world = _pixels_to_world(ref_pixels, ref_depth_vals, ref_intr, ref_extr)
 
     print(f"[get_3D_correspondences] Found {len(cond_world)} 3D correspondences with predict_tracks.")
-    return {
+
+    corres = {
         "condition_points_world": cond_world,
         "reference_points_world": ref_world,
         "condition_pixels": cond_pixels_orig,
         "reference_pixels": ref_pixels,
     }
 
+    evaluate_3d_corres(corres, gen_3d, reference, reference_idx=0, out_dir=out_dir)
+    return corres
 def demo_fn(args):
     # Print configuration
     print("Arguments:", vars(args))
@@ -997,11 +1002,10 @@ def demo_fn(args):
             "uncertainties": uncertainties,
 
         }
-        corres_3d = get_3D_correspondences(gen_3d, image_info, reference_idx=0, out_dir=args.output_dir, min_vis_score=args.vis_thresh)
-        evaluate_3d_corres(corres_3d, gen_3d, image_info, reference_idx=0, out_dir=args.output_dir)
+        corres = get_3D_correspondences(gen_3d, image_info, reference_idx=0, out_dir=f"{args.output_dir}/3D_corres/", min_vis_score=args.vis_thresh)
         
         aligned_pose = align_3D_model_with_images(
-            gen_3d, extrinsic, intrinsic, depth_prior, points_3d, uncertainties
+            corres, gen_3d, image_info, reference_idx=0, out_dir=f"{args.output_dir}/aligned/"
         )
 
         # step: convert to pycolmap reconstruction
@@ -1063,6 +1067,7 @@ def demo_fn(args):
     os.makedirs(ba_out_dir, exist_ok=True)
     save_point_cloud_with_conf(points_3d, points_rgb, uncertainties["points3d"], ba_out_dir / "points.ply")
     save_depth_prior_with_uncertainty(depth_prior, uncertainties["depth_prior"], Path(args.output_dir) / "vggt_ba" / "depth_conf")
+    save_aligned_3D_model(gen_3d, aligned_pose, Path(args.output_dir) / "aligned")
 
 
     reconstruction.write(ba_out_dir)
