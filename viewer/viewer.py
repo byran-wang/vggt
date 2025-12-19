@@ -12,6 +12,7 @@ from meshlab_vis import MeshLabVis
 import re
 from pathlib import Path
 import numpy as np
+import trimesh
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -58,7 +59,6 @@ def execute_rerun(
     timestamps_slice: Type[slice],
     show_on_mesh_lab: bool = False,
     world_coordinate: str = "object",
-    filter_output: bool = False,
     image_plane_distance: float = 1.0,
 ):
     if not os.path.exists(sequence_folder):
@@ -76,11 +76,6 @@ def execute_rerun(
     reconstruct_provider = ReconstructProvider(
         reconstruct_folder=Path(reconstruction_folder),
     )
-
-    if filter_output:
-        # Filter out noisy points
-        points3D = {id: point for id, point in reconstruct_provider.get_point3D().items() if point.rgb.any() and len(point.image_ids) > 4}
-
 
     if show_on_mesh_lab:
         MeshLabVis(reconstruct_provider).show()
@@ -105,6 +100,7 @@ def execute_rerun(
     points3D = reconstruct_provider.get_point3D()
     cameras = reconstruct_provider.get_camera()
     point3D_with_conf = reconstruct_provider.get_point3D_with_conf()
+    aligned_mesh_path = reconstruct_provider.get_aligned_3D_gen()
     # points = [point.xyz for point in visible_xyzs]
     # point_colors = [point.rgb for point in visible_xyzs]
     # point_errors = [point.error for point in visible_xyzs]
@@ -112,7 +108,18 @@ def execute_rerun(
     point_colors = np.array([point.rgb for point in points3D.values()])
     point_errors = np.array([point.error for point in points3D.values()])
     rr.log("points", rr.Points3D(points, colors=point_colors), rr.AnyValues(error=point_errors), static=True)
-    rr.log("points_with_conf", rr.Points3D(point3D_with_conf["points"], colors=point3D_with_conf["conf"]), static=True)
+    if point3D_with_conf is not None:
+        rr.log("points_with_conf", rr.Points3D(point3D_with_conf["points"], colors=point3D_with_conf["conf"]), static=True)
+    if aligned_mesh_path is not None:
+        mesh = trimesh.load(str(aligned_mesh_path), force="mesh")
+        mesh_colors = None
+        if mesh.visual.kind == "vertex" and mesh.visual.vertex_colors is not None and len(mesh.visual.vertex_colors):
+            mesh_colors = mesh.visual.vertex_colors[:, :3]
+        rr.log(
+            "aligned_mesh",
+            rr.Points3D(np.asarray(mesh.vertices), colors=mesh_colors if mesh_colors is not None else [180, 180, 180]),
+            static=True,
+        )
     rr.log("camera", rr.ViewCoordinates.RDF, static=True)  # X=Right, Y=Down, Z=Forward
 
     for i, image in enumerate(sorted(images.values(), key=lambda im: im.name)):  # type: ignore[no-any-return]
@@ -179,19 +186,17 @@ def main():
     args = parse_args()
     print(f"args provided: {args}")
 
-    try:
-        execute_rerun(
-            sequence_folder=args.sequence_folder,
-            reconstruction_folder=args.reconstruction_folder,
-            rrd_output_path=args.rrd_output_path,
-            jpeg_quality=args.jpeg_quality,
-            timestamps_slice=slice(None, None, None),
-            show_on_mesh_lab=args.show_on_mesh_lab,
-            world_coordinate=args.world_coordinate,
-            image_plane_distance=args.image_plane_distance,
-        )
-    except Exception as error:
-        print(f"An exception occurred: {error}")
+    execute_rerun(
+        sequence_folder=args.sequence_folder,
+        reconstruction_folder=args.reconstruction_folder,
+        rrd_output_path=args.rrd_output_path,
+        jpeg_quality=args.jpeg_quality,
+        timestamps_slice=slice(None, None, None),
+        show_on_mesh_lab=args.show_on_mesh_lab,
+        world_coordinate=args.world_coordinate,
+        image_plane_distance=args.image_plane_distance,
+    )
+
 
 
 if __name__ == "__main__":
