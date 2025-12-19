@@ -12,6 +12,7 @@ import os
 import copy
 import torch
 import torch.nn.functional as F
+import nvdiffrast.torch as dr
 
 # Configure CUDA settings
 torch.backends.cudnn.enabled = True
@@ -41,6 +42,7 @@ sys.path.append("third_party/Hierarchical-Localization/")
 from hloc.reconstruction import main as hloc_reconstruction_main
 sys.path.append("third_party/utils_simba")
 from utils_simba.geometry import save_point_cloud_to_ply
+from utils_simba.render import diff_renderer, projection_matrix_from_intrinsics
 
 # TODO: add support for masks
 # TODO: add iterative BA
@@ -947,6 +949,103 @@ def align_3D_model_with_images(corres, gen_3d, references, reference_idx, out_di
         weights = np.maximum(weights, 1e-6)
 
     R, t, s = _umeyama_alignment(cond_pts, ref_pts, weights)
+
+    # Optional refinement with mesh-depth alignment
+    try:
+        mesh_path = gen_3d.get_mesh_path()
+        if mesh_path is not None and os.path.exists(mesh_path):
+            mesh = trimesh.load(mesh_path, force="mesh")
+            verts = mesh.vertices.astype(np.float32)
+            if mesh.visual.vertex_colors is not None:
+                color_np = (mesh.visual.vertex_colors[:, :3] / 255.0).astype(np.float32)
+            else:
+                color_np = np.ones_like(verts, dtype=np.float32) * 0.5
+
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            faces = torch.tensor(mesh.faces.astype(np.int32), device=device)
+
+            # Prepare reference data
+            ref_intr = torch.from_numpy(np.asarray(references["intrinsics"][reference_idx], dtype=np.float32)).to(device)
+            ref_extr = torch.from_numpy(np.asarray(references["extrinsics"][reference_idx], dtype=np.float32)).to(device)
+            if ref_extr.shape[0] == 4:
+                ref_extr = ref_extr[:3]
+            ref_depth = references["depth_priors"][reference_idx]
+            ref_depth = torch.from_numpy(ref_depth if isinstance(ref_depth, np.ndarray) else ref_depth.cpu().numpy()).to(device)
+            ref_depth = ref_depth.squeeze()
+            H_r, W_r = ref_depth.shape[-2], ref_depth.shape[-1]
+            ref_unc_map = None
+            if references.get("uncertainties") is not None:
+                unc_all = references["uncertainties"].get("depth_prior", None)
+                if unc_all is not None and len(unc_all) > reference_idx:
+                    unc_map = unc_all[reference_idx]
+                    unc_map = torch.from_numpy(unc_map if isinstance(unc_map, np.ndarray) else unc_map.cpu().numpy())
+                    ref_unc_map = unc_map.to(device).squeeze()
+
+            verts_t = torch.from_numpy(verts).to(device)
+            color_t = torch.from_numpy(color_np).to(device)
+            R_t = torch.from_numpy(R.astype(np.float32)).to(device)
+            t_t = torch.from_numpy(t.astype(np.float32)).to(device)
+            s_t = torch.tensor([s], device=device, dtype=torch.float32)
+
+            cond_pts_t = torch.from_numpy(cond_pts.astype(np.float32)).to(device)
+            ref_pts_t = torch.from_numpy(ref_pts.astype(np.float32)).to(device)
+            w_corr = None
+            if weights is not None:
+                w_corr = torch.from_numpy(weights.astype(np.float32)).to(device)
+
+            extr4 = torch.eye(4, device=device, dtype=torch.float32)
+            extr4[:3, :] = ref_extr
+            proj_mat = projection_matrix_from_intrinsics(ref_intr.cpu().numpy(), height=H_r, width=W_r, znear=0.1, zfar=100.0)
+            proj_t = torch.from_numpy(proj_mat).to(device)
+            glctx = dr.RasterizeGLContext()
+
+            optim = torch.optim.Adam([R_t, t_t, s_t], lr=1e-2)
+            verts_sub = verts_t
+            if verts_sub.shape[0] > 10000:
+                idx = torch.randperm(verts_sub.shape[0], device=device)[:10000]
+                verts_sub = verts_sub[idx]
+                color_sub = color_t[idx]
+            else:
+                color_sub = color_t
+
+            for _ in range(50):
+                optim.zero_grad(set_to_none=True)
+                # transform cond points
+                cond_aligned = (cond_pts_t @ R_t.T) * s_t + t_t
+                corr_res = cond_aligned - ref_pts_t
+                if w_corr is not None:
+                    corr_loss = (w_corr[:, None] * corr_res.pow(2)).mean()
+                else:
+                    corr_loss = corr_res.pow(2).mean()
+
+                verts_aligned = (verts_sub @ R_t.T) * s_t + t_t
+                render_color, depth_render = diff_renderer(
+                    verts_aligned[None], faces, color_sub[None], proj_t, extr4, (H_r, W_r), glctx
+                )
+                depth_render = depth_render.squeeze()
+                depth_mask = (depth_render > 0) & (ref_depth > 0)
+                if depth_mask.any():
+                    depth_pred = depth_render[depth_mask]
+                    depth_gt = ref_depth[depth_mask]
+                    if ref_unc_map is not None:
+                        unc_mask = ref_unc_map[depth_mask]
+                        w_depth = 1.0 / (unc_mask + 1e-6)
+                        depth_loss = (w_depth * (depth_pred - depth_gt).abs()).mean()
+                    else:
+                        depth_loss = torch.nn.functional.smooth_l1_loss(depth_pred, depth_gt)
+                else:
+                    depth_loss = torch.tensor(0.0, device=device)
+
+                loss = corr_loss + 0.1 * depth_loss
+                loss.backward()
+                optim.step()
+
+            R = R_t.cpu().numpy()
+            t = t_t.cpu().numpy()
+            s = float(s_t.item())
+            print("[align_3D_model_with_images] Refined transform using mesh-depth alignment.")
+    except Exception as e:
+        print(f"[align_3D_model_with_images] Mesh-depth refinement failed: {e}")
 
     aligned_pose = {"rotation": R, "translation": t, "scale": s}
     import json
