@@ -26,7 +26,7 @@ import cv2
 from PIL import Image
 
 from vggt.models.vggt import VGGT
-from vggt.utils.load_fn import load_and_preprocess_images_square, load_intrinsics
+from vggt.utils.load_fn import load_and_preprocess_images_square, load_intrinsics, GEN_3D
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.geometry import unproject_depth_map_to_point_map
 from vggt.utils.helper import create_pixel_coordinate_grid, randomly_limit_trues
@@ -590,6 +590,257 @@ def verify_tracks_by_geometry(points3d, extrinsics, intrinsics, tracks, masks=No
 
     return masks
 
+def evaluate_3d_corres(corres_3d, gen_3d, reference, reference_idx=0, out_dir=None):
+    if corres_3d is None:
+        print("[evaluate_3d_corres] No correspondences to evaluate.")
+        return None
+
+    cond_pts = corres_3d.get("condition_points_world", None)
+    ref_pts = corres_3d.get("reference_points_world", None)
+    cond_pixels = corres_3d.get("condition_pixels", None)
+    ref_pixels = corres_3d.get("reference_pixels", None)
+    if cond_pts is None or ref_pts is None:
+        print("[evaluate_3d_corres] Missing 3D correspondences.")
+        return None
+
+    # Load condition assets
+    cond_img = gen_3d.get_cond_image()
+    cond_intr = np.asarray(gen_3d.get_cond_intrinsic(), dtype=np.float64)
+    cond_extr = np.asarray(gen_3d.get_cond_extrinsic(), dtype=np.float64)
+    if cond_extr.shape[0] == 4:
+        cond_extr = cond_extr[:3]
+
+    # Load reference assets
+    ref_imgs = reference.get("images", None)
+    if ref_imgs is None or reference_idx >= len(ref_imgs):
+        print("[evaluate_3d_corres] Invalid reference image index.")
+        return None
+    ref_img_t = ref_imgs[reference_idx]
+    ref_img = ref_img_t.detach().cpu().numpy()
+    if ref_img.shape[0] == 3:
+        ref_img = np.transpose(ref_img, (1, 2, 0))
+    ref_img = np.clip(ref_img * 255.0, 0, 255).astype(np.uint8)
+
+    ref_intr = np.asarray(reference["intrinsics"][reference_idx], dtype=np.float64)
+    ref_extr = np.asarray(reference["extrinsics"][reference_idx], dtype=np.float64)
+    if ref_extr.shape[0] == 4:
+        ref_extr = ref_extr[:3]
+
+    # Project 3D points
+    cond_proj, _ = project_3D_points_np(cond_pts, cond_extr[None], cond_intr[None])
+    ref_proj, _ = project_3D_points_np(ref_pts, ref_extr[None], ref_intr[None])
+    cond_proj = cond_proj[0]
+    ref_proj = ref_proj[0]
+
+    # Visualize overlays
+    cond_viz = cond_img.copy() * 255
+    ref_viz = ref_img.copy()
+    # Ensure HWC layout
+    if cond_viz.ndim == 3 and cond_viz.shape[0] == 3:
+        cond_viz = np.transpose(cond_viz, (1, 2, 0))
+    if ref_viz.ndim == 3 and ref_viz.shape[0] == 3:
+        ref_viz = np.transpose(ref_viz, (1, 2, 0))
+    if cond_viz.ndim == 2:
+        cond_viz = np.repeat(cond_viz[..., None], 3, axis=-1)
+    if ref_viz.ndim == 2:
+        ref_viz = np.repeat(ref_viz[..., None], 3, axis=-1)
+    cond_viz = cond_viz.astype(np.uint8, copy=False)
+    ref_viz = ref_viz.astype(np.uint8, copy=False)
+    cond_viz = np.ascontiguousarray(cond_viz)
+    ref_viz = np.ascontiguousarray(ref_viz)
+
+    for p in cond_proj.astype(int):
+        cv2.circle(cond_viz, (int(p[0]), int(p[1])), 3, (0, 255, 0), -1)
+    for p in ref_proj.astype(int):
+        cv2.circle(ref_viz, (int(p[0]), int(p[1])), 3, (0, 255, 0), -1)
+
+    # Draw correspondence lines in concatenated space if we save visuals
+    if out_dir is not None:
+        eval_dir = Path(out_dir) / "3D_corres" / "eval"
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        if cond_viz.shape[0] != ref_viz.shape[0]:
+            max_h = max(cond_viz.shape[0], ref_viz.shape[0])
+            def _pad_to_h(img, target_h):
+                pad_h = target_h - img.shape[0]
+                if pad_h <= 0:
+                    return img
+                return np.pad(img, ((0, pad_h), (0, 0), (0, 0)), mode="constant", constant_values=0)
+            cond_viz_pad = _pad_to_h(cond_viz, max_h)
+            ref_viz_pad = _pad_to_h(ref_viz, max_h)
+        else:
+            cond_viz_pad, ref_viz_pad = cond_viz, ref_viz
+        concat_viz = np.concatenate([cond_viz_pad, ref_viz_pad], axis=1)
+
+        # offset ref x coordinates by cond width
+        x_offset = cond_viz_pad.shape[1]
+        num_corr = min(len(cond_proj), len(ref_proj))
+        rng = np.random.default_rng(0)
+        colors = rng.integers(0, 256, size=(num_corr, 3), dtype=np.int64)
+        for i in range(num_corr):
+            p_c = cond_proj[i]
+            p_r = ref_proj[i]
+            color = (int(colors[i, 0]), int(colors[i, 1]), int(colors[i, 2]))
+            pt1 = (int(p_c[0]), int(p_c[1]))
+            pt2 = (int(p_r[0] + x_offset), int(p_r[1]))
+            cv2.line(concat_viz, pt1, pt2, color=tuple(color), thickness=1, lineType=cv2.LINE_AA)
+
+        imageio.imwrite(eval_dir / f"corres_{reference_idx:03d}.png", concat_viz)
+        print(f"[evaluate_3d_corres] Saved overlays to {eval_dir}")
+
+    return {
+        "cond_proj": cond_proj,
+        "ref_proj": ref_proj,
+    }
+
+
+def get_3D_correspondences(gen_3d, reference, reference_idx=0, out_dir=None, min_vis_score=0.2):
+    def _to_uint8_img(tensor_img):
+        if torch.is_tensor(tensor_img):
+            arr = tensor_img.detach().cpu().numpy()
+            if arr.ndim == 3 and arr.shape[0] == 3:
+                arr = np.transpose(arr, (1, 2, 0))
+            arr = np.clip(arr * 255.0, 0, 255).astype(np.uint8)
+            return arr
+        return np.asarray(tensor_img, dtype=np.uint8)
+
+    def _resize_intrinsics(K, src_hw, dst_hw):
+        if src_hw == dst_hw:
+            return K
+        scale_x = dst_hw[1] / float(src_hw[1])
+        scale_y = dst_hw[0] / float(src_hw[0])
+        K = K.copy()
+        K[0, 0] *= scale_x
+        K[1, 1] *= scale_y
+        K[0, 2] *= scale_x
+        K[1, 2] *= scale_y
+        return K
+
+    def _pixels_to_world(uv, depth, intrinsic, extrinsic):
+        fx, fy = intrinsic[0, 0], intrinsic[1, 1]
+        cx, cy = intrinsic[0, 2], intrinsic[1, 2]
+        x_cam = (uv[:, 0] - cx) / fx * depth
+        y_cam = (uv[:, 1] - cy) / fy * depth
+        pts_cam = np.stack([x_cam, y_cam, depth], axis=1)
+        R = extrinsic[:3, :3].astype(np.float64, copy=False)
+        t = extrinsic[:3, 3].astype(np.float64, copy=False)
+        return (pts_cam - t[None, :]) @ R
+
+
+    ref_images = reference["images"]
+
+    if ref_images is None or reference_idx >= len(ref_images):
+        print("[get_3D_correspondences] Invalid reference image index.")
+        return None
+
+    # Load condition data
+    cond_img_raw = gen_3d.get_cond_image()
+    cond_mask = gen_3d.get_cond_mask()
+    cond_depth = gen_3d.get_cond_depth()
+    if cond_depth.ndim == 3:
+        cond_depth = np.squeeze(cond_depth)
+    cond_intr = gen_3d.get_cond_intrinsic()
+    cond_extr = gen_3d.get_cond_extrinsic()
+
+    if cond_extr.shape[0] == 4:
+        cond_extr = cond_extr[:3]
+
+    # Prepare reference data
+    ref_img = reference['images'][reference_idx]
+    ref_mask = reference['image_masks'][reference_idx]
+    ref_depth = reference['depth_priors'][reference_idx]
+
+    ref_intr = np.asarray(reference['intrinsics'][reference_idx], dtype=np.float64)
+    ref_extr = np.asarray(reference['extrinsics'][reference_idx], dtype=np.float64)
+    if ref_extr.shape[0] == 4:
+        ref_extr = ref_extr[:3]
+
+    # Resize condition assets to match reference resolution
+    h_ref, w_ref = ref_img.shape[1:3]
+    h_cond, w_cond = cond_img_raw.shape[1:3]
+
+    cond_img = cond_img_raw
+    cond_mask_proc = cond_mask
+    if (h_cond, w_cond) != (h_ref, w_ref):
+        cond_img = cv2.resize(cond_img_raw.transpose(1, 2, 0), (w_ref, h_ref), interpolation=cv2.INTER_CUBIC)
+        cond_img = cond_img.transpose(2, 0, 1)
+        cond_mask_proc = cv2.resize(cond_mask.astype(np.uint8), (w_ref, h_ref), interpolation=cv2.INTER_NEAREST) > 0
+
+    # Build a 2-frame stack and run predict_tracks for correspondences
+    device = ref_img.device if torch.is_tensor(ref_img) else torch.device("cpu")
+    cond_img_t = torch.from_numpy(cond_img).to(device=device, dtype=torch.float32)
+    ref_img_t = ref_images[reference_idx]
+
+
+    imgs_stack = torch.stack([cond_img_t, ref_img_t], dim=0)
+    masks_stack = None
+
+    cond_mask_t = torch.from_numpy(cond_mask_proc.astype(np.float32)).unsqueeze(0).to(device=device, dtype=torch.float32)
+    ref_mask_t = ref_mask
+
+    masks_stack = torch.cat([cond_mask_t, ref_mask_t], dim=0)
+
+    with torch.no_grad():
+        pred_tracks, pred_vis_scores, _, _, _ = predict_tracks(
+            imgs_stack,
+            image_masks=masks_stack,
+            conf=None,
+            points_3d=None,
+            max_query_pts=1024,
+            query_frame_num=2,
+            fine_tracking=False,
+            complete_non_vis=False,
+        )
+        torch.cuda.empty_cache()
+    
+    visualize_tracks_on_images(imgs_stack[None], torch.from_numpy(pred_tracks[None]), out_dir=f"{out_dir}/3D_corres/track_raw")
+    vis_mask = pred_vis_scores > min_vis_score
+    visualize_tracks_on_images(imgs_stack[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(vis_mask[None]), out_dir=f"{out_dir}/3D_corres/track_vis")
+    vis_mask = pred_vis_scores > min_vis_score
+    valid = vis_mask[0] & vis_mask[1]
+    if not np.any(valid):
+        raise ValueError("[get_3D_correspondences] No valid predicted correspondences.")    
+
+    cond_pixels = pred_tracks[0, valid]
+    ref_pixels = pred_tracks[1, valid]
+
+    cond_pixels_orig = cond_pixels.copy()
+    if (h_cond, w_cond) != (h_ref, w_ref):
+        cond_pixels_orig[:, 0] *= float(w_cond) / float(w_ref)
+        cond_pixels_orig[:, 1] *= float(h_cond) / float(h_ref)
+
+    cond_depth_vals = cond_depth[
+        np.clip(np.round(cond_pixels_orig[:, 1]).astype(int), 0, h_cond - 1),
+        np.clip(np.round(cond_pixels_orig[:, 0]).astype(int), 0, w_cond - 1),
+    ]
+
+    ref_depth_vals = ref_depth[
+        np.clip(np.round(ref_pixels[:, 1]).astype(int), 0, ref_depth.shape[0] - 1),
+        np.clip(np.round(ref_pixels[:, 0]).astype(int), 0, ref_depth.shape[1] - 1),
+    ]
+    ref_depth_vals = ref_depth_vals.cpu().numpy()
+
+    
+    valid_depth = (cond_depth_vals > 0) & (ref_depth_vals > 0)
+    if not np.any(valid_depth):
+        raise ValueError("[get_3D_correspondences] No valid depth correspondences.")
+
+    cond_pixels_orig = cond_pixels_orig[valid_depth]
+    cond_pixels = cond_pixels[valid_depth]
+    ref_pixels = ref_pixels[valid_depth]
+    cond_depth_vals = cond_depth_vals[valid_depth]
+    ref_depth_vals = ref_depth_vals[valid_depth]
+
+    cond_world = _pixels_to_world(cond_pixels_orig, cond_depth_vals, cond_intr, cond_extr)
+    ref_world = _pixels_to_world(ref_pixels, ref_depth_vals, ref_intr, ref_extr)
+
+    print(f"[get_3D_correspondences] Found {len(cond_world)} 3D correspondences with predict_tracks.")
+    return {
+        "condition_points_world": cond_world,
+        "reference_points_world": ref_world,
+        "condition_pixels": cond_pixels_orig,
+        "reference_pixels": ref_pixels,
+    }
+
 def demo_fn(args):
     # Print configuration
     print("Arguments:", vars(args))
@@ -665,8 +916,9 @@ def demo_fn(args):
             torch.cuda.empty_cache()
         visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(pred_vis_scores[None])>= pred_vis_scores.min(), out_dir=f"{args.output_dir}/track_raw")            
         track_mask = pred_vis_scores > args.vis_thresh
-        extrinsic = estimate_extrinsic(depth_prior, intrinsic, pred_tracks, track_mask)
         visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_vis_thresh")
+        extrinsic = estimate_extrinsic(depth_prior, intrinsic, pred_tracks, track_mask)
+        
         intrinsic = np.tile(intrinsic[None, :, :], (len(images), 1, 1))
         points_3d = unproject_depth_map_to_point_map(depth_prior[..., None], extrinsic, intrinsic)
         vggt_fixed_resolution = img_load_resolution
@@ -734,6 +986,24 @@ def demo_fn(args):
             iters=5,
             lr=1e-3,
         )
+        gen_3d = GEN_3D(f"{args.scene_dir}/align_mesh_image/0000")
+        image_info = {
+            "image_paths": image_path_list,
+            "images": images,
+            "image_masks": image_masks,
+            "depth_priors": depth_prior,
+            "intrinsics": intrinsic,
+            "extrinsics": extrinsic,
+            "uncertainties": uncertainties,
+
+        }
+        corres_3d = get_3D_correspondences(gen_3d, image_info, reference_idx=0, out_dir=args.output_dir, min_vis_score=args.vis_thresh)
+        evaluate_3d_corres(corres_3d, gen_3d, image_info, reference_idx=0, out_dir=args.output_dir)
+        
+        aligned_pose = align_3D_model_with_images(
+            gen_3d, extrinsic, intrinsic, depth_prior, points_3d, uncertainties
+        )
+
         # step: convert to pycolmap reconstruction
         reconstruction, track_masks = build_reconstruction_from_tracks(
             points_3d,

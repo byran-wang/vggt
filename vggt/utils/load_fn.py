@@ -43,6 +43,53 @@ def load_intrinsics(intrinsics_path):
         )
         return intrinsics
 
+class GEN_3D:
+    def __init__(self, gen_3D_dir):
+        self.gen_3D_path = Path(gen_3D_dir)
+        self.mesh_path = self.gen_3D_path / "white_mesh_remesh.obj"
+        self.condition_image_path = self.gen_3D_path / "image.png"
+        self.camera_path = self.gen_3D_path / "camera.json"
+        self.depth_path = self.gen_3D_path / "depth.png"
+
+    def get_cond_image(self, target_size=None):
+        img = Image.open(self.condition_image_path)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        if target_size is not None:
+            img = img.resize(target_size, Image.Resampling.BICUBIC)
+        img = np.array(img, dtype=np.float32) / 255.0  # (H, W, 3) float32 [0, 1]
+        img = img.transpose(2, 0, 1)  # (3, H, W)
+        return img
+
+    def get_cond_mask(self):
+        # mask is the alpha channel of condition image
+        img = Image.open(self.condition_image_path)
+        if img.mode == "RGBA":
+            mask = np.array(img.getchannel('A'))
+            mask = mask > 0  # (H, W) bool
+            return mask
+        else:
+            # if no alpha channel, return all True mask
+            width, height = img.size
+            mask = np.ones((height, width), dtype=bool)
+            return mask
+
+    def get_cond_depth(self):
+        return get_depth(str(self.depth_path))
+    
+    def get_cond_intrinsic(self):
+        with open(self.camera_path, "r") as f:
+            camera_data = yaml.safe_load(f)
+        return np.array(camera_data["K"])
+    
+    def get_cond_extrinsic(self):
+        with open(self.camera_path, "r") as f:
+            camera_data = yaml.safe_load(f)
+        w2c = np.array(camera_data["blw2cvc"])
+        return w2c
+    
+
+
 def load_and_preprocess_images_square(image_path_list, instance_id, target_size=1024):
     """
     Load and preprocess images by center padding to square and resizing to target size.

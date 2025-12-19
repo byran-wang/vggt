@@ -75,7 +75,10 @@ class ReconstructProvider:
         pcd = trimesh.load(str(ply_file))
 
         return {"points": pcd.vertices, "conf": pcd.colors}
-        
+
+    def get_aligned_3D_gen(self):
+        return self.reconstruct_folder.parents[1] / "aligned_3D_gen/white_mesh_remesh.obj"
+
 
     
     def get_image_pose(self, image):
