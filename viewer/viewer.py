@@ -5,7 +5,6 @@ from typing import Optional, Type
 import rerun as rr  # @manual
 from tqdm import tqdm
 
-from visulizer import Visualizer
 from data_provider import DataProvider
 from reconstruct_provider import ReconstructProvider
 from meshlab_vis import MeshLabVis
@@ -13,6 +12,7 @@ import re
 from pathlib import Path
 import numpy as np
 import trimesh
+import rerun.blueprint as rrb
 
 import sys
 sys.path.append("../third_party/utils_simba")
@@ -83,6 +83,22 @@ def execute_rerun(
     )
     viewer_name = reconstruct_provider.get_test_name() + "_" + reconstruct_provider.get_scene_name() + "_" + reconstruct_provider.get_opti_type()
     visualizer = Visualizer(viewer_name)   
+
+    blueprint = rrb.Vertical(
+        rrb.Horizontal(
+            rrb.Spatial3DView(name="world", origin="/"),
+        ),
+        rrb.Horizontal(
+            rrb.Grid(
+                *[rrb.Spatial2DView(name=f"image_{i}", origin=f"/camera/image_{i}") for i in range(len(reconstruct_provider.get_image()))],
+                grid_columns=10,
+            ),
+        ),
+        row_shares=[5, 2],
+    )
+    
+    rr.send_blueprint(blueprint)
+
 
     # Loop over the timestamps of the sequence and visualize corresponding data
     rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
