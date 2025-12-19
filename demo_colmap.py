@@ -753,6 +753,9 @@ def get_3D_correspondences(gen_3d, reference, reference_idx=0, out_dir=None, min
     ref_mask = reference['image_masks'][reference_idx]
     ref_depth = reference['depth_priors'][reference_idx]
 
+    ref_depth_unc = reference["uncertainties"]["depth_prior"][reference_idx]
+    ref_depth_unc = np.asarray(np.squeeze(ref_depth_unc), dtype=np.float32)
+
     ref_intr = np.asarray(reference['intrinsics'][reference_idx], dtype=np.float64)
     ref_extr = np.asarray(reference['extrinsics'][reference_idx], dtype=np.float64)
     if ref_extr.shape[0] == 4:
@@ -823,6 +826,10 @@ def get_3D_correspondences(gen_3d, reference, reference_idx=0, out_dir=None, min
     ]
     ref_depth_vals = ref_depth_vals.cpu().numpy()
 
+    ref_unc_vals = ref_depth_unc[
+        np.clip(np.round(ref_pixels[:, 1]).astype(int), 0, ref_depth_unc.shape[0] - 1),
+        np.clip(np.round(ref_pixels[:, 0]).astype(int), 0, ref_depth_unc.shape[1] - 1),
+    ]
     
     valid_depth = (cond_depth_vals > 0) & (ref_depth_vals > 0)
     if not np.any(valid_depth):
@@ -833,6 +840,7 @@ def get_3D_correspondences(gen_3d, reference, reference_idx=0, out_dir=None, min
     ref_pixels = ref_pixels[valid_depth]
     cond_depth_vals = cond_depth_vals[valid_depth]
     ref_depth_vals = ref_depth_vals[valid_depth]
+    ref_unc_vals = ref_unc_vals[valid_depth]
 
     cond_world = _pixels_to_world(cond_pixels_orig, cond_depth_vals, cond_intr, cond_extr)
     ref_world = _pixels_to_world(ref_pixels, ref_depth_vals, ref_intr, ref_extr)
@@ -841,9 +849,10 @@ def get_3D_correspondences(gen_3d, reference, reference_idx=0, out_dir=None, min
 
     corres = {
         "condition_points_world": cond_world,
-        "reference_points_world": ref_world,
         "condition_pixels": cond_pixels_orig,
+        "reference_points_world": ref_world,
         "reference_pixels": ref_pixels,
+        "reference_uncertainty": ref_unc_vals,
     }
 
     evaluate_3d_corres(corres, gen_3d, reference, reference_idx=0, out_dir=f"{out_dir}/eval")
