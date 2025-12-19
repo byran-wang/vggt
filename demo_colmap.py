@@ -657,37 +657,37 @@ def evaluate_3d_corres(corres_3d, gen_3d, reference, reference_idx=0, out_dir=No
         cv2.circle(ref_viz, (int(p[0]), int(p[1])), 3, (0, 255, 0), -1)
 
     # Draw correspondence lines in concatenated space if we save visuals
-    if out_dir is not None:
-        eval_dir = Path(out_dir) / "eval"
-        eval_dir.mkdir(parents=True, exist_ok=True)
-        if cond_viz.shape[0] != ref_viz.shape[0]:
-            max_h = max(cond_viz.shape[0], ref_viz.shape[0])
-            def _pad_to_h(img, target_h):
-                pad_h = target_h - img.shape[0]
-                if pad_h <= 0:
-                    return img
-                return np.pad(img, ((0, pad_h), (0, 0), (0, 0)), mode="constant", constant_values=0)
-            cond_viz_pad = _pad_to_h(cond_viz, max_h)
-            ref_viz_pad = _pad_to_h(ref_viz, max_h)
-        else:
-            cond_viz_pad, ref_viz_pad = cond_viz, ref_viz
-        concat_viz = np.concatenate([cond_viz_pad, ref_viz_pad], axis=1)
 
-        # offset ref x coordinates by cond width
-        x_offset = cond_viz_pad.shape[1]
-        num_corr = min(len(cond_proj), len(ref_proj))
-        rng = np.random.default_rng(0)
-        colors = rng.integers(0, 256, size=(num_corr, 3), dtype=np.int64)
-        for i in range(num_corr):
-            p_c = cond_proj[i]
-            p_r = ref_proj[i]
-            color = (int(colors[i, 0]), int(colors[i, 1]), int(colors[i, 2]))
-            pt1 = (int(p_c[0]), int(p_c[1]))
-            pt2 = (int(p_r[0] + x_offset), int(p_r[1]))
-            cv2.line(concat_viz, pt1, pt2, color=tuple(color), thickness=1, lineType=cv2.LINE_AA)
+    eval_dir = Path(out_dir)
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    if cond_viz.shape[0] != ref_viz.shape[0]:
+        max_h = max(cond_viz.shape[0], ref_viz.shape[0])
+        def _pad_to_h(img, target_h):
+            pad_h = target_h - img.shape[0]
+            if pad_h <= 0:
+                return img
+            return np.pad(img, ((0, pad_h), (0, 0), (0, 0)), mode="constant", constant_values=0)
+        cond_viz_pad = _pad_to_h(cond_viz, max_h)
+        ref_viz_pad = _pad_to_h(ref_viz, max_h)
+    else:
+        cond_viz_pad, ref_viz_pad = cond_viz, ref_viz
+    concat_viz = np.concatenate([cond_viz_pad, ref_viz_pad], axis=1)
 
-        imageio.imwrite(eval_dir / f"corres_{reference_idx:03d}.png", concat_viz)
-        print(f"[evaluate_3d_corres] Saved overlays to {eval_dir}")
+    # offset ref x coordinates by cond width
+    x_offset = cond_viz_pad.shape[1]
+    num_corr = min(len(cond_proj), len(ref_proj))
+    rng = np.random.default_rng(0)
+    colors = rng.integers(0, 256, size=(num_corr, 3), dtype=np.int64)
+    for i in range(num_corr):
+        p_c = cond_proj[i]
+        p_r = ref_proj[i]
+        color = (int(colors[i, 0]), int(colors[i, 1]), int(colors[i, 2]))
+        pt1 = (int(p_c[0]), int(p_c[1]))
+        pt2 = (int(p_r[0] + x_offset), int(p_r[1]))
+        cv2.line(concat_viz, pt1, pt2, color=tuple(color), thickness=1, lineType=cv2.LINE_AA)
+
+    imageio.imwrite(eval_dir / f"corres_{reference_idx:03d}.png", concat_viz)
+    print(f"[evaluate_3d_corres] Saved overlays to {eval_dir}")
 
     return {
         "cond_proj": cond_proj,
@@ -844,8 +844,122 @@ def get_3D_correspondences(gen_3d, reference, reference_idx=0, out_dir=None, min
         "reference_pixels": ref_pixels,
     }
 
-    evaluate_3d_corres(corres, gen_3d, reference, reference_idx=0, out_dir=out_dir)
+    evaluate_3d_corres(corres, gen_3d, reference, reference_idx=0, out_dir=f"{out_dir}/eval")
     return corres
+
+def eval_aligned_3D_model(cond_pts, ref_pts, aligned_pose, references, reference_idx=0, out_dir=None):
+    if out_dir is None:
+        print("[eval_aligned_3D_model] No output directory specified, skipping visualization.")
+        return
+    
+    R, t, s = (
+        aligned_pose["rotation"],
+        aligned_pose["translation"],
+        aligned_pose["scale"],
+    )
+    ref_imgs = references.get("images", None)
+    ref_img_t = ref_imgs[reference_idx]
+    ref_img = ref_img_t.detach().cpu().numpy()
+    if ref_img.shape[0] == 3:
+        ref_img = np.transpose(ref_img, (1, 2, 0))
+    ref_img = np.clip(ref_img * 255.0, 0, 255).astype(np.uint8)
+    ref_intr = np.asarray(references["intrinsics"][reference_idx], dtype=np.float64)
+    ref_extr = np.asarray(references["extrinsics"][reference_idx], dtype=np.float64)
+    if ref_extr.shape[0] == 4:
+        ref_extr = ref_extr[:3]
+
+    aligned_pts = (cond_pts @ R.T) * s + t
+    proj, _ = project_3D_points_np(aligned_pts, ref_extr[None], ref_intr[None])
+    proj = proj[0].astype(int)
+
+    ref_viz = ref_img.copy()
+    if ref_viz.ndim == 3 and ref_viz.shape[0] == 3:
+        ref_viz = np.transpose(ref_viz, (1, 2, 0))
+    if ref_viz.ndim == 2:
+        ref_viz = np.repeat(ref_viz[..., None], 3, axis=-1)
+    ref_viz = np.ascontiguousarray(ref_viz.astype(np.uint8))
+    for p in proj:
+        cv2.circle(ref_viz, (int(p[0]), int(p[1])), 2, (0, 255, 0), -1)
+
+
+    align_dir = Path(out_dir)
+    align_dir.mkdir(parents=True, exist_ok=True)
+    imageio.imwrite(align_dir / "transform.png", ref_viz)
+
+
+
+def align_3D_model_with_images(corres, gen_3d, references, reference_idx, out_dir=None, iters=200):
+    if corres is None:
+        print("[align_3D_model_with_images] No correspondences provided.")
+        return None
+
+    cond_pts = corres.get("condition_points_world", None)
+    ref_pts = corres.get("reference_points_world", None)
+    if cond_pts is None or ref_pts is None or len(cond_pts) < 3:
+        assert False, "[align_3D_model_with_images] Insufficient 3D correspondences for alignment."
+        return None
+
+    def _umeyama_alignment(src, dst):
+        src = np.asarray(src, dtype=np.float64)
+        dst = np.asarray(dst, dtype=np.float64)
+        mu_src = src.mean(axis=0)
+        mu_dst = dst.mean(axis=0)
+        src_c = src - mu_src
+        dst_c = dst - mu_dst
+        cov = dst_c.T @ src_c / src.shape[0]
+        U, S, Vt = np.linalg.svd(cov)
+        R = U @ Vt
+        if np.linalg.det(R) < 0:
+            Vt[-1] *= -1
+            R = U @ Vt
+        var_src = np.sum(src_c ** 2) / src.shape[0]
+        scale = np.sum(S) / (var_src + 1e-8)
+        t = mu_dst - scale * (R @ mu_src)
+        return R.astype(np.float32), t.astype(np.float32), float(scale)
+
+    R, t, s = _umeyama_alignment(cond_pts, ref_pts)
+
+    aligned_pose = {"rotation": R, "translation": t, "scale": s}
+    import json
+    align_dir = Path(out_dir)
+    align_dir.mkdir(parents=True, exist_ok=True)
+    with open(align_dir / "transform.json", "w") as f:
+        json.dump(
+            {
+                "rotation": R.tolist(),
+                "translation": t.tolist(),
+                "scale": s,
+            },
+            f,
+            indent=2,
+        )
+    print(f"[align_3D_model_with_images] Saved transform to {align_dir}")
+
+    eval_aligned_3D_model(cond_pts, ref_pts, aligned_pose, references, reference_idx=reference_idx, out_dir=f"{out_dir}/eval")
+
+    return aligned_pose
+    
+
+
+
+def save_aligned_3D_model(gen_3d, aligned_pose, output_path):
+    mesh_path = gen_3d.get_mesh_path()
+
+    os.makedirs(output_path, exist_ok=True)
+    out_mesh = Path(output_path) / Path(mesh_path).name
+    try:
+        mesh = trimesh.load(mesh_path, force="mesh")
+        vertices = mesh.vertices.astype(np.float32)
+        R = aligned_pose["rotation"]
+        t = aligned_pose["translation"]
+        s = aligned_pose["scale"]
+        aligned_vertices = (vertices @ R.T) * s + t
+        mesh.vertices = aligned_vertices
+        mesh.export(out_mesh)
+        print(f"Saved aligned mesh to {out_mesh}")
+    except Exception as e:
+        print(f"Failed to save aligned mesh: {e}")
+
 def demo_fn(args):
     # Print configuration
     print("Arguments:", vars(args))
