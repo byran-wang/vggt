@@ -78,6 +78,7 @@ def parse_args():
     parser.add_argument("--min_inlier_per_track", type=int, default=4, help="Minimum inliers per track for BA")
     parser.add_argument("--max_frames", type=int, default=50, help="Maximum number of frames to process")
     parser.add_argument("--instance_id", type=int, default=0, help="Instance ID for image preprocessing")
+    parser.add_argument("--cond_index", type=int, default=0, help="Conditioning frame index for tracking")
     return parser.parse_args()
 
 
@@ -799,7 +800,6 @@ def get_3D_correspondences(gen_3d, reference, reference_idx=0, out_dir=None, min
             fine_tracking=False,
             complete_non_vis=False,
         )
-        torch.cuda.empty_cache()
     
     visualize_tracks_on_images(imgs_stack[None], torch.from_numpy(pred_tracks[None]), out_dir=f"{out_dir}/track_raw")
     vis_mask = pred_vis_scores > min_vis_score
@@ -1127,7 +1127,7 @@ def demo_fn(args):
 
     img_load_resolution = Image.open(image_path_list[0]).size[0]
 
-    images, original_coords, image_masks, depth_prior = load_and_preprocess_images_square(image_path_list, args.instance_id, img_load_resolution)
+    images, original_coords, image_masks, depth_prior = load_and_preprocess_images_square(image_path_list, args.instance_id, target_size=img_load_resolution, out_dir=f"{args.output_dir}/data_processed")
     images = images.to(device)
     original_coords = original_coords.to(device)
     image_masks = image_masks.to(device)
@@ -1159,8 +1159,9 @@ def demo_fn(args):
                 keypoint_extractor="aliked+sp",
                 fine_tracking=args.fine_tracking,
                 complete_non_vis=False,
+                query_frame_indexes=[args.cond_index]
             )
-            torch.cuda.empty_cache()
+
         visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(pred_vis_scores[None])>= pred_vis_scores.min(), out_dir=f"{args.output_dir}/track_raw")            
         track_mask = pred_vis_scores > args.vis_thresh
         visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_vis_thresh")
@@ -1194,8 +1195,11 @@ def demo_fn(args):
                 keypoint_extractor="aliked+sp",
                 fine_tracking=args.fine_tracking,
                 complete_non_vis=False,
+                query_frame_indexes=[args.cond_index]
             )
-            torch.cuda.empty_cache()
+
+        # refresh track mask to match the current predictions
+        track_mask = pred_vis_scores > args.vis_thresh
 
         # rescale the intrinsic matrix from 518 to 1024
         intrinsic[:, :2, :] *= scale
@@ -1236,6 +1240,7 @@ def demo_fn(args):
         gen_3d = GEN_3D(f"{args.scene_dir}/align_mesh_image/0000")
         image_info = {
             "image_paths": image_path_list,
+            "image_names": base_image_path_list,
             "images": images,
             "image_masks": image_masks,
             "depth_priors": depth_prior,

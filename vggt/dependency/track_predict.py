@@ -20,6 +20,7 @@ def predict_tracks(
     max_points_num=163840,
     fine_tracking=True,
     complete_non_vis=True,
+    query_frame_indexes = [0]
 ):
     """
     Predict tracks for the given images and masks.
@@ -55,13 +56,13 @@ def predict_tracks(
     dtype = images.dtype
     tracker = build_vggsfm_tracker().to(device, dtype)
 
-    # Find query frames
-    query_frame_indexes = generate_rank_by_dino(images, query_frame_num=query_frame_num, device=device)
+    # # Find query frames
+    # query_frame_indexes = generate_rank_by_dino(images, query_frame_num=query_frame_num, device=device)
 
-    # Add the first image to the front if not already present
-    if 0 in query_frame_indexes:
-        query_frame_indexes.remove(0)
-    query_frame_indexes = [0, *query_frame_indexes]
+    # # Add the first image to the front if not already present
+    # if 0 in query_frame_indexes:
+    #     query_frame_indexes.remove(0)
+    # query_frame_indexes = [0, *query_frame_indexes]
 
     # TODO: add the functionality to handle the masks
     keypoint_extractors = initialize_feature_extractors(
@@ -132,7 +133,7 @@ def predict_tracks(
 
     # from vggt.utils.visual_track import visualize_tracks_on_images
     # visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(pred_vis_scores[None])>0.2, out_dir="track_visuals")
-
+    torch.cuda.empty_cache()
     return pred_tracks, pred_vis_scores, pred_confs, pred_points_3d, pred_colors
 
 

@@ -77,7 +77,7 @@ class ReconstructProvider:
         return {"points": pcd.vertices, "conf": pcd.colors}
 
     def get_aligned_3D_gen(self):
-        return self.reconstruct_folder.parents[1] / "aligned_3D_gen/white_mesh_remesh.obj"
+        return self.reconstruct_folder.parents[1] / "aligned/eval/white_mesh_remesh_aligned.obj"
 
 
     
