@@ -1166,186 +1166,161 @@ def demo_fn(args):
     image_masks = image_masks.to(device)
     print(f"Loaded {len(images)} images from {image_dir}")
 
-    if 0:
-        # Run VGGT to estimate camera and depth
-        # Run with 518x518 images
-    # Run VGGT for camera and depth estimation
-        model = VGGT()
-        _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
-        model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
-        model.eval()
-        model = model.to(device)
-        print(f"Model loaded")        
-        extrinsic, intrinsic, depth_map, depth_conf = run_VGGT(model, images, dtype, vggt_fixed_resolution)
-        points_3d = unproject_depth_map_to_point_map(depth_map, extrinsic, intrinsic)
-    else:
-        intrinsic = load_intrinsics(os.path.join(args.scene_dir, "meta", "0000.pkl"))
-        depth_conf = np.ones_like(depth_prior)
-        with torch.cuda.amp.autocast(dtype=dtype) and torch.no_grad():
-            pred_tracks, pred_vis_scores, _, _, points_rgb = predict_tracks(
-                images,
-                image_masks=image_masks,
-                conf=None,
-                points_3d=None,
-                max_query_pts=args.max_query_pts,
-                query_frame_num=args.query_frame_num,
-                keypoint_extractor="aliked+sp",
-                fine_tracking=args.fine_tracking,
-                complete_non_vis=False,
-                query_frame_indexes=[args.cond_index]
-            )
 
-        visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(pred_vis_scores[None])>= pred_vis_scores.min(), out_dir=f"{args.output_dir}/track_raw")            
-        track_mask = pred_vis_scores > args.vis_thresh
-        visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_vis_thresh")
-        extrinsic = np.eye(4)[None].repeat(len(images), axis=0).astype(np.float32)
-        extrinsic = estimate_extrinsic(depth_prior, extrinsic, intrinsic, pred_tracks, track_mask, ref_index=args.cond_index)
-        
-        intrinsic = np.tile(intrinsic[None, :, :], (len(images), 1, 1))
-        points_3d = unproject_depth_map_to_point_map(depth_prior[..., None], extrinsic, intrinsic)
-        vggt_fixed_resolution = img_load_resolution
-
-
-        image_size = np.array(images.shape[-2:])
-        scale = img_load_resolution / vggt_fixed_resolution
-        shared_camera = args.shared_camera
-
-
-        with torch.cuda.amp.autocast(dtype=dtype) and torch.no_grad():
-            # Predicting Tracks
-            # Using VGGSfM tracker instead of VGGT tracker for efficiency
-            # VGGT tracker requires multiple backbone runs to query different frames (this is a problem caused by the training process)
-            # Will be fixed in VGGT v2
-
-            # You can also change the pred_tracks to tracks from any other methods
-            # e.g., from COLMAP, from CoTracker, or by chaining 2D matches from Lightglue/LoFTR.
-            pred_tracks, pred_vis_scores, pred_confs, points_3d, points_rgb = predict_tracks(
-                images,
-                image_masks=image_masks,
-                conf=depth_conf,
-                points_3d=points_3d,
-                max_query_pts=args.max_query_pts,
-                query_frame_num=args.query_frame_num,
-                keypoint_extractor="aliked+sp",
-                fine_tracking=args.fine_tracking,
-                complete_non_vis=False,
-                query_frame_indexes=[args.cond_index]
-            )
-
-        # refresh track mask to match the current predictions
-        track_mask = pred_vis_scores > args.vis_thresh
-
-        # rescale the intrinsic matrix from 518 to 1024
-        intrinsic[:, :2, :] *= scale
-        # track_mask = pred_vis_scores > args.vis_thresh
-        # visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_vis_thresh")            
-
-        track_mask = verify_tracks_by_geometry(
-            points_3d,
-            extrinsic,
-            intrinsic,
-            pred_tracks,
-            ref_index=args.cond_index,
-            masks=track_mask,
-            max_reproj_error=args.max_reproj_error,
-        )
-        visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_max_proj_err")            
-        
-        # step: Prep valid correspondences and drop 3D points without surviving tracks
-        track_mask, points_3d, keep_pts = prep_valid_correspondences(
-            points_3d, track_mask, args.min_inlier_per_frame, args.min_inlier_per_track
-        )
-        pred_tracks = pred_tracks[:, keep_pts]
-        if points_rgb is not None:
-            points_rgb = points_rgb[keep_pts]
-        visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_frame_track_inlier")
-
-        # step: optimize 3D points and camera poses using sparse reprojection and point-to-ray losses
-        extrinsic, points_3d, uncertainties = optimize_poses_with_losses(
-            points_3d,
-            extrinsic,
-            intrinsic,
-            pred_tracks,
-            depth_prior,
-            track_mask,
-            ref_index=args.cond_index,
-            iters=5,
-            lr=1e-3,
-        )
-        gen_3d = GEN_3D(f"{args.scene_dir}/align_mesh_image/0000")
-        image_info = {
-            "image_paths": image_path_list,
-            "image_names": base_image_path_list,
-            "images": images,
-            "image_masks": image_masks,
-            "depth_priors": depth_prior,
-            "intrinsics": intrinsic,
-            "extrinsics": extrinsic,
-            "uncertainties": uncertainties,
-
-        }
-        corres = get_3D_correspondences(gen_3d, image_info, reference_idx=0, out_dir=f"{args.output_dir}/3D_corres/", min_vis_score=args.vis_thresh)
-        
-        aligned_pose = align_3D_model_with_images(
-            corres, gen_3d, image_info, reference_idx=0, out_dir=f"{args.output_dir}/aligned/"
-        )
-        
-        gen_3d.get_aligned_pose(aligned_pose)
-
-        image_info["registered"] =  [False] * len(images)
-        image_info["registered"][args.cond_index] = True
-
-
-        # step: convert to pycolmap reconstruction
-        reconstruction, track_masks = build_reconstruction_from_tracks(
-            points_3d,
-            extrinsic,
-            intrinsic,
-            pred_tracks,
-            image_size,
-            track_mask,
-            shared_camera,
-            args.camera_type,
-            points_rgb=points_rgb,
+    intrinsic = load_intrinsics(os.path.join(args.scene_dir, "meta", "0000.pkl"))
+    depth_conf = np.ones_like(depth_prior)
+    with torch.cuda.amp.autocast(dtype=dtype) and torch.no_grad():
+        pred_tracks, pred_vis_scores, _, _, points_rgb = predict_tracks(
+            images,
+            image_masks=image_masks,
+            conf=None,
+            points_3d=None,
+            max_query_pts=args.max_query_pts,
+            query_frame_num=args.query_frame_num,
+            keypoint_extractor="aliked+sp",
+            fine_tracking=args.fine_tracking,
+            complete_non_vis=False,
+            query_frame_indexes=[args.cond_index]
         )
 
-        reconstruction, track_masks = batch_np_matrix_to_pycolmap(
-            points_3d,
-            extrinsic,
-            intrinsic,
-            pred_tracks,
-            image_size,
-            masks=track_mask,
-            max_reproj_error=args.max_reproj_error,
-            min_inlier_per_frame=args.min_inlier_per_frame,
-            min_inlier_per_track=args.min_inlier_per_track,
-            shared_camera=shared_camera,
-            camera_type=args.camera_type,
-            points_rgb=points_rgb,
-            images=images,
-            out_dir=args.output_dir,
-        )        
-
-        # if reconstruction is None:
-        #     raise ValueError("No reconstruction can be built with BA")
-
-        # # Bundle Adjustment
-        # ba_options = pycolmap.BundleAdjustmentOptions()
-        # ba_options.refine_focal_length = not args.use_calibrated_intrinsic
-        # ba_options.refine_principal_point = not args.use_calibrated_intrinsic
-        # pycolmap.bundle_adjustment(reconstruction, ba_options)
-
-        reconstruction_resolution = img_load_resolution
-
-            
+    visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(pred_vis_scores[None])>= pred_vis_scores.min(), out_dir=f"{args.output_dir}/track_raw")            
+    track_mask = pred_vis_scores > args.vis_thresh
+    visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_vis_thresh")
+    extrinsic = np.eye(4)[None].repeat(len(images), axis=0).astype(np.float32)
+    extrinsic = estimate_extrinsic(depth_prior, extrinsic, intrinsic, pred_tracks, track_mask, ref_index=args.cond_index)
+    
+    intrinsic = np.tile(intrinsic[None, :, :], (len(images), 1, 1))
+    points_3d = unproject_depth_map_to_point_map(depth_prior[..., None], extrinsic, intrinsic)
+    vggt_fixed_resolution = img_load_resolution
 
 
+    image_size = np.array(images.shape[-2:])
+    scale = img_load_resolution / vggt_fixed_resolution
+    shared_camera = args.shared_camera
+
+
+    with torch.cuda.amp.autocast(dtype=dtype) and torch.no_grad():
+        # Predicting Tracks
+        # Using VGGSfM tracker instead of VGGT tracker for efficiency
+        # VGGT tracker requires multiple backbone runs to query different frames (this is a problem caused by the training process)
+        # Will be fixed in VGGT v2
+
+        # You can also change the pred_tracks to tracks from any other methods
+        # e.g., from COLMAP, from CoTracker, or by chaining 2D matches from Lightglue/LoFTR.
+        pred_tracks, pred_vis_scores, pred_confs, points_3d, points_rgb = predict_tracks(
+            images,
+            image_masks=image_masks,
+            conf=depth_conf,
+            points_3d=points_3d,
+            max_query_pts=args.max_query_pts,
+            query_frame_num=args.query_frame_num,
+            keypoint_extractor="aliked+sp",
+            fine_tracking=args.fine_tracking,
+            complete_non_vis=False,
+            query_frame_indexes=[args.cond_index]
+        )
+
+    # refresh track mask to match the current predictions
+    track_mask = pred_vis_scores > args.vis_thresh
+
+    # rescale the intrinsic matrix from 518 to 1024
+    intrinsic[:, :2, :] *= scale
+    # track_mask = pred_vis_scores > args.vis_thresh
+    # visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_vis_thresh")            
+
+    track_mask = verify_tracks_by_geometry(
+        points_3d,
+        extrinsic,
+        intrinsic,
+        pred_tracks,
+        ref_index=args.cond_index,
+        masks=track_mask,
+        max_reproj_error=args.max_reproj_error,
+    )
+    visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_max_proj_err")            
+    
+    # step: Prep valid correspondences and drop 3D points without surviving tracks
+    track_mask, points_3d, keep_pts = prep_valid_correspondences(
+        points_3d, track_mask, args.min_inlier_per_frame, args.min_inlier_per_track
+    )
+    pred_tracks = pred_tracks[:, keep_pts]
+    if points_rgb is not None:
+        points_rgb = points_rgb[keep_pts]
+    visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_frame_track_inlier")
+
+    # step: optimize 3D points and camera poses using sparse reprojection and point-to-ray losses
+    extrinsic, points_3d, uncertainties = optimize_poses_with_losses(
+        points_3d,
+        extrinsic,
+        intrinsic,
+        pred_tracks,
+        depth_prior,
+        track_mask,
+        ref_index=args.cond_index,
+        iters=5,
+        lr=1e-3,
+    )
+    gen_3d = GEN_3D(f"{args.scene_dir}/align_mesh_image/0000")
+    image_info = {
+        "image_paths": image_path_list,
+        "image_names": base_image_path_list,
+        "images": images,
+        "image_masks": image_masks,
+        "depth_priors": depth_prior,
+        "intrinsics": intrinsic,
+        "extrinsics": extrinsic,
+        "uncertainties": uncertainties,
+
+    }
+    corres = get_3D_correspondences(gen_3d, image_info, reference_idx=0, out_dir=f"{args.output_dir}/3D_corres/", min_vis_score=args.vis_thresh)
+    
+    aligned_pose = align_3D_model_with_images(
+        corres, gen_3d, image_info, reference_idx=0, out_dir=f"{args.output_dir}/aligned/"
+    )
+    
+    gen_3d.get_aligned_pose(aligned_pose)
+
+    image_info["registered"] =  [False] * len(images)
+    image_info["registered"][args.cond_index] = True
+
+
+    # step: convert to pycolmap reconstruction
+    reconstruction, track_masks = build_reconstruction_from_tracks(
+        points_3d,
+        extrinsic,
+        intrinsic,
+        pred_tracks,
+        image_size,
+        track_mask,
+        shared_camera,
+        args.camera_type,
+        points_rgb=points_rgb,
+    )
+
+    reconstruction, track_masks = batch_np_matrix_to_pycolmap(
+        points_3d,
+        extrinsic,
+        intrinsic,
+        pred_tracks,
+        image_size,
+        masks=track_mask,
+        max_reproj_error=args.max_reproj_error,
+        min_inlier_per_frame=args.min_inlier_per_frame,
+        min_inlier_per_track=args.min_inlier_per_track,
+        shared_camera=shared_camera,
+        camera_type=args.camera_type,
+        points_rgb=points_rgb,
+        images=images,
+        out_dir=args.output_dir,
+    )        
+
+    ########### export to colmap format ############
 
     reconstruction = rename_colmap_recons_and_rescale_camera(
         reconstruction,
         base_image_path_list,
         original_coords.cpu().numpy(),
-        img_size=reconstruction_resolution,
+        img_size=img_load_resolution,
         shift_point2d_to_original_res=True,
         shared_camera=shared_camera,
     )
