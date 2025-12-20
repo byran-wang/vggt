@@ -93,7 +93,7 @@ class GEN_3D:
     
 
 
-def load_and_preprocess_images_square(image_path_list, instance_id, target_size=1024):
+def load_and_preprocess_images_square(image_path_list, instance_id, target_size=1024, out_dir=None):
     """
     Load and preprocess images by center padding to square and resizing to target size.
     Also returns the position information of original pixels after transformation.
@@ -101,6 +101,7 @@ def load_and_preprocess_images_square(image_path_list, instance_id, target_size=
     Args:
         image_path_list (list): List of paths to image files
         target_size (int, optional): Target size for both width and height. Defaults to 518.
+        out_dir (str | Path, optional): If provided, saves/loads cached tensors in this directory.
 
     Returns:
         tuple: (
@@ -114,6 +115,30 @@ def load_and_preprocess_images_square(image_path_list, instance_id, target_size=
     # Check for empty list
     if len(image_path_list) == 0:
         raise ValueError("At least 1 image is required")
+
+    cache_path = None
+    image_path_list = [str(p) for p in image_path_list]
+    if out_dir is not None:
+        cache_dir = Path(out_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / f"preprocessed_{target_size}_{instance_id}.pt"
+        if cache_path.exists():
+            try:
+                cached = torch.load(cache_path, map_location="cpu")
+                if (
+                    cached.get("target_size") == target_size
+                    and cached.get("instance_id") == instance_id
+                    and cached.get("image_paths") == image_path_list
+                ):
+                    print(f"[load_and_preprocess_images_square] Loaded cache from {cache_path}")
+                    return (
+                        cached["images"],
+                        cached["original_coords"],
+                        cached["masks"],
+                        cached["depths"],
+                    )
+            except Exception as e:
+                print(f"[load_and_preprocess_images_square] Failed to load cache {cache_path}: {e}")
 
     images = []
     masks = []
@@ -235,6 +260,21 @@ def load_and_preprocess_images_square(image_path_list, instance_id, target_size=
             images = images.unsqueeze(0)
             original_coords = original_coords.unsqueeze(0)
             masks = masks.unsqueeze(0)
+
+    if cache_path is not None:
+        torch.save(
+            {
+                "images": images.cpu(),
+                "original_coords": original_coords.cpu(),
+                "masks": masks.cpu(),
+                "depths": depths.cpu(),
+                "image_paths": image_path_list,
+                "target_size": target_size,
+                "instance_id": instance_id,
+            },
+            cache_path,
+        )
+        print(f"[load_and_preprocess_images_square] Saved cache to {cache_path}")
 
     return images, original_coords, masks, depths
 
