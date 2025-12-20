@@ -72,6 +72,7 @@ def parse_args():
     parser.add_argument(
         "--conf_thres_value", type=float, default=5.0, help="Confidence threshold value for depth filtering (wo BA)"
     )
+    parser.add_argument("--min_depth_pixels", type=int, default=500, help="Minimum valid depth pixels to accept a frame")
     parser.add_argument("--output_dir", type=str, default="output", help="Output directory")
     parser.add_argument("--use_calibrated_intrinsic", action="store_true", default=False, help="Use calibrated intrinsic for reconstruction")
     parser.add_argument("--min_inlier_per_frame", type=int, default=10, help="Minimum inliers per frame for BA")
@@ -1121,6 +1122,65 @@ def save_aligned_3D_model(gen_3d, aligned_pose, output_path):
     except Exception as e:
         print(f"Failed to save aligned mesh: {e}")
 
+def find_next_frame(image_info):
+    track_mask = image_info.get("track_mask")
+    registered = image_info.get("registered")
+    invalid = image_info.get("invalid")
+    if track_mask is None or registered is None or invalid is None:
+        return None
+
+    track_mask = np.asarray(track_mask)
+    registered = np.asarray(registered)
+    invalid = np.asarray(invalid)
+
+    if registered.ndim != 1:
+        registered = registered.reshape(-1)
+    if invalid.ndim != 1:
+        invalid = invalid.reshape(-1)
+
+    num_frames = track_mask.shape[0]
+    registered_mask = registered & (~invalid)
+    if not np.any(registered_mask):
+        return None
+
+    # tracks visible in any registered frame
+    vis_in_registered = track_mask[registered_mask].any(axis=0)
+
+    best_idx = None
+    best_count = -1
+    for idx in range(num_frames):
+        if registered[idx] or invalid[idx]:
+            continue
+        count = np.count_nonzero(track_mask[idx] & vis_in_registered)
+        if count > best_count:
+            best_count = count
+            best_idx = idx
+    return best_idx
+
+def check_frame_invalid(image_info, frame_idx, min_inlier_per_frame=10, min_depth_pixels=500):
+    if frame_idx is None:
+        return True
+    track_mask = image_info.get("track_mask")
+    depth_priors = image_info.get("depth_priors")
+    if track_mask is None or depth_priors is None:
+        return True
+    track_mask = np.asarray(track_mask)
+    if frame_idx >= track_mask.shape[0]:
+        return True
+    track_inliers = int(np.count_nonzero(track_mask[frame_idx]))
+
+    depth_map = depth_priors[frame_idx]
+    if torch.is_tensor(depth_map):
+        depth_map = depth_map.detach().cpu().numpy()
+    depth_valid = int(np.count_nonzero(np.asarray(depth_map) > 0))
+
+    if track_inliers < min_inlier_per_frame:
+        return True
+    if depth_valid < min_depth_pixels:
+        return True
+    return False
+
+    
 def demo_fn(args):
     # Print configuration
     print("Arguments:", vars(args))
@@ -1270,6 +1330,8 @@ def demo_fn(args):
         "intrinsics": intrinsic,
         "extrinsics": extrinsic,
         "uncertainties": uncertainties,
+        "pred_tracks": pred_tracks,
+        "track_mask": track_mask,
 
     }
     corres = get_3D_correspondences(gen_3d, image_info, reference_idx=0, out_dir=f"{args.output_dir}/3D_corres/", min_vis_score=args.vis_thresh)
@@ -1280,8 +1342,26 @@ def demo_fn(args):
     
     gen_3d.get_aligned_pose(aligned_pose)
 
-    image_info["registered"] =  [False] * len(images)
+    image_info["registered"] =  np.array([False] * len(images))
     image_info["registered"][args.cond_index] = True
+
+    image_info["invalid"] =  np.array([False] * len(images))
+
+    image_info["keyframe"] =  np.array([False] * len(images))
+    image_info["keyframe"][args.cond_index] = True
+    
+    while (image_info["registered"].sum() + image_info["invalid"].sum() < len(images)):
+
+        next_frame_idx = find_next_frame(image_info)
+        print(f"Next frame to register: {next_frame_idx}")
+        
+        if check_frame_invalid(image_info, next_frame_idx, min_inlier_per_frame=args.min_inlier_per_frame, min_depth_pixels=args.min_depth_pixels):
+            image_info["invalid"][next_frame_idx] = True
+            print(f"[Warning] Frame {next_frame_idx} marked as invalid.")
+            continue
+
+        image_info["registered"][next_frame_idx] = True
+
 
 
     # step: convert to pycolmap reconstruction
