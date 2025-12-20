@@ -5,3 +5,7 @@ Pillow
 huggingface_hub
 einops
 safetensors
+plyfile
+setuptools
+wheel
+ninja

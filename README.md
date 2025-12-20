@@ -49,6 +49,7 @@ First, clone this repository to your local machine, and install the dependencies
 git clone git@github.com:facebookresearch/vggt.git 
 cd vggt
 pip install -r requirements.txt
+pip install git+https://github.com/NVlabs/nvdiffrast.git --no-build-isolation
 ```
 
 Alternatively, you can install VGGT as a package (<a href="docs/package.md">click here</a> for details).
