@@ -91,6 +91,9 @@ class GEN_3D:
     def get_mesh_path(self):
         return str(self.mesh_path)
     
+    def get_aligned_pose(self, gen2obj):
+        self.gen2obj = gen2obj
+    
 
 
 def load_and_preprocess_images_square(image_path_list, instance_id, target_size=1024, out_dir=None):

@@ -208,7 +208,7 @@ def optimize_poses_with_losses(
     pred_tracks,
     depth_prior,
     track_mask,
-    camera_type="SIMPLE_PINHOLE",
+    ref_index=0,
     iters=5,
     lr=1e-3,
 ):
@@ -266,6 +266,11 @@ def optimize_poses_with_losses(
 
         loss = rep_loss + 0.1 * ray_loss
         loss.backward()
+        # freeze reference pose update
+        if rvecs_t.grad is not None:
+            rvecs_t.grad[ref_index].zero_()
+        if tvecs_t.grad is not None:
+            tvecs_t.grad[ref_index].zero_()
         optim.step()
     # propagate uncertainties
     with torch.no_grad():
@@ -433,7 +438,7 @@ def build_reconstruction_from_tracks(
         points_rgb=points_rgb,
     )
 
-def estimate_extrinsic(depth_map, intrinsic, tracks, track_mask):
+def estimate_extrinsic(depth_map, extrinsics, intrinsic, tracks, track_mask, ref_index=0, ransac_reproj_threshold = 8.0):
     """
     Estimate per-frame camera extrinsics (camera-from-world, OpenCV convention).
 
@@ -455,6 +460,8 @@ def estimate_extrinsic(depth_map, intrinsic, tracks, track_mask):
         raise ValueError(f"`tracks` must have shape (T, P, 2), got {tracks.shape}")
     if track_mask.shape[:2] != tracks.shape[:2]:
         raise ValueError(f"`track_mask` must have shape (T, P), got {track_mask.shape}")
+    if extrinsics.shape[0] != tracks.shape[0]:
+        raise ValueError(f"`extrinsics` must have shape (T, 4, 4), got {extrinsics.shape}")
     if intrinsic.shape != (3, 3):
         raise ValueError(f"`intrinsic` must have shape (3, 3), got {intrinsic.shape}")
 
@@ -486,94 +493,113 @@ def estimate_extrinsic(depth_map, intrinsic, tracks, track_mask):
         return np.stack([X, Y, z], axis=1)
 
     def _cam_to_world(points_cam: np.ndarray, extri: np.ndarray) -> np.ndarray:
-        R = extri[:, :3].astype(np.float64, copy=False)
-        t = extri[:, 3].astype(np.float64, copy=False)
+        R = extri[:3, :3].astype(np.float64, copy=False)
+        t = extri[:3, 3].astype(np.float64, copy=False)
         # X_world = R^T (X_cam - t)
         return (points_cam - t[None, :]) @ R
 
-    extrinsics = np.zeros((num_frames, 3, 4), dtype=np.float64)
-    extrinsics[0, :3, :3] = np.eye(3, dtype=np.float64)
-    extrinsics[0, :3, 3] = 0.0
+    extrinsic_known = np.zeros(num_frames, dtype=bool)
+    extrinsic_known[ref_index] = True
 
     dist_coeffs = None  # assume no distortion
-    ransac_reproj_threshold = 8.0
+    frames_to_solve = [i for i in range(num_frames) if i != ref_index]
+    for _ in range(num_frames - 1):
+        progress = False
+        remaining = []
+        for frame_idx in frames_to_solve:
+            # choose candidate reference frames with known extrinsics
+            candidate_refs = []
+            if frame_idx - 1 >= 0 and extrinsic_known[frame_idx - 1]:
+                candidate_refs.append(frame_idx - 1)
+            if extrinsic_known[ref_index]:
+                candidate_refs.append(ref_index)
+            if frame_idx + 1 < num_frames and extrinsic_known[frame_idx + 1]:
+                candidate_refs.append(frame_idx + 1)
+            candidate_refs = list(dict.fromkeys(candidate_refs))  # unique
 
-    for frame_idx in range(1, num_frames):
-        estimated = False
+            estimated = False
+            for ref_idx in candidate_refs:
+                vis = track_mask[ref_idx] & track_mask[frame_idx]
+                if not np.any(vis):
+                    continue
 
-        for ref_idx in (frame_idx - 1, 0):
-            vis = track_mask[ref_idx] & track_mask[frame_idx]
-            if not np.any(vis):
-                continue
+                xy_ref = tracks[ref_idx, vis]
+                xy_cur = tracks[frame_idx, vis]
+                depth_ref, valid_depth = _sample_depth_nearest(depth_map[ref_idx], xy_ref)
+                if not np.any(valid_depth):
+                    continue
 
-            xy_ref = tracks[ref_idx, vis]
-            xy_cur = tracks[frame_idx, vis]
-            depth_ref, valid_depth = _sample_depth_nearest(depth_map[ref_idx], xy_ref)
-            if not np.any(valid_depth):
-                continue
+                xy_ref = xy_ref[valid_depth]
+                xy_cur = xy_cur[valid_depth]
+                depth_ref = depth_ref[valid_depth]
 
-            xy_ref = xy_ref[valid_depth]
-            xy_cur = xy_cur[valid_depth]
-            depth_ref = depth_ref[valid_depth]
+                if xy_cur.shape[0] < 6:
+                    continue
 
-            if xy_cur.shape[0] < 6:
-                continue
+                points_ref_cam = _unproject(xy_ref, depth_ref)
+                points_world = _cam_to_world(points_ref_cam, extrinsics[ref_idx])
 
-            points_ref_cam = _unproject(xy_ref, depth_ref)
-            points_world = _cam_to_world(points_ref_cam, extrinsics[ref_idx])
+                object_points = points_world.astype(np.float32, copy=False).reshape(-1, 1, 3)
+                image_points = xy_cur.astype(np.float32, copy=False).reshape(-1, 1, 2)
 
-            object_points = points_world.astype(np.float32, copy=False).reshape(-1, 1, 3)
-            image_points = xy_cur.astype(np.float32, copy=False).reshape(-1, 1, 2)
+                R_ref = extrinsics[ref_idx, :3, :3]
+                t_ref = extrinsics[ref_idx, :3, 3]
+                rvec_ref, _ = cv2.Rodrigues(R_ref.astype(np.float64))
+                tvec_ref = t_ref.reshape(3, 1).astype(np.float64)
 
-            R_ref = extrinsics[ref_idx, :3, :3]
-            t_ref = extrinsics[ref_idx, :3, 3]
-            rvec_ref, _ = cv2.Rodrigues(R_ref.astype(np.float64))
-            tvec_ref = t_ref.reshape(3, 1).astype(np.float64)
+                ok, rvec, tvec, inliers = cv2.solvePnPRansac(
+                    object_points,
+                    image_points,
+                    intrinsic,
+                    dist_coeffs,
+                    rvec=rvec_ref,
+                    tvec=tvec_ref,
+                    useExtrinsicGuess=True,
+                    iterationsCount=1000,
+                    reprojectionError=ransac_reproj_threshold,
+                    confidence=0.999,
+                    flags=cv2.SOLVEPNP_EPNP,
+                )
 
-            ok, rvec, tvec, inliers = cv2.solvePnPRansac(
-                object_points,
-                image_points,
-                intrinsic,
-                dist_coeffs,
-                rvec=rvec_ref,
-                tvec=tvec_ref,
-                useExtrinsicGuess=True,
-                iterationsCount=1000,
-                reprojectionError=ransac_reproj_threshold,
-                confidence=0.999,
-                flags=cv2.SOLVEPNP_EPNP,
-            )
+                if not ok or inliers is None or len(inliers) < 6:
+                    continue
 
-            if not ok or inliers is None or len(inliers) < 6:
-                continue
+                inlier_obj = object_points[inliers[:, 0]]
+                inlier_img = image_points[inliers[:, 0]]
+                ok_refine, rvec_refined, tvec_refined = cv2.solvePnP(
+                    inlier_obj,
+                    inlier_img,
+                    intrinsic,
+                    dist_coeffs,
+                    rvec=rvec,
+                    tvec=tvec,
+                    useExtrinsicGuess=True,
+                    flags=cv2.SOLVEPNP_ITERATIVE,
+                )
+                if not ok_refine:
+                    continue
 
-            inlier_obj = object_points[inliers[:, 0]]
-            inlier_img = image_points[inliers[:, 0]]
-            ok_refine, rvec_refined, tvec_refined = cv2.solvePnP(
-                inlier_obj,
-                inlier_img,
-                intrinsic,
-                dist_coeffs,
-                rvec=rvec,
-                tvec=tvec,
-                useExtrinsicGuess=True,
-                flags=cv2.SOLVEPNP_ITERATIVE,
-            )
-            if not ok_refine:
-                continue
+                R, _ = cv2.Rodrigues(rvec_refined)
+                extrinsics[frame_idx, :3, :3] = R.astype(np.float64)
+                extrinsics[frame_idx, :3, 3] = tvec_refined.reshape(3).astype(np.float64)
+                extrinsic_known[frame_idx] = True
+                estimated = True
+                progress = True
+                break
 
-            R, _ = cv2.Rodrigues(rvec_refined)
-            extrinsics[frame_idx, :3, :3] = R.astype(np.float64)
-            extrinsics[frame_idx, :3, 3] = tvec_refined.reshape(3).astype(np.float64)
-            estimated = True
+            if not estimated:
+                remaining.append(frame_idx)
+        frames_to_solve = remaining
+        if not progress:
             break
 
-        if not estimated:
-            extrinsics[frame_idx] = extrinsics[frame_idx - 1]
-            print(
-                f"[estimate_extrinsic] Warning: PnP failed for frame {frame_idx}, "
-                f"carrying pose from frame {frame_idx - 1}."
-            )
+    # fill any missing with reference pose
+    for frame_idx in frames_to_solve:
+        extrinsics[frame_idx] = extrinsics[ref_index]
+        print(
+            f"[estimate_extrinsic] Warning: PnP failed for frame {frame_idx}, "
+            f"carrying pose from reference frame {ref_index}."
+        )
 
     return extrinsics
 
@@ -1165,7 +1191,8 @@ def demo_fn(args):
         visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(pred_vis_scores[None])>= pred_vis_scores.min(), out_dir=f"{args.output_dir}/track_raw")            
         track_mask = pred_vis_scores > args.vis_thresh
         visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_vis_thresh")
-        extrinsic = estimate_extrinsic(depth_prior, intrinsic, pred_tracks, track_mask)
+        extrinsic = np.eye(4)[None].repeat(len(images), axis=0).astype(np.float32)
+        extrinsic = estimate_extrinsic(depth_prior, extrinsic, intrinsic, pred_tracks, track_mask, ref_index=args.cond_index)
         
         intrinsic = np.tile(intrinsic[None, :, :], (len(images), 1, 1))
         points_3d = unproject_depth_map_to_point_map(depth_prior[..., None], extrinsic, intrinsic)
@@ -1233,7 +1260,7 @@ def demo_fn(args):
             pred_tracks,
             depth_prior,
             track_mask,
-            camera_type=args.camera_type,
+            ref_index=args.cond_index,
             iters=5,
             lr=1e-3,
         )
@@ -1254,6 +1281,12 @@ def demo_fn(args):
         aligned_pose = align_3D_model_with_images(
             corres, gen_3d, image_info, reference_idx=0, out_dir=f"{args.output_dir}/aligned/"
         )
+        
+        gen_3d.get_aligned_pose(aligned_pose)
+
+        image_info["registered"] =  [False] * len(images)
+        image_info["registered"][args.cond_index] = True
+
 
         # step: convert to pycolmap reconstruction
         reconstruction, track_masks = build_reconstruction_from_tracks(
