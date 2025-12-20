@@ -604,13 +604,20 @@ def estimate_extrinsic(depth_map, extrinsics, intrinsic, tracks, track_mask, ref
     return extrinsics
 
 
-def verify_tracks_by_geometry(points3d, extrinsics, intrinsics, tracks, masks=None, max_reproj_error=None):
+def verify_tracks_by_geometry(points3d, extrinsics, intrinsics, tracks, ref_index, masks=None, max_reproj_error=None):
     reproj_mask = None
     if max_reproj_error is not None:
+        # project points into the reference view to filter out points behind the camera
+        proj_ref, cam_ref = project_3D_points_np(points3d, extrinsics[ref_index][None], intrinsics[ref_index][None])
+        valid_ref = cam_ref[:, 2, :] > 0
+
         projected_points_2d, projected_points_cam = project_3D_points_np(points3d, extrinsics, intrinsics)
-        projected_diff = np.linalg.norm(projected_points_2d - tracks, axis=-1)
         projected_points_2d[projected_points_cam[:, -1] <= 0] = 1e6
+
+        projected_diff = np.linalg.norm(projected_points_2d - tracks, axis=-1)
         reproj_mask = projected_diff < max_reproj_error
+        # enforce visibility in reference frame
+        reproj_mask = np.logical_and(reproj_mask, valid_ref)
 
     if masks is not None and reproj_mask is not None:
         masks = np.logical_and(masks, reproj_mask)
@@ -1238,6 +1245,7 @@ def demo_fn(args):
             extrinsic,
             intrinsic,
             pred_tracks,
+            ref_index=args.cond_index,
             masks=track_mask,
             max_reproj_error=args.max_reproj_error,
         )
