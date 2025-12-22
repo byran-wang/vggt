@@ -1216,6 +1216,7 @@ def save_results(image_info, gen_3d, out_dir):
 
     save_point_cloud_with_conf(image_info.get("points_3d"), image_info.get("points_rgb"), image_info.get("uncertainties")['points3d'], Path(out_dir) / "points.ply")
     save_depth_prior_with_uncertainty(image_info.get("depth_priors"), image_info.get("uncertainties")['depth_prior'], Path(out_dir) / "depth_conf")            
+    save_aligned_3D_model(gen_3d,  gen_3d.get_aligned_pose(), out_dir)
     print(f"[save_results] Saved reconstruction summary to {out_path}")
 
 def save_input_data(images, image_masks, depth_prior, gen_3d, out_dir):
@@ -1265,6 +1266,8 @@ def save_input_data(images, image_masks, depth_prior, gen_3d, out_dir):
         if camera_path and os.path.exists(camera_path):
             shutil.copy2(camera_path, gen3d_dir / Path(camera_path).name)
 
+def register_new_frame(image_info, gen_3d, frame_idx, args):
+    #TODO: optimize the pose of new frame indexing by frame_idx with the reprojection loss and depth consistency loss with the aligned 3D model
     
 def demo_fn(args):
     # Print configuration
@@ -1430,7 +1433,7 @@ def demo_fn(args):
         corres, gen_3d, image_info, reference_idx=0, out_dir=f"{args.output_dir}/aligned/"
     )
 
-    save_aligned_3D_model(gen_3d, aligned_pose, f"{args.output_dir}/results/0000/")    
+        
 
     image_info["registered"] =  np.array([False] * len(images))
     image_info["registered"][args.cond_index] = True
