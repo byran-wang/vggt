@@ -1195,7 +1195,7 @@ def save_results(image_info, gen_3d, out_dir):
         return np.asarray(x)
     
     points_conf_color = get_points_conf_colors(points_3d=image_info.get("points_3d"), uncertainties=image_info.get("uncertainties")['points3d'])
-    
+
     payload = {
         "intrinsics": _to_cpu_numpy(image_info.get("intrinsics")),
         "extrinsics": _to_cpu_numpy(image_info.get("extrinsics")),
@@ -1213,6 +1213,9 @@ def save_results(image_info, gen_3d, out_dir):
     out_path = Path(out_dir) / "results.pkl"
     with open(out_path, "wb") as f:
         pickle.dump(payload, f)
+
+    save_point_cloud_with_conf(image_info.get("points_3d"), image_info.get("points_rgb"), image_info.get("uncertainties")['points3d'], Path(out_dir) / "points.ply")
+    save_depth_prior_with_uncertainty(image_info.get("depth_priors"), image_info.get("uncertainties")['depth_prior'], Path(out_dir) / "depth_conf")            
     print(f"[save_results] Saved reconstruction summary to {out_path}")
 
 def save_input_data(images, image_masks, depth_prior, gen_3d, out_dir):
@@ -1438,8 +1441,7 @@ def demo_fn(args):
     image_info["keyframe"][args.cond_index] = True
 
     save_results(image_info, gen_3d, out_dir=f"{args.output_dir}/results/0000/")
-    
-    
+
     while (image_info["registered"].sum() + image_info["invalid"].sum() < len(images)):
 
         next_frame_idx = find_next_frame(image_info)
@@ -1453,61 +1455,59 @@ def demo_fn(args):
         image_info["registered"][next_frame_idx] = True
 
 
-
-    # step: convert to pycolmap reconstruction
-    reconstruction, track_masks = build_reconstruction_from_tracks(
-        points_3d,
-        extrinsic,
-        intrinsic,
-        pred_tracks,
-        image_size,
-        track_mask,
-        shared_camera,
-        args.camera_type,
-        points_rgb=points_rgb,
-    )
-
-    reconstruction, track_masks = batch_np_matrix_to_pycolmap(
-        points_3d,
-        extrinsic,
-        intrinsic,
-        pred_tracks,
-        image_size,
-        masks=track_mask,
-        max_reproj_error=args.max_reproj_error,
-        min_inlier_per_frame=args.min_inlier_per_frame,
-        min_inlier_per_track=args.min_inlier_per_track,
-        shared_camera=shared_camera,
-        camera_type=args.camera_type,
-        points_rgb=points_rgb,
-        images=images,
-        out_dir=args.output_dir,
-    )        
-
-    ########### export to colmap format ############
-
-    reconstruction = rename_colmap_recons_and_rescale_camera(
-        reconstruction,
-        base_image_path_list,
-        original_coords.cpu().numpy(),
-        img_size=img_load_resolution,
-        shift_point2d_to_original_res=True,
-        shared_camera=shared_camera,
-    )
-
-    ba_out_dir = Path(args.output_dir) / "vggt_ba" / "sparse"
-    print(f"Saving ba reconstruction to {ba_out_dir}")
-    os.makedirs(ba_out_dir, exist_ok=True)
-    save_point_cloud_with_conf(points_3d, points_rgb, uncertainties["points3d"], ba_out_dir / "points.ply")
-    save_depth_prior_with_uncertainty(depth_prior, uncertainties["depth_prior"], Path(args.output_dir) / "vggt_ba" / "depth_conf")
-
-
-    reconstruction.write(ba_out_dir)
-    if reconstruction is not None:
-        print(
-            f"Reconstruction statistics:\n{reconstruction.summary()}"
-            + f"\n\tnum_input_images = {len(images)}"
+    if 0:
+        # step: convert to pycolmap reconstruction
+        reconstruction, track_masks = build_reconstruction_from_tracks(
+            points_3d,
+            extrinsic,
+            intrinsic,
+            pred_tracks,
+            image_size,
+            track_mask,
+            shared_camera,
+            args.camera_type,
+            points_rgb=points_rgb,
         )
+
+        reconstruction, track_masks = batch_np_matrix_to_pycolmap(
+            points_3d,
+            extrinsic,
+            intrinsic,
+            pred_tracks,
+            image_size,
+            masks=track_mask,
+            max_reproj_error=args.max_reproj_error,
+            min_inlier_per_frame=args.min_inlier_per_frame,
+            min_inlier_per_track=args.min_inlier_per_track,
+            shared_camera=shared_camera,
+            camera_type=args.camera_type,
+            points_rgb=points_rgb,
+            images=images,
+            out_dir=args.output_dir,
+        )        
+
+        ########### export to colmap format ############
+
+        reconstruction = rename_colmap_recons_and_rescale_camera(
+            reconstruction,
+            base_image_path_list,
+            original_coords.cpu().numpy(),
+            img_size=img_load_resolution,
+            shift_point2d_to_original_res=True,
+            shared_camera=shared_camera,
+        )
+
+        ba_out_dir = Path(args.output_dir) / "vggt_ba" / "sparse"
+        print(f"Saving ba reconstruction to {ba_out_dir}")
+        os.makedirs(ba_out_dir, exist_ok=True)
+
+
+        reconstruction.write(ba_out_dir)
+        if reconstruction is not None:
+            print(
+                f"Reconstruction statistics:\n{reconstruction.summary()}"
+                + f"\n\tnum_input_images = {len(images)}"
+            )
     return True
 
 
