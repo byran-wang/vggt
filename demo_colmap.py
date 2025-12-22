@@ -46,6 +46,7 @@ from hloc.reconstruction import main as hloc_reconstruction_main
 sys.path.append("third_party/utils_simba")
 from utils_simba.geometry import save_point_cloud_to_ply
 from utils_simba.render import diff_renderer, projection_matrix_from_intrinsics
+from utils_simba.depth import save_depth
 
 # TODO: add support for masks
 # TODO: add iterative BA
@@ -1099,9 +1100,8 @@ def align_3D_model_with_images(corres, gen_3d, references, reference_idx, out_di
             indent=2,
         )
     print(f"[align_3D_model_with_images] Saved transform to {align_dir}")
-    save_aligned_3D_model(gen_3d, aligned_pose, f"{out_dir}/eval")
-    eval_aligned_3D_model(cond_pts, ref_pts, aligned_pose, references, reference_idx=reference_idx, out_dir=f"{out_dir}/eval")
-
+    gen_3d.save_aligned_pose(aligned_pose)
+    eval_aligned_3D_model(cond_pts, ref_pts, aligned_pose, references, reference_idx=reference_idx, out_dir=f"{out_dir}/eval")    
     return aligned_pose
     
 
@@ -1421,8 +1421,8 @@ def demo_fn(args):
     aligned_pose = align_3D_model_with_images(
         corres, gen_3d, image_info, reference_idx=0, out_dir=f"{args.output_dir}/aligned/"
     )
-    
-    gen_3d.save_aligned_pose(aligned_pose)
+
+    save_aligned_3D_model(gen_3d, aligned_pose, f"{args.output_dir}/results/0000/")    
 
     image_info["registered"] =  np.array([False] * len(images))
     image_info["registered"][args.cond_index] = True
