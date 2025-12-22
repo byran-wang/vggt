@@ -144,6 +144,9 @@ def main(args):
         track_mask = data.get("track_mask")
         aligned_pose = data.get("aligned_pose")
         gen_3d_mesh_aligned_path = step["gen_3d_mesh_aligned"]
+        points_3d = data.get("points_3d")
+        points_rgb = data.get("points_rgb")
+        points_conf_color = data.get("points_conf_color")
         
 
         if intr is None or extr is None:
@@ -184,6 +187,12 @@ def main(args):
                     )
 
             visualizer.log_mesh("aligned_mesh", gen_3d_mesh_aligned_path, static=False)
+
+        # Log 3D points with color if available
+        if points_3d is not None:
+            pts = np.asarray(points_3d)
+            visualizer.log_points("points_rgb", pts, colors=points_rgb, static=False)
+            visualizer.log_points("points_conf", pts, colors=points_conf_color, static=False)
 
     if args.rrd_output_path:
         rr.save(args.rrd_output_path)

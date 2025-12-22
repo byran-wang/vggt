@@ -1193,13 +1193,17 @@ def save_results(image_info, gen_3d, out_dir):
         if torch.is_tensor(x):
             return x.detach().cpu().numpy()
         return np.asarray(x)
-
+    
+    points_conf_color = get_points_conf_colors(points_3d=image_info.get("points_3d"), uncertainties=image_info.get("uncertainties")['points3d'])
+    
     payload = {
         "intrinsics": _to_cpu_numpy(image_info.get("intrinsics")),
         "extrinsics": _to_cpu_numpy(image_info.get("extrinsics")),
         "pred_tracks": _to_cpu_numpy(image_info.get("pred_tracks")),
         "track_mask": _to_cpu_numpy(image_info.get("track_mask")),
         "points_3d": _to_cpu_numpy(image_info.get("points_3d")),
+        "points_rgb": _to_cpu_numpy(image_info.get("points_rgb")),
+        "points_conf_color": _to_cpu_numpy(points_conf_color),
         "registered": _to_cpu_numpy(image_info.get("registered")),
         "invalid": _to_cpu_numpy(image_info.get("invalid")),
         "keyframe": _to_cpu_numpy(image_info.get("keyframe")),
@@ -1414,6 +1418,7 @@ def demo_fn(args):
         "pred_tracks": pred_tracks,
         "track_mask": track_mask,
         "points_3d": points_3d,
+        "points_rgb": points_rgb,
 
     }
     corres = get_3D_correspondences(gen_3d, image_info, reference_idx=0, out_dir=f"{args.output_dir}/3D_corres/", min_vis_score=args.vis_thresh)
@@ -1547,9 +1552,7 @@ def rename_colmap_recons_and_rescale_camera(
     return reconstruction
 
 
-def save_point_cloud_with_conf(points_3d, points_rgb, uncertainties, ply_path):
-    """Save point cloud; color by uncertainty if provided, else by rgb."""
-
+def get_points_conf_colors(points_3d, uncertainties):
     conf = uncertainties.astype(np.float64)
     conf_norm = conf / (conf.max() + 1e-8)
     conf_colors = np.stack(
@@ -1561,7 +1564,13 @@ def save_point_cloud_with_conf(points_3d, points_rgb, uncertainties, ply_path):
         axis=-1,
     ).clip(0, 255).astype(np.uint8)
     if len(conf_colors) != len(points_3d):
-        conf_colors = conf_colors[: len(points_3d)]
+        conf_colors = conf_colors[: len(points_3d)]    
+    return conf_colors
+
+def save_point_cloud_with_conf(points_3d, points_rgb, uncertainties, ply_path):
+    """Save point cloud; color by uncertainty if provided, else by rgb."""
+    conf_colors = get_points_conf_colors(points_3d, uncertainties)
+
     trimesh.PointCloud(points_3d, colors=conf_colors).export(ply_path)
 
 
