@@ -59,12 +59,11 @@ class StepDataProvider:
         self.depths = sorted((self.base_dir / "depth_prior").glob("*.png"))
 
         # Discover per-step folders containing results.pkl
-        if (self.result_dir / "results.pkl").exists():
-            step_dirs = [self.result_dir]
-        else:
-            step_dirs = sorted(
-                d for d in self.base_dir.iterdir() if d.is_dir() and d.name.isdigit()
-            )
+        step_dirs = sorted(
+            (d for d in self.base_dir.iterdir() if d.is_dir() and d.name.isdigit()),
+            key=lambda p: p.stat().st_mtime,
+        )
+
         self.steps = []
         for step_idx, step_dir in enumerate(step_dirs):
             results_file = step_dir / "results.pkl"
@@ -114,10 +113,10 @@ def build_blueprint(num_images: int) -> rrb.BlueprintLike:
                     rrb.Spatial2DView(name=f"image_{i}", origin=f"/camera/image_{i}")
                     for i in range(num_images)
                 ],
-                grid_columns=6,
+                grid_columns=20,
             ),
         ),
-        row_shares=[5, 2],
+        row_shares=[3, 3],
     )
 
 
@@ -126,11 +125,10 @@ def main(args):
     vis_name = provider.base_dir.parents[0].name
     visualizer = Visualizer(vis_name, jpeg_quality=args.jpeg_quality)
 
-    rr.send_blueprint(build_blueprint(20))
+    rr.send_blueprint(build_blueprint(100))
     rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
     
     gen_3d = trimesh.load_mesh(provider.mesh_path)
-
 
     for step in provider.steps:
         step_idx = step["index"]
@@ -161,7 +159,7 @@ def main(args):
                 if cam_idx >= len(reg_flags) or not reg_flags[cam_idx]:
                     continue
 
-            visualizer.log_image(f"camera/image_{cam_idx}", str(provider.images[cam_idx]), static=True)
+            visualizer.log_image(f"camera/image_{cam_idx}", str(provider.images[cam_idx]), static=False)
             with Image.open(provider.images[cam_idx]) as im:
                 w, h = im.size
             visualizer.log_calibration(
@@ -174,7 +172,7 @@ def main(args):
             w2c = np.eye(4)
             w2c[:3] = extr[cam_idx]
             c2w = np.linalg.inv(w2c)
-            visualizer.log_cam_pose(f"camera/image_{cam_idx}", c2w, static=True)
+            visualizer.log_cam_pose(f"camera/image_{cam_idx}", c2w, static=False)
 
             if pred_tracks is not None and track_mask is not None:
                 tracks = np.asarray(pred_tracks)[cam_idx]
@@ -185,9 +183,7 @@ def main(args):
                         rr.Points2D(tracks[mask], colors=[34, 138, 167]),
                         static=False,
                     )
-
-            visualizer.log_mesh("aligned_mesh", gen_3d_mesh_aligned_path, static=False)
-
+        visualizer.log_mesh("aligned_mesh", gen_3d_mesh_aligned_path, static=False)
         # Log 3D points with color if available
         if points_3d is not None:
             pts = np.asarray(points_3d)
