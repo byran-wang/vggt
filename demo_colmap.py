@@ -10,6 +10,7 @@ import numpy as np
 import glob
 import os
 import copy
+import pickle
 import shutil
 import torch
 import torch.nn.functional as F
@@ -1182,6 +1183,33 @@ def check_frame_invalid(image_info, frame_idx, min_inlier_per_frame=10, min_dept
         return True
     return False
 
+def save_results(image_info, gen_3d, out_dir):
+    """Persist key reconstruction artifacts for later reuse/inspection."""
+    os.makedirs(out_dir, exist_ok=True)
+
+    def _to_cpu_numpy(x):
+        if x is None:
+            return None
+        if torch.is_tensor(x):
+            return x.detach().cpu().numpy()
+        return np.asarray(x)
+
+    payload = {
+        "intrinsics": _to_cpu_numpy(image_info.get("intrinsics")),
+        "extrinsics": _to_cpu_numpy(image_info.get("extrinsics")),
+        "pred_tracks": _to_cpu_numpy(image_info.get("pred_tracks")),
+        "track_mask": _to_cpu_numpy(image_info.get("track_mask")),
+        "points_3d": _to_cpu_numpy(image_info.get("points_3d")),
+        "registered": _to_cpu_numpy(image_info.get("registered")),
+        "invalid": _to_cpu_numpy(image_info.get("invalid")),
+        "keyframe": _to_cpu_numpy(image_info.get("keyframe")),
+        "aligned_pose": gen_3d.get_aligned_pose() if hasattr(gen_3d, "get_aligned_pose") else None,
+    }
+
+    out_path = Path(out_dir) / "results.pkl"
+    with open(out_path, "wb") as f:
+        pickle.dump(payload, f)
+    print(f"[save_results] Saved reconstruction summary to {out_path}")
 
 def save_input_data(images, image_masks, depth_prior, gen_3d, out_dir):
     """Save preprocessed inputs to disk for inspection/debugging."""
@@ -1385,6 +1413,7 @@ def demo_fn(args):
         "uncertainties": uncertainties,
         "pred_tracks": pred_tracks,
         "track_mask": track_mask,
+        "points_3d": points_3d,
 
     }
     corres = get_3D_correspondences(gen_3d, image_info, reference_idx=0, out_dir=f"{args.output_dir}/3D_corres/", min_vis_score=args.vis_thresh)
@@ -1393,7 +1422,7 @@ def demo_fn(args):
         corres, gen_3d, image_info, reference_idx=0, out_dir=f"{args.output_dir}/aligned/"
     )
     
-    gen_3d.get_aligned_pose(aligned_pose)
+    gen_3d.save_aligned_pose(aligned_pose)
 
     image_info["registered"] =  np.array([False] * len(images))
     image_info["registered"][args.cond_index] = True
@@ -1402,6 +1431,9 @@ def demo_fn(args):
 
     image_info["keyframe"] =  np.array([False] * len(images))
     image_info["keyframe"][args.cond_index] = True
+
+    save_results(image_info, gen_3d, out_dir=f"{args.output_dir}/results/0000/")
+    
     
     while (image_info["registered"].sum() + image_info["invalid"].sum() < len(images)):
 
