@@ -10,9 +10,11 @@ import numpy as np
 import glob
 import os
 import copy
+import shutil
 import torch
 import torch.nn.functional as F
 import nvdiffrast.torch as dr
+import json
 
 # Configure CUDA settings
 torch.backends.cudnn.enabled = True
@@ -1180,6 +1182,54 @@ def check_frame_invalid(image_info, frame_idx, min_inlier_per_frame=10, min_dept
         return True
     return False
 
+
+def save_input_data(images, image_masks, depth_prior, gen_3d, out_dir):
+    """Save preprocessed inputs to disk for inspection/debugging."""
+    images_dir = Path(out_dir) / "images"
+    masks_dir = Path(out_dir) / "masks"
+    depth_dir = Path(out_dir) / "depth_prior"
+    for d in (images_dir, masks_dir, depth_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    num_frames = len(images)
+    for idx in range(num_frames):
+        img = images[idx].detach().cpu()
+        mask = image_masks[idx].detach().cpu()
+        depth = depth_prior[idx]
+        if torch.is_tensor(depth):
+            depth = depth.detach().cpu()
+
+        # Save RGB image
+        img_uint8 = (img.clamp(0.0, 1.0) * 255.0).permute(1, 2, 0).byte().numpy()
+        Image.fromarray(img_uint8, mode="RGB").save(images_dir / f"{idx:04d}.png")
+
+        # Save mask as single-channel PNG
+        mask_uint8 = (mask.squeeze(0).clamp(0.0, 1.0) * 255.0).byte().numpy()
+        Image.fromarray(mask_uint8, mode="L").save(masks_dir / f"{idx:04d}.png")
+
+        # Save depth prior using 24-bit PNG encoding
+        save_depth(np.asarray(depth, dtype=np.float32), str(depth_dir / f"{idx:04d}.png"))
+
+    if gen_3d is not None:
+        gen3d_dir = Path(out_dir) / "gen_3d"
+        gen3d_dir.mkdir(parents=True, exist_ok=True)
+
+        mesh_path = getattr(gen_3d, "mesh_path", None) or getattr(gen_3d, "get_mesh_path", lambda: None)()
+        if mesh_path and os.path.exists(mesh_path):
+            shutil.copy2(mesh_path, gen3d_dir / Path(mesh_path).name)
+
+        cond_img = getattr(gen_3d, "condition_image_path", None)
+        if cond_img and os.path.exists(cond_img):
+            shutil.copy2(cond_img, gen3d_dir / Path(cond_img).name)
+
+        depth_map = getattr(gen_3d, "depth_path", None)
+        if depth_map and os.path.exists(depth_map):
+            shutil.copy2(depth_map, gen3d_dir / Path(depth_map).name)
+
+        camera_path = getattr(gen_3d, "camera_path", None)
+        if camera_path and os.path.exists(camera_path):
+            shutil.copy2(camera_path, gen3d_dir / Path(camera_path).name)
+
     
 def demo_fn(args):
     # Print configuration
@@ -1221,6 +1271,9 @@ def demo_fn(args):
     img_load_resolution = Image.open(image_path_list[0]).size[0]
 
     images, original_coords, image_masks, depth_prior = load_and_preprocess_images_square(image_path_list, args.instance_id, target_size=img_load_resolution, out_dir=f"{args.output_dir}/data_processed")
+    gen_3d = GEN_3D(f"{args.scene_dir}/align_mesh_image/0000")
+    save_input_data(images, image_masks, depth_prior, gen_3d, f"{args.output_dir}/results/")
+    
     images = images.to(device)
     original_coords = original_coords.to(device)
     image_masks = image_masks.to(device)
@@ -1320,7 +1373,7 @@ def demo_fn(args):
         iters=5,
         lr=1e-3,
     )
-    gen_3d = GEN_3D(f"{args.scene_dir}/align_mesh_image/0000")
+    
     image_info = {
         "image_paths": image_path_list,
         "image_names": base_image_path_list,
