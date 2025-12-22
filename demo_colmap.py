@@ -1266,8 +1266,109 @@ def save_input_data(images, image_masks, depth_prior, gen_3d, out_dir):
         if camera_path and os.path.exists(camera_path):
             shutil.copy2(camera_path, gen3d_dir / Path(camera_path).name)
 
-def register_new_frame(image_info, gen_3d, frame_idx, args):
-    #TODO: optimize the pose of new frame indexing by frame_idx with the reprojection loss and depth consistency loss with the aligned 3D model
+def register_new_frame(image_info, gen_3d, frame_idx, args, iters=5):
+    """Optimize only the pose of frame `frame_idx` using reprojection + mesh-depth consistency."""
+    points_3d = image_info.get("points_3d")
+    extrinsics = image_info.get("extrinsics")
+    intrinsics = image_info.get("intrinsics")
+    pred_tracks = image_info.get("pred_tracks")
+    track_mask = image_info.get("track_mask")
+    depth_priors = image_info.get("depth_priors")
+    aligned_pose = gen_3d.get_aligned_pose() if hasattr(gen_3d, "get_aligned_pose") else None
+
+    missing = [
+        name
+        for name, val in [
+            ("points_3d", points_3d),
+            ("extrinsics", extrinsics),
+            ("intrinsics", intrinsics),
+            ("pred_tracks", pred_tracks),
+            ("track_mask", track_mask),
+            ("depth_priors", depth_priors),
+        ]
+        if val is None
+    ]
+
+    if missing:
+        print(f"[register_new_frame] Missing inputs: {missing}; skipping refinement.")
+    else:
+        try:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            pts = torch.from_numpy(np.asarray(points_3d)).float().to(device)
+            intr = torch.from_numpy(np.asarray(intrinsics[frame_idx])).float().to(device)
+            extr = np.asarray(extrinsics[frame_idx])
+
+            # Rodrigues param for rotation
+            rvec_init, _ = cv2.Rodrigues(extr[:3, :3])
+            rvec = torch.tensor(rvec_init.reshape(3), device=device, dtype=torch.float32, requires_grad=True)
+            tvec = torch.tensor(extr[:3, 3], device=device, dtype=torch.float32, requires_grad=True)
+
+            tracks = torch.from_numpy(np.asarray(pred_tracks[frame_idx])).float().to(device)
+            mask = torch.from_numpy(np.asarray(track_mask[frame_idx]).astype(bool)).to(device)
+            if mask.shape[0] != tracks.shape[0] or mask.shape[0] != pts.shape[0]:
+                print("[register_new_frame] Track/point mismatch; skipping refinement.")
+            else:
+                depth_np = np.asarray(depth_priors[frame_idx])
+                depth_t = torch.from_numpy(depth_np).float().to(device)
+
+                mesh_path = Path(args.output_dir) / "results" / "0000" / "white_mesh_remesh_aligned.obj"
+                mesh_depth_term = mesh_path.exists()
+                if not mesh_depth_term:
+                    print(f"[register_new_frame] Aligned mesh not found at {mesh_path}; skipping depth consistency.")
+
+                optim = torch.optim.Adam([rvec, tvec], lr=1e-3)
+                H, W = depth_np.shape[:2]
+                glctx = dr.RasterizeGLContext() if mesh_depth_term else None
+
+                if mesh_depth_term:
+                    mesh = trimesh.load_mesh(mesh_path, force="mesh")
+                    verts = torch.from_numpy(mesh.vertices.astype(np.float32)).to(device)
+                    faces = torch.from_numpy(mesh.faces.astype(np.int32)).to(device)
+                    proj_mat = projection_matrix_from_intrinsics(intr.cpu().numpy(), height=H, width=W, znear=0.1, zfar=100.0)
+                    proj_t = torch.from_numpy(proj_mat).float().to(device)
+                    color = torch.ones_like(verts)
+
+                for _ in range(iters):
+                    optim.zero_grad(set_to_none=True)
+                    R = axis_angle_to_matrix(rvec[None])[0]
+                    cam_pts = (R @ pts.T).T + tvec
+
+                    # Reprojection error (points_3d <-> 2D tracks)
+                    z = cam_pts[:, 2:3]
+                    uv = cam_pts[:, :2] / (z + 1e-6)
+                    proj = (intr @ torch.cat([uv, torch.ones_like(z)], dim=1).T).T[:, :2]
+                    reproj_loss = torch.nn.functional.smooth_l1_loss(proj[mask], tracks[mask])
+
+                    # Depth consistency between rendered mesh and depth prior
+                    depth_loss = torch.tensor(0.0, device=device)
+                    if mesh_depth_term:
+                        extr4 = torch.eye(4, device=device, dtype=torch.float32)
+                        extr4[:3, :3] = R
+                        extr4[:3, 3] = tvec
+                        render_color, depth_render = diff_renderer(
+                            verts[None], faces, color[None], proj_t, extr4, (H, W), glctx
+                        )
+                        depth_render = depth_render.squeeze()
+                        depth_mask = (depth_render > 0) & (depth_t > 0)
+                        if depth_mask.any():
+                            depth_loss = torch.nn.functional.smooth_l1_loss(
+                                depth_render[depth_mask], depth_t[depth_mask]
+                            )
+
+                    (reproj_loss + 0.1 * depth_loss).backward()
+                    optim.step()
+
+                with torch.no_grad():
+                    R_final = axis_angle_to_matrix(rvec[None])[0].cpu().numpy()
+                    t_final = tvec.cpu().numpy()
+                    extrinsics[frame_idx, :3, :3] = R_final
+                    extrinsics[frame_idx, :3, 3] = t_final
+                    image_info["extrinsics"] = extrinsics
+
+                print(f"[register_new_frame] Optimized frame {frame_idx} pose (reproj + depth).")
+        except Exception as e:
+            print(f"[register_new_frame] Pose refinement failed: {e}")
+
     
 def demo_fn(args):
     # Print configuration
@@ -1448,6 +1549,7 @@ def demo_fn(args):
     while (image_info["registered"].sum() + image_info["invalid"].sum() < len(images)):
 
         next_frame_idx = find_next_frame(image_info)
+        print("+" * 50)
         print(f"Next frame to register: {next_frame_idx}")
         
         if check_frame_invalid(image_info, next_frame_idx, min_inlier_per_frame=args.min_inlier_per_frame, min_depth_pixels=args.min_depth_pixels):
@@ -1455,7 +1557,13 @@ def demo_fn(args):
             print(f"[Warning] Frame {next_frame_idx} marked as invalid.")
             continue
 
+        register_new_frame(image_info, gen_3d, next_frame_idx, args)
+
+        # snapshot current state
+        save_results(image_info, gen_3d, out_dir=Path(args.output_dir) / "results" / f"{next_frame_idx:04d}")
+
         image_info["registered"][next_frame_idx] = True
+        print("-" * 50)
 
 
     if 0:
