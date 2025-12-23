@@ -106,6 +106,7 @@ def build_blueprint(num_images: int) -> rrb.BlueprintLike:
     return rrb.Vertical(
         rrb.Horizontal(
             rrb.Spatial3DView(name="world", origin="/"),
+            rrb.Spatial2DView(name="current_camera", origin="/camera/image"),
         ),
         rrb.Horizontal(
             rrb.Grid(
@@ -209,6 +210,27 @@ def main(args):
                         rr.Points2D(tracks[mask], colors=[34, 138, 167]),
                         static=False,
                     )
+
+            # log the current camera view
+            cam_idx = step_idx
+            visualizer.log_image("camera/image", str(provider.images[cam_idx]), static=False)
+            visualizer.log_calibration(
+                "camera/image",
+                resolution=[w, h],
+                intrins=intr[cam_idx],
+                image_plane_distance=1,
+                static=False,
+            )
+            w2c = np.eye(4)
+            w2c[:3] = extr[cam_idx]
+            c2w = np.linalg.inv(w2c)
+            visualizer.log_cam_pose("camera/image", c2w, static=False)
+            tracks = np.asarray(pred_tracks)[cam_idx]
+            rr.log(
+                f"camera/image/keypoints",
+                rr.Points2D(tracks[mask], colors=[34, 138, 167]),
+                static=False,
+            )
             
         visualizer.log_mesh("aligned_mesh", gen_3d_mesh_aligned_path, static=False)
         # Log 3D points with color if available
