@@ -1389,7 +1389,7 @@ def register_new_frame(image_info, gen_3d, frame_idx, args, out_dir, iters=5, de
                     proj_t = torch.from_numpy(proj_mat).float().to(device)
                     color = torch.ones_like(verts)
 
-                for _ in range(iters):
+                for iter_idx in range(iters):
                     optim.zero_grad(set_to_none=True)
                     R = axis_angle_to_matrix(rvec[None])[0]
                     cam_pts = (R @ pts.T).T + tvec
@@ -1415,9 +1415,10 @@ def register_new_frame(image_info, gen_3d, frame_idx, args, out_dir, iters=5, de
                             depth_loss = torch.nn.functional.smooth_l1_loss(
                                 depth_render[depth_mask], depth_t[depth_mask]
                             )
-
-                    (reproj_loss + depth_weight * depth_loss).backward()
+                    loss = reproj_loss + depth_weight * depth_loss
+                    loss.backward()
                     optim.step()
+                    print(f"it: {iter_idx}, Loss: {loss.item():.6f} (reproj: {reproj_loss.item():.6f}, depth: {depth_loss.item():.6f})")
 
                 with torch.no_grad():
                     R_final = axis_angle_to_matrix(rvec[None])[0].cpu().numpy()
