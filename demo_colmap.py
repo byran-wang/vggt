@@ -84,6 +84,10 @@ def parse_args():
     parser.add_argument("--max_frames", type=int, default=50, help="Maximum number of frames to process")
     parser.add_argument("--instance_id", type=int, default=0, help="Instance ID for image preprocessing")
     parser.add_argument("--cond_index", type=int, default=0, help="Conditioning frame index for tracking")
+    parser.add_argument("--kf_rot_thresh", type=float, default=5.0, help="Keyframe rotation threshold (degrees)")
+    parser.add_argument("--kf_trans_thresh", type=float, default=0.02, help="Keyframe translation threshold (units)")
+    parser.add_argument("--kf_depth_thresh", type=float, default=500, help="Keyframe depth change threshold (units)")
+    parser.add_argument("--kf_inlier_thresh", type=int, default=10, help="Keyframe inlier count threshold")
     return parser.parse_args()
 
 
@@ -601,10 +605,10 @@ def estimate_extrinsic(depth_map, extrinsics, intrinsic, tracks, track_mask, ref
     # fill any missing with reference pose
     for frame_idx in frames_to_solve:
         extrinsics[frame_idx] = extrinsics[ref_index]
-        print(
-            f"[estimate_extrinsic] Warning: PnP failed for frame {frame_idx}, "
-            f"carrying pose from reference frame {ref_index}."
-        )
+        # print(
+        #     f"[estimate_extrinsic] Warning: PnP failed for frame {frame_idx}, "
+        #     f"carrying pose from reference frame {ref_index}."
+        # )
 
     return extrinsics
 
@@ -1369,7 +1373,7 @@ def register_new_frame(image_info, gen_3d, frame_idx, args, iters=5):
         except Exception as e:
             print(f"[register_new_frame] Pose refinement failed: {e}")
 
-def check_key_frame(image_info, frame_idx, rot_thresh=10.0, trans_thresh=0.1, depth_thresh=1000, min_track_cnt=50):
+def check_key_frame(image_info, frame_idx, rot_thresh, trans_thresh, depth_thresh, frame_inliner_thresh):
     """Heuristically decide if frame_idx should become a keyframe based on validity + pose delta."""
     registered = image_info.get("registered")
     extrinsics = image_info.get("extrinsics")
@@ -1395,8 +1399,8 @@ def check_key_frame(image_info, frame_idx, rot_thresh=10.0, trans_thresh=0.1, de
     if track_mask is not None:
         tm = np.asarray(track_mask)
         if frame_idx < tm.shape[0]:
-            if int(np.count_nonzero(tm[frame_idx])) < min_track_cnt:
-                print(f"[check_key_frame] Frame {frame_idx} rejected as keyframe due to insufficient track inliers ({int(np.count_nonzero(tm[frame_idx]))} < {min_track_cnt}).")
+            if int(np.count_nonzero(tm[frame_idx])) < frame_inliner_thresh:
+                print(f"[check_key_frame] Frame {frame_idx} rejected as keyframe due to insufficient track inliers ({int(np.count_nonzero(tm[frame_idx]))} < {frame_inliner_thresh}).")
                 return False
 
     if keyframes is None:
@@ -1714,7 +1718,7 @@ def demo_fn(args):
         image_info["registered"][next_frame_idx] = True
         print(f"Frame {next_frame_idx} registered.")        
 
-        if (check_key_frame(image_info, next_frame_idx)):
+        if (check_key_frame(image_info, next_frame_idx, rot_thresh=args.kf_rot_thresh, trans_thresh=args.kf_trans_thresh, depth_thresh=args.kf_depth_thresh, frame_inliner_thresh=args.kf_inlier_thresh)):
             process_key_frame(image_info, next_frame_idx, args)
             image_info["keyframe"][next_frame_idx] = True
             print(f"Frame {next_frame_idx} marked as keyframe.")
