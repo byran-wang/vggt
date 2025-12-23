@@ -1354,82 +1354,62 @@ def register_new_frame(image_info, gen_3d, frame_idx, args, out_dir, iters=5, de
         print(f"[register_new_frame] Missing inputs: {missing}; skipping refinement.")
     else:
         try:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            pts = torch.from_numpy(np.asarray(points_3d)).float().to(device)
-            intr = torch.from_numpy(np.asarray(intrinsics[frame_idx])).float().to(device)
-            extr = np.asarray(extrinsics[frame_idx])
+            intr_np = np.asarray(intrinsics[frame_idx], dtype=np.float32)
+            extr = np.asarray(extrinsics[frame_idx], dtype=np.float32)
 
-            # Rodrigues param for rotation
-            rvec_init, _ = cv2.Rodrigues(extr[:3, :3])
-            rvec = torch.tensor(rvec_init.reshape(3), device=device, dtype=torch.float32, requires_grad=True)
-            tvec = torch.tensor(extr[:3, 3], device=device, dtype=torch.float32, requires_grad=True)
+            pts_np = np.asarray(points_3d, dtype=np.float32)
+            tracks_np = np.asarray(pred_tracks[frame_idx], dtype=np.float32)
+            mask_np = np.asarray(track_mask[frame_idx]).astype(bool)
 
-            tracks = torch.from_numpy(np.asarray(pred_tracks[frame_idx])).float().to(device)
-            mask = torch.from_numpy(np.asarray(track_mask[frame_idx]).astype(bool)).to(device)
-            if mask.shape[0] != tracks.shape[0] or mask.shape[0] != pts.shape[0]:
+            if mask_np.shape[0] != tracks_np.shape[0] or mask_np.shape[0] != pts_np.shape[0]:
                 print("[register_new_frame] Track/point mismatch; skipping refinement.")
-            else:
-                depth_np = np.asarray(depth_priors[frame_idx])
-                depth_t = torch.from_numpy(depth_np).float().to(device)
+                return
 
-                mesh_path = Path(args.output_dir) / "results" / "0000" / "white_mesh_remesh_aligned.obj"
-                mesh_depth_term = mesh_path.exists()
-                if not mesh_depth_term:
-                    print(f"[register_new_frame] Aligned mesh not found at {mesh_path}; skipping depth consistency.")
+            pts_sel = pts_np[mask_np]
+            tracks_sel = tracks_np[mask_np]
+            if len(pts_sel) < 6:
+                print(f"[register_new_frame] Not enough correspondences for PnP ({len(pts_sel)} < 6); skipping refinement.")
+                return
 
-                optim = torch.optim.Adam([rvec, tvec], lr=1e-3)
-                H, W = depth_np.shape[:2]
-                glctx = dr.RasterizeGLContext() if mesh_depth_term else None
+            dist = np.zeros((4, 1), dtype=np.float32)
+            rvec_init, _ = cv2.Rodrigues(extr[:3, :3])
+            tvec_init = extr[:3, 3:4]
 
-                if mesh_depth_term and depth_weight > 0:
-                    mesh = trimesh.load_mesh(mesh_path, force="mesh")
-                    verts = torch.from_numpy(mesh.vertices.astype(np.float32)).to(device)
-                    faces = torch.from_numpy(mesh.faces.astype(np.int32)).to(device)
-                    proj_mat = projection_matrix_from_intrinsics(intr.cpu().numpy(), height=H, width=W, znear=0.1, zfar=100.0)
-                    proj_t = torch.from_numpy(proj_mat).float().to(device)
-                    color = torch.ones_like(verts)
+            success, rvec_ref, tvec_ref, inliers = cv2.solvePnPRansac(
+                pts_sel,
+                tracks_sel,
+                intr_np,
+                dist,
+                rvec_init.astype(np.float32),
+                tvec_init.astype(np.float32),
+                useExtrinsicGuess=True,
+                iterationsCount=100,
+                reprojectionError=float(args.max_reproj_error) if hasattr(args, "max_reproj_error") else 8.0,
+                confidence=0.99,
+                flags=cv2.SOLVEPNP_ITERATIVE,
+            )
 
-                for iter_idx in range(iters):
-                    optim.zero_grad(set_to_none=True)
-                    R = axis_angle_to_matrix(rvec[None])[0]
-                    cam_pts = (R @ pts.T).T + tvec
+            if not success:
+                print(f"[register_new_frame] RANSAC PnP failed for frame {frame_idx}.")
+                return
 
-                    # Reprojection error (points_3d <-> 2D tracks)
-                    z = cam_pts[:, 2:3]
-                    uv = cam_pts[:, :2] / (z + 1e-6)
-                    proj = (intr @ torch.cat([uv, torch.ones_like(z)], dim=1).T).T[:, :2]
-                    reproj_loss = torch.nn.functional.smooth_l1_loss(proj[mask], tracks[mask])
+            R_final, _ = cv2.Rodrigues(rvec_ref)
+            t_final = tvec_ref.reshape(-1)
 
-                    # Depth consistency between rendered mesh and depth prior
-                    depth_loss = torch.tensor(0.0, device=device)
-                    if mesh_depth_term and depth_weight > 0:
-                        extr4 = torch.eye(4, device=device, dtype=torch.float32)
-                        extr4[:3, :3] = R
-                        extr4[:3, 3] = tvec
-                        render_color, depth_render = diff_renderer(
-                            verts[None], faces, color[None], proj_t, extr4, (H, W), glctx
-                        )
-                        depth_render = depth_render.squeeze()
-                        depth_mask = (depth_render > 0) & (depth_t > 0)
-                        if depth_mask.any():
-                            depth_loss = torch.nn.functional.smooth_l1_loss(
-                                depth_render[depth_mask], depth_t[depth_mask]
-                            )
-                    loss = reproj_loss + depth_weight * depth_loss
-                    loss.backward()
-                    optim.step()
-                    print(f"it: {iter_idx}, Loss: {loss.item():.6f} (reproj: {reproj_loss.item():.6f}, depth: {depth_loss.item():.6f})")
+            extrinsics[frame_idx, :3, :3] = R_final
+            extrinsics[frame_idx, :3, 3] = t_final
+            image_info["extrinsics"] = extrinsics
 
-                with torch.no_grad():
-                    R_final = axis_angle_to_matrix(rvec[None])[0].cpu().numpy()
-                    t_final = tvec.cpu().numpy()
-                    extrinsics[frame_idx, :3, :3] = R_final
-                    extrinsics[frame_idx, :3, 3] = t_final
-                    image_info["extrinsics"] = extrinsics
+            # Build inlier mask in the original track space for visualization.
+            inlier_mask = mask_np.copy()
+            if inliers is not None:
+                inlier_mask[:] = False
+                sel_indices = np.where(mask_np)[0]
+                inlier_indices = sel_indices[inliers.flatten()]
+                inlier_mask[inlier_indices] = True
 
-                print(f"[register_new_frame] Optimized frame {frame_idx} pose (reproj + depth).")
+            print(f"[register_new_frame] Optimized frame {frame_idx} pose with RANSAC PnP. Inliers: {inlier_mask.sum()}/{len(mask_np)}")
 
-                # Visualize reprojection error vectors over the raw image for this frame.
         except Exception as e:
             print(f"[register_new_frame] Pose refinement failed: {e}")
 
