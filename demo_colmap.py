@@ -1222,6 +1222,20 @@ def save_results(image_info, gen_3d, out_dir):
     save_aligned_3D_model(gen_3d,  gen_3d.get_aligned_pose(), out_dir)
     print(f"[save_results] Saved reconstruction summary to {out_path}")
 
+    frame_idx = int(Path(out_dir).name)
+    eval_reprojection(
+        image_info=image_info,
+        frame_idx=frame_idx,
+        intr_np=payload["intrinsics"][frame_idx],
+        pts_np=payload["points_3d"],
+        tracks_np=payload["pred_tracks"][frame_idx],
+        mask_np=payload["track_mask"][frame_idx],
+        R_final=payload["extrinsics"][frame_idx][:3, :3],
+        t_final=payload["extrinsics"][frame_idx][:3, 3],
+        out_dir=out_dir,
+    )
+ 
+
 def save_input_data(images, image_masks, depth_prior, gen_3d, out_dir):
     """Save preprocessed inputs to disk for inspection/debugging."""
     images_dir = Path(out_dir) / "images"
@@ -1293,12 +1307,11 @@ def eval_reprojection(image_info, frame_idx, intr_np, pts_np, tracks_np, mask_np
         return None
 
     errors = np.linalg.norm(end_pts - start_pts, axis=1)
-    cutoff = np.quantile(errors, 0.9) if len(errors) > 0 else np.inf
 
     for s, e, err in zip(start_pts, end_pts, errors):
         start = tuple(np.round(s).astype(int))
         end = tuple(np.round(e).astype(int))
-        color = (255, 0, 0) if err >= cutoff else (0, 0, 255)
+        color = (255, 0, 0) if err >= 2.0 else (0, 0, 255)
         cv2.arrowedLine(
             vis_img,
             start,
@@ -1416,22 +1429,6 @@ def register_new_frame(image_info, gen_3d, frame_idx, args, out_dir, iters=5, de
                 print(f"[register_new_frame] Optimized frame {frame_idx} pose (reproj + depth).")
 
                 # Visualize reprojection error vectors over the raw image for this frame.
-                try:
-                    vis_path = eval_reprojection(
-                        image_info=image_info,
-                        frame_idx=frame_idx,
-                        intr_np=intr.cpu().numpy(),
-                        pts_np=pts.cpu().numpy(),
-                        tracks_np=tracks.cpu().numpy(),
-                        mask_np=mask.cpu().numpy(),
-                        R_final=R_final,
-                        t_final=t_final,
-                        out_dir=out_dir,
-                    )
-                    if vis_path:
-                        print(f"[register_new_frame] Saved reprojection error overlay to {vis_path}")
-                except Exception as vis_err:
-                    print(f"[register_new_frame] Failed to save reprojection error overlay: {vis_err}")
         except Exception as e:
             print(f"[register_new_frame] Pose refinement failed: {e}")
 
