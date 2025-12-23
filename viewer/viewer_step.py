@@ -175,11 +175,13 @@ def main(args):
             c2w = np.linalg.inv(w2c)
             visualizer.log_cam_pose(f"camera/image_{cam_idx}", c2w, static=False)
 
-            if (
+            is_keyframe = (
                 keyframe_flags is not None
                 and cam_idx < len(keyframe_flags)
                 and bool(np.asarray(keyframe_flags)[cam_idx])
-            ):
+            )
+
+            if is_keyframe:
                 rr.log(
                     f"camera/image_{cam_idx}/keyframe_border",
                     rr.Boxes2D(
@@ -195,11 +197,19 @@ def main(args):
                 tracks = np.asarray(pred_tracks)[cam_idx]
                 mask = np.asarray(track_mask)[cam_idx].astype(bool)
                 if tracks.shape[0] == mask.shape[0]:
+                    if is_keyframe:
+                        track_count = int(mask.sum())
+                        rr.log(
+                            f"camera/image_{cam_idx}/track_count",
+                            rr.TextLog(f"track_count: {track_count}"),
+                            static=False,
+                        )
                     rr.log(
                         f"camera/image_{cam_idx}/keypoints",
                         rr.Points2D(tracks[mask], colors=[34, 138, 167]),
                         static=False,
                     )
+            
         visualizer.log_mesh("aligned_mesh", gen_3d_mesh_aligned_path, static=False)
         # Log 3D points with color if available
         if points_3d is not None:
