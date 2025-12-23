@@ -1369,7 +1369,161 @@ def register_new_frame(image_info, gen_3d, frame_idx, args, iters=5):
         except Exception as e:
             print(f"[register_new_frame] Pose refinement failed: {e}")
 
-    
+def check_key_frame(image_info, frame_idx, rot_thresh=10.0, trans_thresh=0.1, depth_thresh=1000, min_track_cnt=50):
+    """Heuristically decide if frame_idx should become a keyframe based on validity + pose delta."""
+    registered = image_info.get("registered")
+    extrinsics = image_info.get("extrinsics")
+    keyframes = image_info.get("keyframe")
+    depth_priors = image_info.get("depth_priors")
+    track_mask = image_info.get("track_mask")
+
+    registered = np.asarray(registered).astype(bool)
+    if not registered[frame_idx]:
+        print(f"[check_key_frame] Frame {frame_idx} is not registered; cannot be keyframe.")
+        return False
+
+    # Basic validity checks before pose deltas
+    if depth_priors is not None:
+        depth_map = depth_priors[frame_idx]
+        if torch.is_tensor(depth_map):
+            depth_map = depth_map.detach().cpu().numpy()
+        valid_depth = int(np.count_nonzero(np.asarray(depth_map) > 0))
+        if valid_depth < depth_thresh:
+            print(f"[check_key_frame] Frame {frame_idx} rejected as keyframe due to insufficient depth pixels ({valid_depth} < {depth_thresh}).")
+            return False
+
+    if track_mask is not None:
+        tm = np.asarray(track_mask)
+        if frame_idx < tm.shape[0]:
+            if int(np.count_nonzero(tm[frame_idx])) < min_track_cnt:
+                print(f"[check_key_frame] Frame {frame_idx} rejected as keyframe due to insufficient track inliers ({int(np.count_nonzero(tm[frame_idx]))} < {min_track_cnt}).")
+                return False
+
+    if keyframes is None:
+        return True  # no keyframes tracked yet
+
+    keyframes = np.asarray(keyframes).astype(bool)
+    past_keys = np.where(keyframes & registered & (np.arange(len(keyframes)) < frame_idx))[0]
+    if len(past_keys) == 0:
+        print(f"[check_key_frame] Frame {frame_idx} accepted as first keyframe.")
+        return True  # first keyframe
+
+    T_curr = extrinsics[frame_idx]
+    R_curr, t_curr = T_curr[:3, :3], T_curr[:3, 3]
+
+    for kf_idx in past_keys:
+        T_prev = extrinsics[kf_idx]
+        R_prev, t_prev = T_prev[:3, :3], T_prev[:3, 3]
+        R_delta = R_curr @ R_prev.T
+        angle = np.rad2deg(np.arccos(np.clip((np.trace(R_delta) - 1) / 2, -1.0, 1.0)))
+        trans = np.linalg.norm(t_curr - t_prev)
+
+        # Require the current frame to exceed both rotation and translation thresholds
+        # with respect to every existing keyframe.
+        if angle < rot_thresh:
+            print(f"[check_key_frame] Frame {frame_idx} rejected as keyframe due to insufficient rotation delta ({angle:.2f} < {rot_thresh}) with keyframe {kf_idx}.")
+            return False
+
+        if trans < trans_thresh:
+            print(f"[check_key_frame] Frame {frame_idx} rejected as keyframe due to insufficient translation delta ({trans:.3f} < {trans_thresh}) with keyframe {kf_idx}.")
+            return False
+
+    return True
+
+
+def process_key_frame(image_info, frame_idx, args):
+    """Predict fresh tracks from the new keyframe and update extrinsics/tracks for unregistered frames."""
+    images = image_info.get("images")
+    image_masks = image_info.get("image_masks")
+    depth_priors = image_info.get("depth_priors")
+    pred_tracks = image_info.get("pred_tracks")
+    track_mask = image_info.get("track_mask")
+    points_3d = image_info.get("points_3d")
+    extrinsics = image_info.get("extrinsics")
+    intrinsics = image_info.get("intrinsics")
+    points_rgb = image_info.get("points_rgb")
+    registered = image_info.get("registered")
+    invalid = image_info.get("invalid")
+
+    needed = {
+        "images": images,
+        "image_masks": image_masks,
+        "depth_priors": depth_priors,
+        "points_3d": points_3d,
+        "extrinsics": extrinsics,
+        "intrinsics": intrinsics,
+    }
+    missing = [k for k, v in needed.items() if v is None]
+    if missing:
+        print(f"[process_key_frame] Missing data {missing}; skipping keyframe processing.")
+        return
+
+    existing_pred_tracks = pred_tracks
+    existing_track_mask = track_mask
+    existing_points_3d = points_3d
+    existing_points_rgb = points_rgb
+
+    device = images.device if torch.is_tensor(images) else ("cuda" if torch.cuda.is_available() else "cpu")
+    depth_conf = torch.ones_like(depth_priors)
+
+    # Build a dense per-frame 3D map from the current depth priors for querying.
+    depth_np = depth_priors.detach().cpu().numpy() if torch.is_tensor(depth_priors) else np.asarray(depth_priors)
+    extr_np = extrinsics.detach().cpu().numpy() if torch.is_tensor(extrinsics) else np.asarray(extrinsics)
+    intr_np = intrinsics.detach().cpu().numpy() if torch.is_tensor(intrinsics) else np.asarray(intrinsics)
+    points_3d_dense = unproject_depth_map_to_point_map(depth_np[..., None], extr_np, intr_np)
+
+    with torch.cuda.amp.autocast(dtype=torch.float16 if torch.cuda.is_available() else None), torch.no_grad():
+        pred_tracks, pred_vis_scores, pred_confs, points_3d, points_rgb = predict_tracks(
+            images,
+            image_masks=image_masks,
+            conf=depth_conf,
+            points_3d=points_3d_dense,
+            max_query_pts=args.max_query_pts,
+            query_frame_num=args.query_frame_num,
+            keypoint_extractor="aliked+sp",
+            fine_tracking=args.fine_tracking,
+            complete_non_vis=False,
+            query_frame_indexes=[frame_idx],
+        )
+
+    track_mask = pred_vis_scores > args.vis_thresh
+
+    # Estimate extrinsics for unregistered frames via PnP using the updated tracks
+    extrinsics = estimate_extrinsic(depth_priors, extrinsics, intrinsics[0], pred_tracks, track_mask, ref_index=frame_idx, ransac_reproj_threshold=args.max_reproj_error)
+
+    # Geometry-based pruning
+    track_mask = verify_tracks_by_geometry(
+        points_3d,
+        extrinsics,
+        intrinsics,
+        pred_tracks,
+        ref_index=frame_idx,
+        masks=track_mask,
+        max_reproj_error=args.max_reproj_error,
+    )
+
+    track_mask_new, points_3d_new, keep_pts = prep_valid_correspondences(
+        points_3d, track_mask, args.min_inlier_per_frame, args.min_inlier_per_track
+    )
+    pred_tracks_new = pred_tracks[:, keep_pts]
+    points_rgb_new = points_rgb[keep_pts] if points_rgb is not None else None
+
+    # Append new keyframe tracks/points to existing state instead of overwriting.
+    if existing_pred_tracks is not None and existing_track_mask is not None and existing_points_3d is not None:
+        image_info["pred_tracks"] = np.concatenate([existing_pred_tracks, pred_tracks_new], axis=1)
+        image_info["track_mask"] = np.concatenate([existing_track_mask, track_mask_new], axis=1)
+        image_info["points_3d"] = np.concatenate([existing_points_3d, points_3d_new], axis=0)
+        if existing_points_rgb is not None and points_rgb_new is not None:
+            image_info["points_rgb"] = np.concatenate([existing_points_rgb, points_rgb_new], axis=0)
+        else:
+            image_info["points_rgb"] = existing_points_rgb if existing_points_rgb is not None else points_rgb_new
+    else:
+        image_info["pred_tracks"] = pred_tracks_new
+        image_info["track_mask"] = track_mask_new
+        image_info["points_3d"] = points_3d_new
+        image_info["points_rgb"] = points_rgb_new
+
+
 def demo_fn(args):
     # Print configuration
     print("Arguments:", vars(args))
@@ -1554,15 +1708,22 @@ def demo_fn(args):
         
         if check_frame_invalid(image_info, next_frame_idx, min_inlier_per_frame=args.min_inlier_per_frame, min_depth_pixels=args.min_depth_pixels):
             image_info["invalid"][next_frame_idx] = True
-            print(f"[Warning] Frame {next_frame_idx} marked as invalid.")
+            print(f"[Warning] Frame {next_frame_idx} marked as invalid due to insufficient track inliers or depth pixels.")
             continue
 
         register_new_frame(image_info, gen_3d, next_frame_idx, args)
+        image_info["registered"][next_frame_idx] = True
+        print(f"Frame {next_frame_idx} registered.")        
+
+        if (check_key_frame(image_info, next_frame_idx)):
+            process_key_frame(image_info, next_frame_idx, args)
+            image_info["keyframe"][next_frame_idx] = True
+            print(f"Frame {next_frame_idx} marked as keyframe.")
+
 
         # snapshot current state
         save_results(image_info, gen_3d, out_dir=Path(args.output_dir) / "results" / f"{next_frame_idx:04d}")
 
-        image_info["registered"][next_frame_idx] = True
         print("-" * 50)
 
 
