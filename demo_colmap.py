@@ -1160,15 +1160,13 @@ def find_next_frame(image_info):
             best_idx = idx
     return best_idx
 
-def check_frame_invalid(image_info, frame_idx, min_inlier_per_frame=10, min_depth_pixels=500):
-    if frame_idx is None:
-        return True
+def check_frame_invalid(image_info, frame_idx, min_inlier_per_frame, min_depth_pixels):
     track_mask = image_info.get("track_mask")
     depth_priors = image_info.get("depth_priors")
-    if track_mask is None or depth_priors is None:
-        return True
+
     track_mask = np.asarray(track_mask)
     if frame_idx >= track_mask.shape[0]:
+        print(f"[check_frame_invalid] Frame index {frame_idx} out of bounds.")
         return True
     track_inliers = int(np.count_nonzero(track_mask[frame_idx]))
 
@@ -1178,8 +1176,10 @@ def check_frame_invalid(image_info, frame_idx, min_inlier_per_frame=10, min_dept
     depth_valid = int(np.count_nonzero(np.asarray(depth_map) > 0))
 
     if track_inliers < min_inlier_per_frame:
+        print(f"[check_frame_invalid] Frame {frame_idx} invalid due to insufficient track inliers: {track_inliers} < {min_inlier_per_frame}")
         return True
     if depth_valid < min_depth_pixels:
+        print(f"[check_frame_invalid] Frame {frame_idx} invalid due to insufficient depth pixels: {depth_valid} < {min_depth_pixels}")
         return True
     return False
 
@@ -1436,11 +1436,11 @@ def process_key_frame(image_info, frame_idx, args):
     images = image_info.get("images")
     image_masks = image_info.get("image_masks")
     depth_priors = image_info.get("depth_priors")
+    extrinsics = image_info.get("extrinsics").copy()
+    intrinsics = image_info.get("intrinsics").copy()    
     pred_tracks = image_info.get("pred_tracks")
     track_mask = image_info.get("track_mask")
     points_3d = image_info.get("points_3d")
-    extrinsics = image_info.get("extrinsics")
-    intrinsics = image_info.get("intrinsics")
     points_rgb = image_info.get("points_rgb")
     registered = image_info.get("registered")
     invalid = image_info.get("invalid")
@@ -1708,7 +1708,6 @@ def demo_fn(args):
         
         if check_frame_invalid(image_info, next_frame_idx, min_inlier_per_frame=args.min_inlier_per_frame, min_depth_pixels=args.min_depth_pixels):
             image_info["invalid"][next_frame_idx] = True
-            print(f"[Warning] Frame {next_frame_idx} marked as invalid due to insufficient track inliers or depth pixels.")
             continue
 
         register_new_frame(image_info, gen_3d, next_frame_idx, args)
