@@ -217,30 +217,30 @@ def main(args):
                         static=False,
                     )
 
-            # log the current camera view
-            cam_idx = step_idx
-            
-            visualizer.log_calibration(
-                "camera/image",
-                resolution=[w, h],
-                intrins=intr[cam_idx],
-                image_plane_distance=1,
+        # log the current camera view
+        cam_idx = int(step['path'].name)
+        
+        visualizer.log_calibration(
+            "camera/image",
+            resolution=[w, h],
+            intrins=intr[cam_idx],
+            image_plane_distance=1,
+            static=False,
+        )
+        w2c = np.eye(4)
+        w2c[:3] = extr[cam_idx]
+        c2w = np.linalg.inv(w2c)
+        visualizer.log_cam_pose("camera/image", c2w, static=False)
+        tracks = np.asarray(pred_tracks)[cam_idx]
+        if 1:
+            visualizer.log_image("camera/image", str(provider.get_reproj_error_vis_path(cam_idx)), static=False)
+        else:
+            visualizer.log_image("camera/image", str(provider.images[cam_idx]), static=False)
+            rr.log(
+                f"camera/image/keypoints",
+                rr.Points2D(tracks[mask], colors=[34, 138, 167]),
                 static=False,
             )
-            w2c = np.eye(4)
-            w2c[:3] = extr[cam_idx]
-            c2w = np.linalg.inv(w2c)
-            visualizer.log_cam_pose("camera/image", c2w, static=False)
-            tracks = np.asarray(pred_tracks)[cam_idx]
-            if 1:
-                visualizer.log_image("camera/image", str(provider.get_reproj_error_vis_path(cam_idx)), static=False)
-            else:
-                visualizer.log_image("camera/image", str(provider.images[cam_idx]), static=False)
-                rr.log(
-                    f"camera/image/keypoints",
-                    rr.Points2D(tracks[mask], colors=[34, 138, 167]),
-                    static=False,
-                )
             
         visualizer.log_mesh("aligned_mesh", gen_3d_mesh_aligned_path, static=False)
         # Log 3D points with color if available
