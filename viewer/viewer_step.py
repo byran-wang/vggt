@@ -145,6 +145,7 @@ def main(args):
         points_3d = data.get("points_3d")
         points_rgb = data.get("points_rgb")
         points_conf_color = data.get("points_conf_color")
+        keyframe_flags = data.get("keyframe")
         
 
         if intr is None or extr is None:
@@ -173,6 +174,22 @@ def main(args):
             w2c[:3] = extr[cam_idx]
             c2w = np.linalg.inv(w2c)
             visualizer.log_cam_pose(f"camera/image_{cam_idx}", c2w, static=False)
+
+            if (
+                keyframe_flags is not None
+                and cam_idx < len(keyframe_flags)
+                and bool(np.asarray(keyframe_flags)[cam_idx])
+            ):
+                rr.log(
+                    f"camera/image_{cam_idx}/keyframe_border",
+                    rr.Boxes2D(
+                        centers=[[w / 2, h / 2]],
+                        sizes=[[w, h]],
+                        colors=[[0, 255, 0]],
+                        radii=2.0,
+                    ),
+                    static=False,
+                )
 
             if pred_tracks is not None and track_mask is not None:
                 tracks = np.asarray(pred_tracks)[cam_idx]
