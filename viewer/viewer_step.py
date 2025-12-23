@@ -80,6 +80,11 @@ class StepDataProvider:
         self.cond_depth = gen3d_dir / "depth.png"
         self.camera_json = gen3d_dir / "camera.json"
 
+    def get_reproj_error_vis_path(self, step_idx: int) -> Path:
+        step_dir = self.base_dir / f"{step_idx:04d}"
+        vis_path = step_dir / "reproj_error.png"
+        return vis_path
+
 
 def log_mesh_with_pose(label: str, mesh_path: Path, pose: Optional[dict]):
     if not mesh_path.exists():
@@ -107,6 +112,7 @@ def build_blueprint(num_images: int) -> rrb.BlueprintLike:
         rrb.Horizontal(
             rrb.Spatial3DView(name="world", origin="/"),
             rrb.Spatial2DView(name="current_camera", origin="/camera/image"),
+            column_shares=[3, 2],
         ),
         rrb.Horizontal(
             rrb.Grid(
@@ -213,7 +219,7 @@ def main(args):
 
             # log the current camera view
             cam_idx = step_idx
-            visualizer.log_image("camera/image", str(provider.images[cam_idx]), static=False)
+            
             visualizer.log_calibration(
                 "camera/image",
                 resolution=[w, h],
@@ -226,11 +232,15 @@ def main(args):
             c2w = np.linalg.inv(w2c)
             visualizer.log_cam_pose("camera/image", c2w, static=False)
             tracks = np.asarray(pred_tracks)[cam_idx]
-            rr.log(
-                f"camera/image/keypoints",
-                rr.Points2D(tracks[mask], colors=[34, 138, 167]),
-                static=False,
-            )
+            if 1:
+                visualizer.log_image("camera/image", str(provider.get_reproj_error_vis_path(cam_idx)), static=False)
+            else:
+                visualizer.log_image("camera/image", str(provider.images[cam_idx]), static=False)
+                rr.log(
+                    f"camera/image/keypoints",
+                    rr.Points2D(tracks[mask], colors=[34, 138, 167]),
+                    static=False,
+                )
             
         visualizer.log_mesh("aligned_mesh", gen_3d_mesh_aligned_path, static=False)
         # Log 3D points with color if available
