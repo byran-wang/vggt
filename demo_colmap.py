@@ -59,7 +59,6 @@ def parse_args():
     parser = argparse.ArgumentParser(description="VGGT Demo")
     parser.add_argument("--scene_dir", type=str, required=True, help="Directory containing the scene images")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
-    parser.add_argument("--use_ba", action="store_true", default=False, help="Use BA for reconstruction")
     parser.add_argument("--use_sfm", action="store_true", default=False, help="Use SfM for reconstruction")
     ######### BA parameters #########
     parser.add_argument(
@@ -1270,7 +1269,52 @@ def save_input_data(images, image_masks, depth_prior, gen_3d, out_dir):
         if camera_path and os.path.exists(camera_path):
             shutil.copy2(camera_path, gen3d_dir / Path(camera_path).name)
 
-def register_new_frame(image_info, gen_3d, frame_idx, args, iters=5):
+def eval_reprojection(image_info, frame_idx, intr_np, pts_np, tracks_np, mask_np, R_final, t_final, out_dir):
+    """Overlay reprojection error vectors on the raw image for a frame."""
+    img_paths = image_info.get("image_paths")
+    if not img_paths or frame_idx >= len(img_paths):
+        return None
+
+    base_img = Image.open(img_paths[frame_idx]).convert("RGB")
+    vis_img = np.array(base_img)
+
+    cam_pts = (R_final @ pts_np.T).T + t_final
+    z = cam_pts[:, 2:3]
+    uv = cam_pts[:, :2] / (z + 1e-8)
+    proj = (intr_np @ np.concatenate([uv, np.ones_like(z)], axis=1).T).T[:, :2]
+
+    if proj.shape[0] != tracks_np.shape[0]:
+        return None
+
+    mask_np = np.asarray(mask_np).astype(bool)
+    end_pts = proj[mask_np]
+    start_pts = tracks_np[mask_np]
+    if start_pts.shape[0] == 0:
+        return None
+
+    errors = np.linalg.norm(end_pts - start_pts, axis=1)
+    cutoff = np.quantile(errors, 0.9) if len(errors) > 0 else np.inf
+
+    for s, e, err in zip(start_pts, end_pts, errors):
+        start = tuple(np.round(s).astype(int))
+        end = tuple(np.round(e).astype(int))
+        color = (255, 0, 0) if err >= cutoff else (0, 0, 255)
+        cv2.arrowedLine(
+            vis_img,
+            start,
+            end,
+            color=color,
+            thickness=1,
+            tipLength=0.2,
+        )
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    vis_path = out_dir / f"reproj_error.png"
+    Image.fromarray(vis_img).save(vis_path)
+    return vis_path
+
+def register_new_frame(image_info, gen_3d, frame_idx, args, out_dir, iters=5, depth_weight=0):
     """Optimize only the pose of frame `frame_idx` using reprojection + mesh-depth consistency."""
     points_3d = image_info.get("points_3d")
     extrinsics = image_info.get("extrinsics")
@@ -1324,7 +1368,7 @@ def register_new_frame(image_info, gen_3d, frame_idx, args, iters=5):
                 H, W = depth_np.shape[:2]
                 glctx = dr.RasterizeGLContext() if mesh_depth_term else None
 
-                if mesh_depth_term:
+                if mesh_depth_term and depth_weight > 0:
                     mesh = trimesh.load_mesh(mesh_path, force="mesh")
                     verts = torch.from_numpy(mesh.vertices.astype(np.float32)).to(device)
                     faces = torch.from_numpy(mesh.faces.astype(np.int32)).to(device)
@@ -1345,7 +1389,7 @@ def register_new_frame(image_info, gen_3d, frame_idx, args, iters=5):
 
                     # Depth consistency between rendered mesh and depth prior
                     depth_loss = torch.tensor(0.0, device=device)
-                    if mesh_depth_term:
+                    if mesh_depth_term and depth_weight > 0:
                         extr4 = torch.eye(4, device=device, dtype=torch.float32)
                         extr4[:3, :3] = R
                         extr4[:3, 3] = tvec
@@ -1359,7 +1403,7 @@ def register_new_frame(image_info, gen_3d, frame_idx, args, iters=5):
                                 depth_render[depth_mask], depth_t[depth_mask]
                             )
 
-                    (reproj_loss + 0.1 * depth_loss).backward()
+                    (reproj_loss + depth_weight * depth_loss).backward()
                     optim.step()
 
                 with torch.no_grad():
@@ -1370,6 +1414,24 @@ def register_new_frame(image_info, gen_3d, frame_idx, args, iters=5):
                     image_info["extrinsics"] = extrinsics
 
                 print(f"[register_new_frame] Optimized frame {frame_idx} pose (reproj + depth).")
+
+                # Visualize reprojection error vectors over the raw image for this frame.
+                try:
+                    vis_path = eval_reprojection(
+                        image_info=image_info,
+                        frame_idx=frame_idx,
+                        intr_np=intr.cpu().numpy(),
+                        pts_np=pts.cpu().numpy(),
+                        tracks_np=tracks.cpu().numpy(),
+                        mask_np=mask.cpu().numpy(),
+                        R_final=R_final,
+                        t_final=t_final,
+                        out_dir=out_dir,
+                    )
+                    if vis_path:
+                        print(f"[register_new_frame] Saved reprojection error overlay to {vis_path}")
+                except Exception as vis_err:
+                    print(f"[register_new_frame] Failed to save reprojection error overlay: {vis_err}")
         except Exception as e:
             print(f"[register_new_frame] Pose refinement failed: {e}")
 
@@ -1714,7 +1776,7 @@ def demo_fn(args):
             image_info["invalid"][next_frame_idx] = True
             continue
 
-        register_new_frame(image_info, gen_3d, next_frame_idx, args)
+        register_new_frame(image_info, gen_3d, next_frame_idx, args, out_dir=Path(args.output_dir) / "results" / f"{next_frame_idx:04d}")
         image_info["registered"][next_frame_idx] = True
         print(f"Frame {next_frame_idx} registered.")        
 
