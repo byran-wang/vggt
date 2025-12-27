@@ -48,8 +48,27 @@ First, clone this repository to your local machine, and install the dependencies
 ```bash
 git clone --recurse-submodules git@github.com:byran-wang/vggt.git 
 cd vggt
+conda create -n vggsfm_tmp python=3.10 -y
+conda activate vggsfm_tmp
+pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu118
 pip install -r requirements.txt
+pip install setuptools wheel ninja
+# in ubuntu 22.04, the gcc version is 12.3.0 which is great than 11.xxx, a version the nvdiffrast need. 
+sudo apt-get update
+sudo apt-get install -y gcc-11 g++-11
+export CC=/usr/bin/gcc-11
+export CXX=/usr/bin/g++-11
+# sanity
+# $CC --version
+# $CXX --version
 pip install git+https://github.com/NVlabs/nvdiffrast.git --no-build-isolation
+
+# Install LightGlue
+git clone https://github.com/jytime/LightGlue.git dependency/LightGlue
+
+cd dependency/LightGlue/
+python -m pip install -e .  # editable mode
+cd ../../
 ```
 
 Alternatively, you can install VGGT as a package (<a href="docs/package.md">click here</a> for details).

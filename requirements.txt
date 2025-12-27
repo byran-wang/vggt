@@ -1,6 +1,4 @@
-torch==2.3.1
-torchvision==0.18.1
-numpy==1.26.1
+numpy==1.26.4
 Pillow
 huggingface_hub
 einops
@@ -9,3 +7,9 @@ plyfile
 setuptools
 wheel
 ninja
+rerun-sdk==0.17.0
+imageio
+trimesh
+opencv-python==4.11.0.86
+hydra-core
+h5py

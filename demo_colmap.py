@@ -25,7 +25,7 @@ torch.backends.cudnn.deterministic = False
 import argparse
 from pathlib import Path
 import trimesh
-import pycolmap
+# import pycolmap
 import cv2
 from PIL import Image
 
@@ -42,7 +42,7 @@ from vggt.dependency.projection import project_3D_points_np
 
 import sys
 sys.path.append("third_party/Hierarchical-Localization/")
-from hloc.reconstruction import main as hloc_reconstruction_main
+# from hloc.reconstruction import main as hloc_reconstruction_main
 sys.path.append("third_party/utils_simba")
 from utils_simba.geometry import save_point_cloud_to_ply
 from utils_simba.render import diff_renderer, projection_matrix_from_intrinsics
