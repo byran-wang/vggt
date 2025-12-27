@@ -3,14 +3,18 @@ import os
 
 current_dir=os.path.dirname(os.path.abspath(__file__))
 data_dir=os.path.join(current_dir, 'examples_ZED')
-reconstruction_dir=os.path.join(current_dir, 'examples_ZED')
-reconstruction_dir=os.path.join(current_dir, 'output_backup','[102][6_20][100][SfM]')
-reconstruction_dir=os.path.join(current_dir, 'output_test_white_bg')
+# reconstruction_dir=os.path.join(current_dir, 'examples_ZED')
+# reconstruction_dir=os.path.join(current_dir, 'output_backup','[102][6_20][100][SfM]')
+# reconstruction_dir=os.path.join(current_dir, 'output_test_white_bg')
+reconstruction_dir=os.path.join(current_dir, 'output')
 # reconstruction_dir=os.path.join(current_dir, 'output_backup','[104][6_20][102][PIN_HOLE][fixed_calibrated_intrinsic]')
 # scenes=['fire_fighting_car']
 # scenes=os.listdir(data_dir)
 # scenes=["fire_fighting_car"]
-scenes=["cooking_shovel"]
+# scenes=["spoon"]
+scenes=["cup2"]
+# scenes=["hammer"]
+
 
 # Feedforward prediction only
 # python demo_colmap.py --scene_dir=$scene_dir --conf_thres_value 3
@@ -24,8 +28,9 @@ python_path='/home/simba/anaconda3/envs/threestudio/bin/python'
 for scene in scenes:
     scene_dir=f"{data_dir}/{scene}"
     out_dir=os.path.join(reconstruction_dir, scene)
-    os.system(f'cd viewer && {python_path} viewer.py --sequence_folder {scene_dir} --reconstruction_folder {out_dir}/sfm/sparse/ --world_coordinate object')
-    # os.system(f'cd viewer && {python_path} viewer.py --sequence_folder {scene_dir} --reconstruction_folder {out_dir}/colmap_{scene}.0/sfm_superpoint+superglue --world_coordinate object')
+    # os.system(f'cd viewer && {python_path} viewer.py --sequence_folder {scene_dir} --reconstruction_folder {out_dir}/vggt_ba/sparse/ --world_coordinate object --result_folder {out_dir}/0000')
+    os.system(f'cd viewer && {python_path} viewer_step.py --result_folder {out_dir}/results/ --vis_only_register')
+    # os.system(f'cd viewer && {python_path} viewer.py --sequence_folder {scene_dir} --reconstruction_folder {out_dir}/sfm/sparse --world_coordinate object')
     
 
 
