@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import numpy as np
-import pycolmap
+# import pycolmap
 from .projection import project_3D_points_np
 from vggt.utils.visual_track import visualize_tracks_on_images
 import torch

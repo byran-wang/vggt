@@ -9,7 +9,7 @@ import warnings
 from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
-import pycolmap
+# import pycolmap
 import torch
 import torch.nn.functional as F
 from lightglue import ALIKED, SIFT, SuperPoint

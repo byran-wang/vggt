@@ -35,9 +35,9 @@ from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.geometry import unproject_depth_map_to_point_map
 from vggt.utils.helper import create_pixel_coordinate_grid, randomly_limit_trues
 from vggt.dependency.track_predict import predict_tracks
-from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap, batch_np_matrix_to_pycolmap_wo_track
+from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap
 from vggt.utils.visual_track import visualize_tracks_on_images
-from vggt.dependency.sfm_prepair import prepare_features, prepare_matches, prepare_pairs
+# from vggt.dependency.sfm_prepair import prepare_features, prepare_matches, prepare_pairs
 from vggt.dependency.projection import project_3D_points_np
 
 import sys
