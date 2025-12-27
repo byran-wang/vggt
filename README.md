@@ -46,7 +46,7 @@ Visual Geometry Grounded Transformer (VGGT, CVPR 2025) is a feed-forward neural 
 First, clone this repository to your local machine, and install the dependencies (torch, torchvision, numpy, Pillow, and huggingface_hub). 
 
 ```bash
-git clone git@github.com:facebookresearch/vggt.git 
+git clone --recurse-submodules git@github.com:byran-wang/vggt.git 
 cd vggt
 pip install -r requirements.txt
 pip install git+https://github.com/NVlabs/nvdiffrast.git --no-build-isolation
