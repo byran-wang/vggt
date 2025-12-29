@@ -36,6 +36,11 @@ def parse_args():
         action="store_true",
         help="Only visualize frames marked as registered.",
     )
+    parser.add_argument(
+        "--num_frames",
+        type=int,
+        help="Number of frames to visualize in the grid view.",
+    )
     return parser.parse_args()
 
 
@@ -120,7 +125,7 @@ def build_blueprint(num_images: int) -> rrb.BlueprintLike:
                     rrb.Spatial2DView(name=f"image_{i}", origin=f"/camera/image_{i}")
                     for i in range(num_images)
                 ],
-                grid_columns=20,
+                grid_columns=25,
             ),
         ),
         row_shares=[3, 3],
@@ -132,7 +137,7 @@ def main(args):
     vis_name = provider.base_dir.parents[0].name
     visualizer = Visualizer(vis_name, jpeg_quality=args.jpeg_quality)
 
-    rr.send_blueprint(build_blueprint(100))
+    rr.send_blueprint(build_blueprint(args.num_frames))
     rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
     
     gen_3d = trimesh.load_mesh(provider.mesh_path)
