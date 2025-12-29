@@ -99,7 +99,7 @@ class GEN_3D:
 
 
 
-def load_and_preprocess_images_square(image_path_list, instance_id, target_size=1024, out_dir=None):
+def load_and_preprocess_images_square_ZED(image_path_list, args, target_size=1024, out_dir=None):
     """
     Load and preprocess images by center padding to square and resizing to target size.
     Also returns the position information of original pixels after transformation.
@@ -124,6 +124,7 @@ def load_and_preprocess_images_square(image_path_list, instance_id, target_size=
 
     cache_path = None
     image_path_list = [str(p) for p in image_path_list]
+    instance_id = args.instance_id
     if out_dir is not None:
         cache_dir = Path(out_dir)
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -284,6 +285,203 @@ def load_and_preprocess_images_square(image_path_list, instance_id, target_size=
 
     return images, original_coords, masks, depths
 
+
+def load_and_preprocess_images_square_HO3D(image_path_list, args, target_size=1024, out_dir=None):
+    """
+    Load and preprocess images by center padding to square and resizing to target size.
+    Also returns the position information of original pixels after transformation.
+
+    Args:
+        image_path_list (list): List of paths to image files
+        target_size (int, optional): Target size for both width and height. Defaults to 518.
+        out_dir (str | Path, optional): If provided, saves/loads cached tensors in this directory.
+
+    Returns:
+        tuple: (
+            torch.Tensor: Batched tensor of preprocessed images with shape (N, 3, target_size, target_size),
+            torch.Tensor: Array of shape (N, 6) containing [x1, y1, x2, y2, width, height] for each image
+        )
+
+    Raises:
+        ValueError: If the input list is empty
+    """
+    # Check for empty list
+    if len(image_path_list) == 0:
+        raise ValueError("At least 1 image is required")
+
+    cache_path = None
+    image_path_list = [str(p) for p in image_path_list]
+    instance_id = args.instance_id
+    if out_dir is not None:
+        cache_dir = Path(out_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / f"preprocessed_{target_size}_{instance_id}.pt"
+        if cache_path.exists():
+            try:
+                cached = torch.load(cache_path, map_location="cpu")
+                if (
+                    cached.get("target_size") == target_size
+                    and cached.get("instance_id") == instance_id
+                    and cached.get("image_paths") == image_path_list
+                ):
+                    print(f"[load_and_preprocess_images_square] Loaded cache from {cache_path}")
+                    return (
+                        cached["images"],
+                        cached["original_coords"],
+                        cached["masks"],
+                        cached["depths"],
+                    )
+            except Exception as e:
+                print(f"[load_and_preprocess_images_square] Failed to load cache {cache_path}: {e}")
+
+    images = []
+    masks = []
+    depths = []
+    original_coords = []  # Renamed from position_info to be more descriptive
+
+    def _pil_to_chw_float_tensor(pil_img: Image.Image) -> torch.Tensor:
+        if pil_img.mode != "RGB":
+            pil_img = pil_img.convert("RGB")
+        width, height = pil_img.size
+        data = torch.frombuffer(bytearray(pil_img.tobytes()), dtype=torch.uint8)
+        data = data.view(height, width, 3).permute(2, 0, 1).to(dtype=torch.float32).div_(255.0)
+        return data
+
+    def _pil_l_to_1hw_float_tensor(pil_img: Image.Image) -> torch.Tensor:
+        if pil_img.mode != "L":
+            pil_img = pil_img.convert("L")
+        width, height = pil_img.size
+        data = torch.frombuffer(bytearray(pil_img.tobytes()), dtype=torch.uint8)
+        data = data.view(height, width).to(dtype=torch.float32).div_(255.0)
+        return data.unsqueeze(0)
+
+    for image_path in tqdm(image_path_list, desc="Loading and preprocessing images", total=len(image_path_list)):
+        # Open image
+        img = Image.open(image_path)
+        seq_id = Path(image_path).parents[1].name
+        img_index = int(Path(image_path).stem.split('_')[-1])
+        mask_path = Path(image_path).parents[3] / "masks_XMem" / seq_id / f"{img_index:05d}.png"
+        depth_path = Path(image_path.replace('rgb', 'depth').replace('.jpg', '.png'))
+
+        if img.mode == "RGBA":
+            mask = np.array(img.getchannel('A'))
+        elif mask_path.exists():
+            mask_img = Image.open(mask_path)
+            mask = np.array(mask_img)
+            # mask[mask != instance_id] = 0      
+        else:
+            mask = np.ones((img.size[1], img.size[0]))
+        mask = mask > 0  # (H, W) bool
+
+        # If there's an alpha channel, blend onto black background
+        if img.mode == "RGBA":
+            background = Image.new("RGBA", img.size, (0, 0, 0, 255))
+            img = Image.alpha_composite(background, img)
+            # Convert to RGB
+            img = img.convert("RGB")
+        else:
+            img = img.convert("RGB")
+            img_np = np.array(img, dtype=np.uint8)
+            img_np = img_np * mask[..., None].astype(np.uint8)
+            img = Image.fromarray(img_np, mode="RGB")
+        
+        # Get original dimensions
+        width, height = img.size
+
+        # Make the image square by padding the shorter dimension
+        max_dim = max(width, height)
+
+        # Calculate padding
+        left = (max_dim - width) // 2
+        top = (max_dim - height) // 2
+
+        # Calculate scale factor for resizing
+        scale = target_size / max_dim
+
+        # Calculate final coordinates of original image in target space
+        x1 = left * scale
+        y1 = top * scale
+        x2 = (left + width) * scale
+        y2 = (top + height) * scale
+
+        # Store original image coordinates and scale
+        original_coords.append([float(x1), float(y1), float(x2), float(y2), float(width), float(height)])
+
+        # Create a new black square image and paste original
+        square_img = Image.new("RGB", (max_dim, max_dim), (0, 0, 0))
+        square_img.paste(img, (left, top))
+
+        # Create a square mask aligned with the preprocessed image
+        mask_img = Image.fromarray((mask.astype(np.uint8) * 255), mode="L")
+        square_mask_img = Image.new("L", (max_dim, max_dim), 0)
+        square_mask_img.paste(mask_img, (left, top))
+
+        # Resize to target size
+        square_img = square_img.resize((target_size, target_size), Image.Resampling.BICUBIC)
+        square_mask_img = square_mask_img.resize((target_size, target_size), Image.Resampling.NEAREST)
+        square_mask_tensor = _pil_l_to_1hw_float_tensor(square_mask_img) > 0.5
+
+        # If a depth map exists, use it to further refine the mask (drop pixels with invalid depth).
+        if depth_path.exists():
+            depth_np = get_depth(str(depth_path))  # (H, W) float
+            depth_np = depth_np * mask.astype(depth_np.dtype)
+
+            depth_img = Image.fromarray(depth_np.astype(np.float32), mode="F")
+            square_depth_img = Image.new("F", (max_dim, max_dim), 0.0)
+            square_depth_img.paste(depth_img, (left, top))
+            square_depth_img = square_depth_img.resize(
+                (target_size, target_size), Image.Resampling.BILINEAR
+            )
+            depth_square = torch.frombuffer(bytearray(square_depth_img.tobytes()), dtype=torch.float32)
+            depth_square = depth_square.view(target_size, target_size)
+            depth_square = erode_depth_map_torch(depth_square, structure_size=2, d_thresh=0.01, frac_req=0.6)
+            depth_square = erode_depth_map_torch(depth_square, structure_size=2, d_thresh=0.01, frac_req=0.6)
+
+            square_mask_tensor = square_mask_tensor & (depth_square > 0.0).unsqueeze(0)
+
+            depths.append(depth_square)
+
+        # Convert to tensor
+        images.append(_pil_to_chw_float_tensor(square_img))
+        masks.append(square_mask_tensor.to(dtype=torch.float32))
+
+    # Stack all images
+    images = torch.stack(images)
+    original_coords = torch.tensor(original_coords, dtype=torch.float32)
+    masks = torch.stack(masks)
+    depths = torch.stack(depths)
+
+    # Add additional dimension if single image to ensure correct shape
+    if len(image_path_list) == 1:
+        if images.dim() == 3:
+            images = images.unsqueeze(0)
+            original_coords = original_coords.unsqueeze(0)
+            masks = masks.unsqueeze(0)
+
+    if cache_path is not None:
+        torch.save(
+            {
+                "images": images.cpu(),
+                "original_coords": original_coords.cpu(),
+                "masks": masks.cpu(),
+                "depths": depths.cpu(),
+                "image_paths": image_path_list,
+                "target_size": target_size,
+                "instance_id": instance_id,
+            },
+            cache_path,
+        )
+        print(f"[load_and_preprocess_images_square] Saved cache to {cache_path}")
+
+    return images, original_coords, masks, depths
+
+def load_and_preprocess_images_square(image_path_list, args, target_size=1024, out_dir=None):
+    if args.dataset_type == "ZED":
+        return load_and_preprocess_images_square_ZED(image_path_list, args, target_size, out_dir)
+    elif args.dataset_type == "HO3D":
+        return load_and_preprocess_images_square_HO3D(image_path_list, args, target_size, out_dir)
+
+    return None, None, None, None
 
 def load_and_preprocess_images(image_path_list, mode="crop"):
     """

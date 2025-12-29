@@ -66,6 +66,7 @@ def parse_args():
     )
     parser.add_argument("--shared_camera", action="store_true", default=False, help="Use shared camera for all images")
     parser.add_argument("--camera_type", type=str, default="SIMPLE_PINHOLE", help="Camera type for reconstruction")
+    parser.add_argument("--dataset_type", type=str, default="ZED", help="Dataset type for SfM preprocessing")
     parser.add_argument("--vis_thresh", type=float, default=0.2, help="Visibility threshold for tracks")
     parser.add_argument("--query_frame_num", type=int, default=5, help="Number of frames to query")
     parser.add_argument("--max_query_pts", type=int, default=2048, help="Maximum number of query points")
@@ -81,6 +82,8 @@ def parse_args():
     parser.add_argument("--min_inlier_per_frame", type=int, default=10, help="Minimum inliers per frame for BA")
     parser.add_argument("--min_inlier_per_track", type=int, default=4, help="Minimum inliers per track for BA")
     parser.add_argument("--max_frames", type=int, default=50, help="Maximum number of frames to process")
+    parser.add_argument("--frame_interval", type=int, default=1, help="Frame interval for processing")
+    parser.add_argument("--min_PnP_inlier_num", type=int, default=200, help="Minimum inliers for registration")
     parser.add_argument("--instance_id", type=int, default=0, help="Instance ID for image preprocessing")
     parser.add_argument("--cond_index", type=int, default=0, help="Conditioning frame index for tracking")
     parser.add_argument("--kf_rot_thresh", type=float, default=5.0, help="Keyframe rotation threshold (degrees)")
@@ -1327,7 +1330,7 @@ def eval_reprojection(image_info, frame_idx, intr_np, pts_np, tracks_np, mask_np
     Image.fromarray(vis_img).save(vis_path)
     return vis_path
 
-def register_new_frame(image_info, gen_3d, frame_idx, args, out_dir, iters=5, depth_weight=0):
+def register_new_frame(image_info, gen_3d, frame_idx, args, out_dir, iters=100, depth_weight=0):
     """Optimize only the pose of frame `frame_idx` using reprojection + mesh-depth consistency."""
     points_3d = image_info.get("points_3d")
     extrinsics = image_info.get("extrinsics")
@@ -1383,7 +1386,7 @@ def register_new_frame(image_info, gen_3d, frame_idx, args, out_dir, iters=5, de
                 rvec_init.astype(np.float32),
                 tvec_init.astype(np.float32),
                 useExtrinsicGuess=True,
-                iterationsCount=100,
+                iterationsCount=iters,
                 reprojectionError=float(args.max_reproj_error) if hasattr(args, "max_reproj_error") else 8.0,
                 confidence=0.99,
                 flags=cv2.SOLVEPNP_ITERATIVE,
@@ -1567,6 +1570,31 @@ def process_key_frame(image_info, frame_idx, args):
         image_info["points_3d"] = points_3d_new
         image_info["points_rgb"] = points_rgb_new
 
+def get_image_list_ZED(args):
+    image_dir = Path(os.path.join(args.scene_dir, "images"))
+    image_path_list = glob.glob(os.path.join(image_dir, "*"))
+    image_path_list = [path for path in image_path_list if path.endswith(".jpg") or path.endswith(".png")]
+    image_path_list = sorted(image_path_list)
+    image_path_list = image_path_list[:args.max_frames]
+
+    return image_dir, image_path_list
+
+def get_image_list_HO3D(args):
+    image_dir = Path(os.path.join(args.scene_dir, "rgb"))
+    image_path_list = glob.glob(os.path.join(image_dir, "*"))
+    image_path_list = [path for path in image_path_list if path.endswith(".jpg") or path.endswith(".png")]
+    image_path_list = sorted(image_path_list)
+    image_path_list = image_path_list[:args.max_frames:args.frame_interval]
+
+    return image_dir, image_path_list  
+
+def get_image_list(args):
+    if args.dataset_type == "ZED":
+        return get_image_list_ZED(args)
+    elif args.dataset_type == "HO3D":
+        return get_image_list_HO3D(args)
+
+    return None, []
 
 def demo_fn(args):
     # Print configuration
@@ -1590,11 +1618,7 @@ def demo_fn(args):
     print(f"Using dtype: {dtype}")
 
     # Get image paths and preprocess them
-    image_dir = Path(os.path.join(args.scene_dir, "images"))
-    image_path_list = glob.glob(os.path.join(image_dir, "*"))
-    image_path_list = [path for path in image_path_list if path.endswith(".jpg") or path.endswith(".png")]
-    image_path_list = sorted(image_path_list)
-    image_path_list = image_path_list[:args.max_frames]
+    image_dir, image_path_list = get_image_list(args)
     if len(image_path_list) == 0:
         raise ValueError(f"No images found in {image_dir}")
     # check the frame index range
@@ -1607,7 +1631,7 @@ def demo_fn(args):
 
     img_load_resolution = Image.open(image_path_list[0]).size[0]
 
-    images, original_coords, image_masks, depth_prior = load_and_preprocess_images_square(image_path_list, args.instance_id, target_size=img_load_resolution, out_dir=f"{args.output_dir}/data_processed")
+    images, original_coords, image_masks, depth_prior = load_and_preprocess_images_square(image_path_list, args, target_size=img_load_resolution, out_dir=f"{args.output_dir}/data_processed")
     gen_3d = GEN_3D(f"{args.scene_dir}/align_mesh_image/0000")
     save_input_data(images, image_masks, depth_prior, gen_3d, f"{args.output_dir}/results/")
     
