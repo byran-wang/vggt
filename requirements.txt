@@ -13,3 +13,4 @@ trimesh
 opencv-python==4.11.0.86
 hydra-core
 h5py
+pdbpp
