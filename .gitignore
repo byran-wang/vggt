@@ -154,3 +154,5 @@ examples_ZED/
 output*
 .gradio/
 dependency/
+dataset_ZED/
+dataset_HO3D
