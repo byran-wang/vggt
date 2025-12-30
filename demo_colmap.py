@@ -518,17 +518,9 @@ def estimate_extrinsic(depth_map, extrinsics, intrinsic, tracks, track_mask, ref
         progress = False
         remaining = []
         for frame_idx in frames_to_solve:
-            # choose candidate reference frames with known extrinsics
-            candidate_refs = []
-            if frame_idx - 1 >= 0 and extrinsic_known[frame_idx - 1]:
-                candidate_refs.append(frame_idx - 1)
-            if extrinsic_known[ref_index]:
-                candidate_refs.append(ref_index)
-            if frame_idx + 1 < num_frames and extrinsic_known[frame_idx + 1]:
-                candidate_refs.append(frame_idx + 1)
-            candidate_refs = list(dict.fromkeys(candidate_refs))  # unique
 
             estimated = False
+            candidate_refs = [ref_index]
             for ref_idx in candidate_refs:
                 vis = track_mask[ref_idx] & track_mask[frame_idx]
                 if not np.any(vis):
@@ -623,7 +615,7 @@ def verify_tracks_by_geometry(points3d, extrinsics, intrinsics, tracks, ref_inde
         valid_ref = cam_ref[:, 2, :] > 0
 
         projected_points_2d, projected_points_cam = project_3D_points_np(points3d, extrinsics, intrinsics)
-        projected_points_2d[projected_points_cam[:, -1] <= 0] = 1e6
+        projected_points_2d[projected_points_cam[:, 2, :] <= 0] = 1e6
 
         projected_diff = np.linalg.norm(projected_points_2d - tracks, axis=-1)
         reproj_mask = projected_diff < max_reproj_error
@@ -1661,7 +1653,7 @@ def demo_fn(args):
     track_mask = pred_vis_scores > args.vis_thresh
     visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_vis_thresh")
     extrinsic = np.eye(4)[None].repeat(len(images), axis=0).astype(np.float32)
-    extrinsic = estimate_extrinsic(depth_prior, extrinsic, intrinsic, pred_tracks, track_mask, ref_index=args.cond_index)
+    extrinsic = estimate_extrinsic(depth_prior, extrinsic, intrinsic, pred_tracks, track_mask, ref_index=args.cond_index, ransac_reproj_threshold=args.max_reproj_error)
     
     intrinsic = np.tile(intrinsic[None, :, :], (len(images), 1, 1))
     points_3d = unproject_depth_map_to_point_map(depth_prior[..., None], extrinsic, intrinsic)
@@ -1711,7 +1703,7 @@ def demo_fn(args):
         masks=track_mask,
         max_reproj_error=args.max_reproj_error,
     )
-    visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_max_proj_err")            
+    visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_max_proj_err")
     
     # step: Prep valid correspondences and drop 3D points without surviving tracks
     track_mask, points_3d, keep_pts = prep_valid_correspondences(
