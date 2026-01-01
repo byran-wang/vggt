@@ -50,6 +50,7 @@ git clone --recurse-submodules git@github.com:byran-wang/vggt.git
 cd vggt
 conda create -n vggsfm_tmp python=3.10 -y
 conda activate vggsfm_tmp
+conda install -y pip setuptools wheel
 pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu118
 pip install -r requirements.txt
 pip install setuptools wheel ninja
@@ -69,6 +70,28 @@ git clone https://github.com/jytime/LightGlue.git dependency/LightGlue
 cd dependency/LightGlue/
 python -m pip install -e .  # editable mode
 cd ../../
+
+# --- smplx (custom)
+git clone https://github.com/zc-alexfan/smplx.git
+cd smplx
+python setup.py install
+cd ..
+
+# --- pytroch3d
+# ref https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md
+!ipython  # run on the terminal
+import sys
+import torch
+pyt_version_str=torch.__version__.split("+")[0].replace(".", "")
+version_str="".join([
+    f"py3{sys.version_info.minor}_cu",
+    torch.version.cuda.replace(".",""),
+    f"_pyt{pyt_version_str}"
+])
+!pip install fvcore iopath
+!pip install --no-index --no-cache-dir pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/{version_str}/download.html
+
+
 ```
 
 Alternatively, you can install VGGT as a package (<a href="docs/package.md">click here</a> for details).

@@ -1,4 +1,5 @@
-numpy==1.26.4
+# numpy==1.26.4
+numpy==1.23.1
 Pillow
 huggingface_hub
 einops
@@ -14,3 +15,10 @@ opencv-python==4.11.0.86
 hydra-core
 h5py
 pdbpp
+lightning
+easydict
+loguru
+pymeshlab
+ipython
+open3d
+chumpy
