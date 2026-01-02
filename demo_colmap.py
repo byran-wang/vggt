@@ -81,7 +81,8 @@ def parse_args():
     parser.add_argument("--use_calibrated_intrinsic", action="store_true", default=False, help="Use calibrated intrinsic for reconstruction")
     parser.add_argument("--min_inlier_per_frame", type=int, default=10, help="Minimum inliers per frame for BA")
     parser.add_argument("--min_inlier_per_track", type=int, default=4, help="Minimum inliers per track for BA")
-    parser.add_argument("--max_frames", type=int, default=50, help="Maximum number of frames to process")
+    parser.add_argument("--min_frame_num", type=int, default=0, help="Minimum number of frames to process")
+    parser.add_argument("--max_frame_num", type=int, default=50, help="Maximum number of frames to process")
     parser.add_argument("--frame_interval", type=int, default=1, help="Frame interval for processing")
     parser.add_argument("--min_PnP_inlier_num", type=int, default=200, help="Minimum inliers for registration")
     parser.add_argument("--instance_id", type=int, default=0, help="Instance ID for image preprocessing")
@@ -1583,7 +1584,7 @@ def get_image_list_ZED(args):
     image_path_list = glob.glob(os.path.join(image_dir, "*"))
     image_path_list = [path for path in image_path_list if path.endswith(".jpg") or path.endswith(".png")]
     image_path_list = sorted(image_path_list)
-    image_path_list = image_path_list[:args.max_frames]
+    image_path_list = image_path_list[args.min_frame_num:args.max_frame_num:args.frame_interval]
 
     return image_dir, image_path_list
 
@@ -1592,7 +1593,7 @@ def get_image_list_HO3D(args):
     image_path_list = glob.glob(os.path.join(image_dir, "*"))
     image_path_list = [path for path in image_path_list if path.endswith(".jpg") or path.endswith(".png")]
     image_path_list = sorted(image_path_list)
-    image_path_list = image_path_list[:args.max_frames:args.frame_interval]
+    image_path_list = image_path_list[args.min_frame_num:args.max_frame_num:args.frame_interval]
 
     return image_dir, image_path_list  
 
