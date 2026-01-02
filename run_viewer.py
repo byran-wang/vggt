@@ -12,8 +12,9 @@ reconstruction_dir=os.path.join(current_dir, 'output')
 # scenes=os.listdir(data_dir)
 # scenes=["fire_fighting_car"]
 # scenes=["spoon"]
-scenes=["cup2"]
+# scenes=["cup2"]
 # scenes=["hammer"]
+scenes=["MC1"]
 
 
 # Feedforward prediction only
@@ -29,7 +30,7 @@ for scene in scenes:
     scene_dir=f"{data_dir}/{scene}"
     out_dir=os.path.join(reconstruction_dir, scene)
     # os.system(f'cd viewer && {python_path} viewer.py --sequence_folder {scene_dir} --reconstruction_folder {out_dir}/vggt_ba/sparse/ --world_coordinate object --result_folder {out_dir}/0000')
-    os.system(f'cd viewer && {python_path} viewer_step.py --result_folder {out_dir}/results/ --vis_only_register --num_frames 150')
+    os.system(f'{python_path} viewer/viewer_step.py --result_folder {out_dir}/results/ --vis_only_register --num_frames 150')
     # os.system(f'cd viewer && {python_path} viewer.py --sequence_folder {scene_dir} --reconstruction_folder {out_dir}/sfm/sparse --world_coordinate object')
     
 

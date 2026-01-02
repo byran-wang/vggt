@@ -11,7 +11,10 @@ import rerun.blueprint as rrb
 from PIL import Image
 import trimesh
 import sys
-sys.path.append("../third_party/utils_simba")
+# sys.path.append("third_party/utils_simba")
+_CODE_DIR = Path(__file__).resolve().parents[1] / "third_party/utils_simba"
+if _CODE_DIR.is_dir():
+    sys.path = [str(_CODE_DIR)] + sys.path
 from utils_simba.rerun import Visualizer
 from utils_simba.depth import get_depth
 
