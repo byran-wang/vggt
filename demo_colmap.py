@@ -1301,6 +1301,22 @@ def eval_reprojection(image_info, frame_idx, intr_np, pts_np, tracks_np, mask_np
     if start_pts.shape[0] == 0:
         return None
 
+    orig_coords = image_info.get("original_coords")
+    if orig_coords is not None:
+        if torch.is_tensor(orig_coords):
+            orig_coords = orig_coords.detach().cpu().numpy()
+        else:
+            orig_coords = np.asarray(orig_coords)
+        if orig_coords.ndim >= 2 and frame_idx < orig_coords.shape[0]:
+            x1, y1, x2, y2, width, height = orig_coords[frame_idx]
+            if width > 0 and height > 0:
+                scale_x = (x2 - x1) / float(width)
+                scale_y = (y2 - y1) / float(height)
+                offset = np.array([x1, y1], dtype=np.float32)
+                scale = np.array([scale_x, scale_y], dtype=np.float32)
+                start_pts = (start_pts - offset) / scale
+                end_pts = (end_pts - offset) / scale
+
     errors = np.linalg.norm(end_pts - start_pts, axis=1)
 
     for s, e, err in zip(start_pts, end_pts, errors):
@@ -1730,6 +1746,7 @@ def demo_fn(args):
     image_info = {
         "image_paths": image_path_list,
         "image_names": base_image_path_list,
+        "original_coords": original_coords,
         "images": images,
         "image_masks": image_masks,
         "depth_priors": depth_prior,
