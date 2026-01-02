@@ -1198,6 +1198,7 @@ def save_results(image_info, gen_3d, out_dir):
     payload = {
         "intrinsics": _to_cpu_numpy(image_info.get("intrinsics")),
         "extrinsics": _to_cpu_numpy(image_info.get("extrinsics")),
+        "original_coords": _to_cpu_numpy(image_info.get("original_coords")),
         "pred_tracks": _to_cpu_numpy(image_info.get("pred_tracks")),
         "track_mask": _to_cpu_numpy(image_info.get("track_mask")),
         "points_3d": _to_cpu_numpy(image_info.get("points_3d")),
@@ -1338,6 +1339,41 @@ def eval_reprojection(image_info, frame_idx, intr_np, pts_np, tracks_np, mask_np
     vis_path = out_dir / f"reproj_error.png"
     Image.fromarray(vis_img).save(vis_path)
     return vis_path
+
+def adjust_intrinsic_for_new_image_size(intrinsic, original_coords, frame_idx=0):
+    """Rescale/shift intrinsic to the padded+resized image frame using stored original coords."""
+    base_intr = np.asarray(intrinsic, dtype=np.float32)
+    if base_intr.shape != (3, 3):
+        return base_intr
+
+    if original_coords is None:
+        return base_intr
+
+    if torch.is_tensor(original_coords):
+        orig_np = original_coords.detach().cpu().numpy()
+    else:
+        orig_np = np.asarray(original_coords)
+
+    if orig_np.ndim < 2 or orig_np.shape[1] < 6:
+        return base_intr
+
+    idx = int(frame_idx)
+    if idx >= orig_np.shape[0]:
+        idx = 0
+
+    x1, y1, x2, y2, width, height = orig_np[idx]
+    if width <= 0 or height <= 0:
+        return base_intr
+
+    scale_x = (x2 - x1) / float(width)
+    scale_y = (y2 - y1) / float(height)
+
+    adjusted = base_intr.copy()
+    adjusted[0, 0] *= scale_x
+    adjusted[1, 1] *= scale_y
+    adjusted[0, 2] = adjusted[0, 2] * scale_x + x1
+    adjusted[1, 2] = adjusted[1, 2] * scale_y + y1
+    return adjusted
 
 def register_new_frame(image_info, gen_3d, frame_idx, args, out_dir, iters=100, depth_weight=0):
     """Optimize only the pose of frame `frame_idx` using reprojection + mesh-depth consistency."""
@@ -1651,6 +1687,8 @@ def demo_fn(args):
 
 
     intrinsic = load_intrinsics(os.path.join(args.scene_dir, "meta", "0000.pkl"))
+    intrinsic = adjust_intrinsic_for_new_image_size(intrinsic, original_coords, frame_idx=getattr(args, "cond_index", 0))
+    
     depth_conf = np.ones_like(depth_prior)
     with torch.cuda.amp.autocast(dtype=dtype) and torch.no_grad():
         pred_tracks, pred_vis_scores, _, _, points_rgb = predict_tracks(

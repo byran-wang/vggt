@@ -91,6 +91,48 @@ class StepDataProvider:
         return vis_path
 
 
+def _get_original_resolution(original_coords, cam_idx, fallback_size):
+    if original_coords is None:
+        return fallback_size
+    if hasattr(original_coords, "detach"):
+        coords = original_coords.detach().cpu().numpy()
+    else:
+        coords = np.asarray(original_coords)
+    if coords.ndim < 2 or cam_idx >= coords.shape[0] or coords.shape[1] < 6:
+        return fallback_size
+    _, _, _, _, width, height = coords[cam_idx]
+    if width <= 0 or height <= 0:
+        return fallback_size
+    return int(width), int(height)
+
+
+def _intrinsic_to_original(intrinsic, original_coords, cam_idx):
+    intr = np.asarray(intrinsic, dtype=np.float32)
+    if intr.shape != (3, 3):
+        return intr
+    if original_coords is None:
+        return intr
+    if hasattr(original_coords, "detach"):
+        coords = original_coords.detach().cpu().numpy()
+    else:
+        coords = np.asarray(original_coords)
+    if coords.ndim < 2 or cam_idx >= coords.shape[0] or coords.shape[1] < 6:
+        return intr
+    x1, y1, x2, y2, width, height = coords[cam_idx]
+    if width <= 0 or height <= 0:
+        return intr
+    scale_x = (x2 - x1) / float(width)
+    scale_y = (y2 - y1) / float(height)
+    if scale_x == 0 or scale_y == 0:
+        return intr
+    intr_adj = intr.copy()
+    intr_adj[0, 0] /= scale_x
+    intr_adj[1, 1] /= scale_y
+    intr_adj[0, 2] = (intr_adj[0, 2] - x1) / scale_x
+    intr_adj[1, 2] = (intr_adj[1, 2] - y1) / scale_y
+    return intr_adj
+
+
 def log_mesh_with_pose(label: str, mesh_path: Path, pose: Optional[dict]):
     if not mesh_path.exists():
         return
@@ -149,6 +191,7 @@ def main(args):
 
         intr = data.get("intrinsics")
         extr = data.get("extrinsics")
+        original_coords = data.get("original_coords")
         registered = data.get("registered")
         pred_tracks = data.get("pred_tracks")
         track_mask = data.get("track_mask")
@@ -224,11 +267,12 @@ def main(args):
 
         # log the current camera view
         cam_idx = int(step['path'].name)
-        
+        w, h = _get_original_resolution(original_coords, cam_idx, (w, h))
+        intr_cam = _intrinsic_to_original(intr[cam_idx], original_coords, cam_idx)    
         visualizer.log_calibration(
             "camera/image",
             resolution=[w, h],
-            intrins=intr[cam_idx],
+            intrins=intr_cam,
             image_plane_distance=1,
             static=False,
         )
