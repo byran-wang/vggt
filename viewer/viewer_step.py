@@ -178,16 +178,16 @@ def build_blueprint(num_images: int) -> rrb.BlueprintLike:
 
 
 def main(args):
-    provider = StepDataProvider(Path(args.result_folder))
-    vis_name = provider.base_dir.parents[0].name
+    obj_provider = StepDataProvider(Path(args.result_folder))
+    vis_name = obj_provider.base_dir.parents[0].name
     visualizer = Visualizer(vis_name, jpeg_quality=args.jpeg_quality)
 
     rr.send_blueprint(build_blueprint(args.num_frames))
     rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
     
-    gen_3d = trimesh.load_mesh(provider.mesh_path)
+    gen_3d = trimesh.load_mesh(obj_provider.mesh_path)
 
-    for step in provider.steps:
+    for step in obj_provider.steps:
         step_idx = step["index"]
         data = step["data"]
         visualizer.set_time_sequence(step_idx)
@@ -218,8 +218,8 @@ def main(args):
                 if cam_idx >= len(reg_flags) or not reg_flags[cam_idx]:
                     continue
 
-            visualizer.log_image(f"camera/image_{cam_idx}", str(provider.images[cam_idx]), static=False)
-            with Image.open(provider.images[cam_idx]) as im:
+            visualizer.log_image(f"camera/image_{cam_idx}", str(obj_provider.images[cam_idx]), static=False)
+            with Image.open(obj_provider.images[cam_idx]) as im:
                 w, h = im.size
             visualizer.log_calibration(
                 f"camera/image_{cam_idx}",
@@ -285,9 +285,9 @@ def main(args):
         visualizer.log_cam_pose("camera/image", c2w, static=False)
         tracks = np.asarray(pred_tracks)[cam_idx]
         if 1:
-            visualizer.log_image("camera/image", str(provider.get_reproj_error_vis_path(cam_idx)), static=False)
+            visualizer.log_image("camera/image", str(obj_provider.get_reproj_error_vis_path(cam_idx)), static=False)
         else:
-            visualizer.log_image("camera/image", str(provider.images[cam_idx]), static=False)
+            visualizer.log_image("camera/image", str(obj_provider.images[cam_idx]), static=False)
             rr.log(
                 f"camera/image/keypoints",
                 rr.Points2D(tracks[mask], colors=[34, 138, 167]),
@@ -300,6 +300,8 @@ def main(args):
             pts = np.asarray(points_3d)
             visualizer.log_points("points_rgb", pts, colors=points_rgb, static=False)
             visualizer.log_points("points_conf", pts, colors=points_conf_color, static=False)
+
+        
 
     if args.rrd_output_path:
         rr.save(args.rrd_output_path)
