@@ -247,7 +247,11 @@ def build_blueprint(num_images: int) -> rrb.BlueprintLike:
     return rrb.Vertical(
         rrb.Horizontal(
             rrb.Spatial3DView(name="world", origin="/"),
-            rrb.Spatial2DView(name="current_camera", origin="/camera/image"),
+            rrb.Vertical(
+            rrb.Spatial2DView(name="camera_current", origin="/camera_current/image"),
+            rrb.Spatial2DView(name="camera_obj", origin="/camera_obj/image"),
+            row_shares=[3, 1],
+            ),
             column_shares=[3, 2],
         ),
         rrb.Horizontal(
@@ -357,10 +361,12 @@ def main(args):
 
         # log the current camera view
         cam_idx = int(step['path'].name)
+        with Image.open(obj_provider.images[cam_idx]) as im:
+            w, h = im.size        
         w, h = _get_original_resolution(original_coords, cam_idx, (w, h))
         intr_cam = _intrinsic_to_original(intr[cam_idx], original_coords, cam_idx)    
         visualizer.log_calibration(
-            "camera/image",
+            "camera_current/image",
             resolution=[w, h],
             intrins=intr_cam,
             image_plane_distance=1,
@@ -369,18 +375,19 @@ def main(args):
         w2c = np.eye(4)
         w2c[:3] = extr[cam_idx]
         c2w = np.linalg.inv(w2c)
-        visualizer.log_cam_pose("camera/image", c2w, static=False)
+        visualizer.log_cam_pose("camera_current/image", c2w, static=False)
         tracks = np.asarray(pred_tracks)[cam_idx]
         if 1:
-            visualizer.log_image("camera/image", str(obj_provider.get_reproj_error_vis_path(cam_idx)), static=False)
+            visualizer.log_image("camera_current/image", str(obj_provider.get_reproj_error_vis_path(cam_idx)), static=False)
+            visualizer.log_image("camera_obj/image", str(obj_provider.images[cam_idx]), static=False)
         else:
-            visualizer.log_image("camera/image", str(obj_provider.images[cam_idx]), static=False)
+            visualizer.log_image("camera_current/image", str(obj_provider.images[cam_idx]), static=False)
             rr.log(
-                f"camera/image/keypoints",
+                f"camera_current/image/keypoints",
                 rr.Points2D(tracks[mask], colors=[34, 138, 167]),
                 static=False,
             )
-            
+
         visualizer.log_mesh("aligned_mesh", gen_3d_mesh_aligned_path, static=False)
         # Log 3D points with color if available
         if points_3d is not None:
