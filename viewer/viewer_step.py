@@ -15,8 +15,20 @@ import sys
 _CODE_DIR = Path(__file__).resolve().parents[1] / "third_party/utils_simba"
 if _CODE_DIR.is_dir():
     sys.path = [str(_CODE_DIR)] + sys.path
-from utils_simba.rerun import Visualizer
+from utils_simba.rerun import Visualizer, add_material
 from utils_simba.depth import get_depth
+
+_CODE_DIR = Path(__file__).resolve().parents[1]
+if _CODE_DIR.is_dir():
+    sys.path = [str(_CODE_DIR)] + sys.path
+try:
+    from common.body_models import seal_mano_mesh_np  # type: ignore
+except Exception:
+    seal_mano_mesh_np = None
+
+LIGHT_GRAY = [200, 200, 200, 255]
+GREEN = [0, 255, 0, 255]
+LIGHT_RED = [255, 128, 128, 255]
 
 
 def parse_args():
@@ -92,8 +104,82 @@ class StepDataProvider:
         step_dir = self.base_dir / f"{step_idx:04d}"
         vis_path = step_dir / "reproj_error.png"
         return vis_path
+    
+class HandDataProvider:
+    def __init__(self, base_dir: Path):
+        self.base_dir =base_dir
+        self.hand_fit_intrinsic = self._load_fit("intrinsic")
+        self.hand_fit_trans = self._load_fit("trans")
+        self.hand_fit_rot = self._load_fit("rot")
+        self.hand_fit_pose = self._load_fit("pose")
+        self.hand_fit_all = self._load_fit("all")
 
+    def _load_fit(self, suffix: str):
+        for prefix in ("hand_fit", "hold_fit"):
+            path = self.base_dir / f"{prefix}.aligned_h_{suffix}.npy"
+            if path.exists():
+                try:
+                    arr = np.load(path, allow_pickle=True)
+                    if isinstance(arr, np.ndarray) and arr.dtype == object and arr.size == 1:
+                        return arr.item()
+                    return arr
+                except Exception as e:
+                    print(f"[HandDataProvider] Failed to load {path}: {e}")
+        return None
 
+    def _get_fit(self, mode: str):
+        return getattr(self, f"hand_{mode}", None)
+
+    def _extract_from_fit(self, fit, key: str, idx: Optional[int] = None):
+        if fit is None:
+            return None
+        if isinstance(fit, np.ndarray) and fit.dtype == object and fit.size == 1:
+            try:
+                fit = fit.item()
+            except Exception:
+                pass
+        if isinstance(fit, dict):
+            for hand_key in ("right", "rhand", "hand"):
+                sub = fit.get(hand_key)
+                if isinstance(sub, dict) and key in sub:
+                    val = sub[key]
+                    break
+            else:
+                val = fit.get(key)
+        elif hasattr(fit, key):
+            val = getattr(fit, key)
+        else:
+            val = None
+        if val is None:
+            return None
+        if idx is None:
+            return val
+        if isinstance(val, np.ndarray) and val.shape[0] > idx:
+            return val[idx]
+        if isinstance(val, list) and len(val) > idx:
+            return val[idx]
+        return None
+
+    def get_hand_faces(self, mode: str):
+        fit = self._get_fit(f"fit_{mode}")
+        return self._extract_from_fit(fit, "f3d")
+
+    def get_hand_verts_cam(self, mode: str, i: int):
+        fit = self._get_fit(f"fit_{mode}")
+        return self._extract_from_fit(fit, "v3d_cam", i)
+
+    @property
+    def has_hand(self) -> bool:
+        return any(
+            x is not None
+            for x in [
+                self.hand_fit_intrinsic,
+                self.hand_fit_trans,
+                self.hand_fit_rot,
+                self.hand_fit_pose,
+                self.hand_fit_all,
+            ]
+        )
 def _get_original_resolution(original_coords, cam_idx, fallback_size):
     if original_coords is None:
         return fallback_size
@@ -179,6 +265,7 @@ def build_blueprint(num_images: int) -> rrb.BlueprintLike:
 
 def main(args):
     obj_provider = StepDataProvider(Path(args.result_folder))
+    hand_provider = HandDataProvider(Path(Path(args.result_folder).parents[0]))
     vis_name = obj_provider.base_dir.parents[0].name
     visualizer = Visualizer(vis_name, jpeg_quality=args.jpeg_quality)
 
@@ -301,7 +388,47 @@ def main(args):
             visualizer.log_points("points_rgb", pts, colors=points_rgb, static=False)
             visualizer.log_points("points_conf", pts, colors=points_conf_color, static=False)
 
-        
+        if hand_provider.has_hand:
+            hand_modes = [
+                ("intrinsic", LIGHT_GRAY),
+                ("trans", GREEN),
+                ("rot", LIGHT_RED),
+            ]
+            for mode, color in hand_modes:
+                verts_cam = hand_provider.get_hand_verts_cam(mode, cam_idx)
+                faces = hand_provider.get_hand_faces(mode)
+                if verts_cam is None or faces is None:
+                    continue
+                verts_cam = np.asarray(verts_cam)
+                faces = np.asarray(faces, dtype=np.int32)
+
+                if seal_mano_mesh_np is not None:
+                    try:
+                        verts_cam, faces = seal_mano_mesh_np(verts_cam[None], faces, is_rhand=True)
+                        verts_cam = np.asarray(verts_cam)[0]
+                    except Exception as e:
+                        print(f"[HandDataProvider] seal_mano_mesh_np failed for {mode}: {e}")
+                verts_world = (c2w[:3, :3] @ verts_cam.T + c2w[:3, 3:4]).T
+                color_rgb = np.array(color[:3], dtype=np.uint8)
+                rr.log(
+                    f"hand/{mode}/points",
+                    rr.Points3D(
+                        positions=verts_world,
+                        colors=np.tile(color_rgb, (verts_world.shape[0], 1)),
+                        radii=0.0005,
+                    ),
+                    static=False,
+                )
+                mat = add_material(color)
+                rr.log(
+                    f"hand/{mode}/mesh",
+                    rr.Mesh3D(
+                        vertex_positions=verts_world,
+                        triangle_indices=faces,
+                        mesh_material=mat,
+                    ),
+                    static=False,
+                )
 
     if args.rrd_output_path:
         rr.save(args.rrd_output_path)
