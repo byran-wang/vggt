@@ -389,6 +389,55 @@ def log_current_frame(
     )
 
 
+def log_hands(hand_provider: HandDataProvider, extr, cam_idx: int):
+    if not hand_provider.has_hand:
+        return
+
+    hand_modes = [
+        ("intrinsic", LIGHT_GRAY),
+        ("trans", GREEN),
+        ("rot", LIGHT_RED),
+    ]
+    for mode, color in hand_modes:
+        verts_cam = hand_provider.get_hand_verts_cam(mode, cam_idx)
+        faces = hand_provider.get_hand_faces(mode)
+        if verts_cam is None or faces is None:
+            continue
+        verts_cam = np.asarray(verts_cam)
+        faces = np.asarray(faces, dtype=np.int32)
+
+        if seal_mano_mesh_np is not None:
+            try:
+                verts_cam, faces = seal_mano_mesh_np(verts_cam[None], faces, is_rhand=True)
+                verts_cam = np.asarray(verts_cam)[0]
+            except Exception as e:
+                print(f"[HandDataProvider] seal_mano_mesh_np failed for {mode}: {e}")
+        w2c = np.eye(4)
+        w2c[:3] = extr[cam_idx]
+        c2w = np.linalg.inv(w2c)
+        verts_world = (c2w[:3, :3] @ verts_cam.T + c2w[:3, 3:4]).T
+        color_rgb = np.array(color[:3], dtype=np.uint8)
+        rr.log(
+            f"hand/{mode}/points",
+            rr.Points3D(
+                positions=verts_world,
+                colors=np.tile(color_rgb, (verts_world.shape[0], 1)),
+                radii=0.0005,
+            ),
+            static=False,
+        )
+        mat = add_material(color)
+        rr.log(
+            f"hand/{mode}/mesh",
+            rr.Mesh3D(
+                vertex_positions=verts_world,
+                triangle_indices=faces,
+                mesh_material=mat,
+            ),
+            static=False,
+        )
+
+
 def main(args):
     obj_provider = StepDataProvider(Path(args.result_folder))
     hand_provider = HandDataProvider(Path(Path(args.result_folder).parents[0]))
@@ -456,50 +505,7 @@ def main(args):
             visualizer.log_points("points_rgb", pts, colors=points_rgb, static=False)
             visualizer.log_points("points_conf", pts, colors=points_conf_color, static=False)
 
-        if hand_provider.has_hand:
-            hand_modes = [
-                ("intrinsic", LIGHT_GRAY),
-                ("trans", GREEN),
-                ("rot", LIGHT_RED),
-            ]
-            for mode, color in hand_modes:
-                verts_cam = hand_provider.get_hand_verts_cam(mode, cam_idx)
-                faces = hand_provider.get_hand_faces(mode)
-                if verts_cam is None or faces is None:
-                    continue
-                verts_cam = np.asarray(verts_cam)
-                faces = np.asarray(faces, dtype=np.int32)
-
-                if seal_mano_mesh_np is not None:
-                    try:
-                        verts_cam, faces = seal_mano_mesh_np(verts_cam[None], faces, is_rhand=True)
-                        verts_cam = np.asarray(verts_cam)[0]
-                    except Exception as e:
-                        print(f"[HandDataProvider] seal_mano_mesh_np failed for {mode}: {e}")
-                w2c = np.eye(4)
-                w2c[:3] = extr[cam_idx]
-                c2w = np.linalg.inv(w2c)
-                verts_world = (c2w[:3, :3] @ verts_cam.T + c2w[:3, 3:4]).T
-                color_rgb = np.array(color[:3], dtype=np.uint8)
-                rr.log(
-                    f"hand/{mode}/points",
-                    rr.Points3D(
-                        positions=verts_world,
-                        colors=np.tile(color_rgb, (verts_world.shape[0], 1)),
-                        radii=0.0005,
-                    ),
-                    static=False,
-                )
-                mat = add_material(color)
-                rr.log(
-                    f"hand/{mode}/mesh",
-                    rr.Mesh3D(
-                        vertex_positions=verts_world,
-                        triangle_indices=faces,
-                        mesh_material=mat,
-                    ),
-                    static=False,
-                )
+        log_hands(hand_provider=hand_provider, extr=extr, cam_idx=cam_idx)
 
     if args.rrd_output_path:
         rr.save(args.rrd_output_path)
