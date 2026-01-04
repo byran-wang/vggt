@@ -356,6 +356,39 @@ def log_all_frames(
                 )
 
 
+def log_current_frame(
+    visualizer: Visualizer,
+    obj_provider: StepDataProvider,
+    extr,
+    intr,
+    original_coords,
+    cam_idx: int,
+):
+    with Image.open(obj_provider.images[cam_idx]) as im:
+        w, h = im.size
+    w2c = np.eye(4)
+    w2c[:3] = extr[cam_idx]
+    c2w = np.linalg.inv(w2c)
+    visualizer.log_cam_pose("camera_current/image", c2w, static=False)
+    w, h = _get_original_resolution(original_coords, cam_idx, (w, h))
+    intr_cam = _intrinsic_to_original(intr[cam_idx], original_coords, cam_idx)
+    visualizer.log_calibration(
+        "camera_current/image",
+        resolution=[w, h],
+        intrins=intr_cam,
+        image_plane_distance=1,
+        static=False,
+    )
+    visualizer.log_image(
+        "camera_current/image", str(obj_provider.origin_images[cam_idx]), static=False
+    )
+    visualizer.log_image(
+        "camera_obj/image",
+        str(obj_provider.get_reproj_error_vis_path(cam_idx)),
+        static=False,
+    )
+
+
 def main(args):
     obj_provider = StepDataProvider(Path(args.result_folder))
     hand_provider = HandDataProvider(Path(Path(args.result_folder).parents[0]))
@@ -406,28 +439,15 @@ def main(args):
             )
 
         # log the current camera view
-        cam_idx = int(step['path'].name)
-        with Image.open(obj_provider.images[cam_idx]) as im:
-            w, h = im.size        
-        w2c = np.eye(4)
-        w2c[:3] = extr[cam_idx]
-        c2w = np.linalg.inv(w2c)
-        visualizer.log_cam_pose("camera_current/image", c2w, static=False)
-        w, h = _get_original_resolution(original_coords, cam_idx, (w, h))
-        intr_cam = _intrinsic_to_original(intr[cam_idx], original_coords, cam_idx)
-        visualizer.log_calibration(
-            "camera_current/image",
-            resolution=[w, h],
-            intrins=intr_cam,
-            image_plane_distance=1,
-            static=False,
-        )                    
-        if 1:
-            visualizer.log_image("camera_current/image", str(obj_provider.origin_images[cam_idx]), static=False)
-            visualizer.log_image("camera_obj/image", str(obj_provider.get_reproj_error_vis_path(cam_idx)), static=False)
-        else:
-            visualizer.log_image("camera_current/image", str(obj_provider.get_reproj_error_vis_path(cam_idx)), static=False)
-            visualizer.log_image("camera_obj/image", str(obj_provider.images[cam_idx]), static=False)
+        cam_idx = int(step["path"].name)
+        log_current_frame(
+            visualizer=visualizer,
+            obj_provider=obj_provider,
+            extr=extr,
+            intr=intr,
+            original_coords=original_coords,
+            cam_idx=cam_idx,
+        )
 
         visualizer.log_mesh("aligned_mesh", gen_3d_mesh_aligned_path, static=False)
         # Log 3D points with color if available
@@ -456,6 +476,9 @@ def main(args):
                         verts_cam = np.asarray(verts_cam)[0]
                     except Exception as e:
                         print(f"[HandDataProvider] seal_mano_mesh_np failed for {mode}: {e}")
+                w2c = np.eye(4)
+                w2c[:3] = extr[cam_idx]
+                c2w = np.linalg.inv(w2c)
                 verts_world = (c2w[:3, :3] @ verts_cam.T + c2w[:3, 3:4]).T
                 color_rgb = np.array(color[:3], dtype=np.uint8)
                 rr.log(
