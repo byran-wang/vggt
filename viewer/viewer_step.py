@@ -478,12 +478,6 @@ def main(args):
         keyframe_flags = data.get("keyframe")
         
 
-        if intr is None or extr is None:
-            continue
-
-        intr = np.asarray(intr)
-        extr = np.asarray(extr)
-
         if not args.only_current_view:
             log_all_frames(
                 visualizer=visualizer,
