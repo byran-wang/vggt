@@ -1233,27 +1233,29 @@ def save_results(image_info, gen_3d, out_dir):
     )
  
 
-def save_input_data(images, image_masks, depth_prior, gen_3d, out_dir):
+def save_input_data(images, image_masks, depth_prior, gen_3d, image_path_list, out_dir):
     """Save preprocessed inputs to disk for inspection/debugging."""
     images_dir = Path(out_dir) / "images"
+    images_origin_dir = Path(out_dir) / "images_origin"
     masks_dir = Path(out_dir) / "masks"
     depth_dir = Path(out_dir) / "depth_prior"
-    for d in (images_dir, masks_dir, depth_dir):
+    for d in (images_dir, images_origin_dir, masks_dir, depth_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     num_frames = len(images)
     for idx in range(num_frames):
-        img = images[idx].detach().cpu()
-        mask = image_masks[idx].detach().cpu()
         depth = depth_prior[idx]
         if torch.is_tensor(depth):
             depth = depth.detach().cpu()
 
         # Save RGB image
+        img = images[idx].detach().cpu()
         img_uint8 = (img.clamp(0.0, 1.0) * 255.0).permute(1, 2, 0).byte().numpy()
         Image.fromarray(img_uint8, mode="RGB").save(images_dir / f"{idx:04d}.png")
+        shutil.copy2(image_path_list[idx], images_origin_dir / f"{idx:04d}{Path(image_path_list[idx]).suffix}")
 
         # Save mask as single-channel PNG
+        mask = image_masks[idx].detach().cpu()
         mask_uint8 = (mask.squeeze(0).clamp(0.0, 1.0) * 255.0).byte().numpy()
         Image.fromarray(mask_uint8, mode="L").save(masks_dir / f"{idx:04d}.png")
 
@@ -1678,7 +1680,7 @@ def demo_fn(args):
 
     images, original_coords, image_masks, depth_prior = load_and_preprocess_images_square(image_path_list, args, target_size=img_load_resolution, out_dir=f"{args.output_dir}/data_processed")
     gen_3d = GEN_3D(f"{args.scene_dir}/align_mesh_image/0000")
-    save_input_data(images, image_masks, depth_prior, gen_3d, f"{args.output_dir}/results/")
+    save_input_data(images, image_masks, depth_prior, gen_3d, image_path_list, f"{args.output_dir}/results/")
     
     images = images.to(device)
     original_coords = original_coords.to(device)

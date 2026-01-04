@@ -81,6 +81,7 @@ class StepDataProvider:
             )
 
         self.images = sorted((self.base_dir / "images").glob("*.png"))
+        self.origin_images = sorted((self.base_dir / "images_origin").glob("*.jpg"))
         self.masks = sorted((self.base_dir / "masks").glob("*.png"))
         self.depths = sorted((self.base_dir / "depth_prior").glob("*.png"))
 
@@ -381,28 +382,20 @@ def main(args):
         w2c = np.eye(4)
         w2c[:3] = extr[cam_idx]
         c2w = np.linalg.inv(w2c)
-        visualizer.log_cam_pose("camera_current/image", c2w, static=False)   
+        visualizer.log_cam_pose("camera_current/image", c2w, static=False)
+        w, h = _get_original_resolution(original_coords, cam_idx, (w, h))
+        intr_cam = _intrinsic_to_original(intr[cam_idx], original_coords, cam_idx)
+        visualizer.log_calibration(
+            "camera_current/image",
+            resolution=[w, h],
+            intrins=intr_cam,
+            image_plane_distance=1,
+            static=False,
+        )                    
         if 1:
-            visualizer.log_calibration(
-                "camera_current/image",
-                resolution=[w, h],
-                intrins=intr[cam_idx],
-                image_plane_distance=1,
-                static=False,
-            )
-      
-            visualizer.log_image("camera_current/image", str(obj_provider.images[cam_idx]), static=False)
+            visualizer.log_image("camera_current/image", str(obj_provider.origin_images[cam_idx]), static=False)
             visualizer.log_image("camera_obj/image", str(obj_provider.get_reproj_error_vis_path(cam_idx)), static=False)
         else:
-            w, h = _get_original_resolution(original_coords, cam_idx, (w, h))
-            intr_cam = _intrinsic_to_original(intr[cam_idx], original_coords, cam_idx)    
-            visualizer.log_calibration(
-                "camera_current/image",
-                resolution=[w, h],
-                intrins=intr_cam,
-                image_plane_distance=1,
-                static=False,
-            )
             visualizer.log_image("camera_current/image", str(obj_provider.get_reproj_error_vis_path(cam_idx)), static=False)
             visualizer.log_image("camera_obj/image", str(obj_provider.images[cam_idx]), static=False)
 
