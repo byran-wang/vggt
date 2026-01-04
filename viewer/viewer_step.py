@@ -282,6 +282,80 @@ def build_blueprint(args) -> rrb.BlueprintLike:
     return rrb.Vertical(*rows, row_shares=row_shares)
 
 
+def log_all_frames(
+    visualizer: Visualizer,
+    obj_provider: StepDataProvider,
+    intr,
+    extr,
+    args,
+    registered,
+    pred_tracks,
+    track_mask,
+    keyframe_flags,
+):
+    reg_flags = (
+        np.asarray(registered).astype(bool)
+        if args.vis_only_register and registered is not None
+        else None
+    )
+    for cam_idx in range(len(extr)):
+        if reg_flags is not None:
+            if cam_idx >= len(reg_flags) or not reg_flags[cam_idx]:
+                continue
+
+        visualizer.log_image(
+            f"camera/image_{cam_idx}", str(obj_provider.images[cam_idx]), static=False
+        )
+        with Image.open(obj_provider.images[cam_idx]) as im:
+            w, h = im.size
+        visualizer.log_calibration(
+            f"camera/image_{cam_idx}",
+            resolution=[w, h],
+            intrins=intr[cam_idx],
+            image_plane_distance=args.image_plane_distance,
+            static=False,
+        )
+        w2c = np.eye(4)
+        w2c[:3] = extr[cam_idx]
+        c2w = np.linalg.inv(w2c)
+        visualizer.log_cam_pose(f"camera/image_{cam_idx}", c2w, static=False)
+
+        is_keyframe = (
+            keyframe_flags is not None
+            and cam_idx < len(keyframe_flags)
+            and bool(np.asarray(keyframe_flags)[cam_idx])
+        )
+
+        if is_keyframe:
+            rr.log(
+                f"camera/image_{cam_idx}/keyframe_border",
+                rr.Boxes2D(
+                    centers=[[w / 2, h / 2]],
+                    sizes=[[w, h]],
+                    colors=[[0, 255, 0]],
+                    radii=2.0,
+                ),
+                static=False,
+            )
+
+        if pred_tracks is not None and track_mask is not None:
+            tracks = np.asarray(pred_tracks)[cam_idx]
+            mask = np.asarray(track_mask)[cam_idx].astype(bool)
+            if tracks.shape[0] == mask.shape[0]:
+                if is_keyframe:
+                    track_count = int(mask.sum())
+                    rr.log(
+                        f"camera/image_{cam_idx}/track_count",
+                        rr.TextLog(f"track_count: {track_count}"),
+                        static=False,
+                    )
+                rr.log(
+                    f"camera/image_{cam_idx}/keypoints",
+                    rr.Points2D(tracks[mask], colors=[34, 138, 167]),
+                    static=False,
+                )
+
+
 def main(args):
     obj_provider = StepDataProvider(Path(args.result_folder))
     hand_provider = HandDataProvider(Path(Path(args.result_folder).parents[0]))
@@ -319,61 +393,17 @@ def main(args):
         extr = np.asarray(extr)
 
         if not args.only_current_view:
-            for cam_idx in range(len(extr)):
-                if args.vis_only_register and registered is not None:
-                    reg_flags = np.asarray(registered).astype(bool)
-                    if cam_idx >= len(reg_flags) or not reg_flags[cam_idx]:
-                        continue
-
-                visualizer.log_image(f"camera/image_{cam_idx}", str(obj_provider.images[cam_idx]), static=False)
-                with Image.open(obj_provider.images[cam_idx]) as im:
-                    w, h = im.size
-                visualizer.log_calibration(
-                    f"camera/image_{cam_idx}",
-                    resolution=[w, h],
-                    intrins=intr[cam_idx],
-                    image_plane_distance=args.image_plane_distance,
-                    static=False,
-                )
-                w2c = np.eye(4)
-                w2c[:3] = extr[cam_idx]
-                c2w = np.linalg.inv(w2c)
-                visualizer.log_cam_pose(f"camera/image_{cam_idx}", c2w, static=False)
-
-                is_keyframe = (
-                    keyframe_flags is not None
-                    and cam_idx < len(keyframe_flags)
-                    and bool(np.asarray(keyframe_flags)[cam_idx])
-                )
-
-                if is_keyframe:
-                    rr.log(
-                        f"camera/image_{cam_idx}/keyframe_border",
-                        rr.Boxes2D(
-                            centers=[[w / 2, h / 2]],
-                            sizes=[[w, h]],
-                            colors=[[0, 255, 0]],
-                            radii=2.0,
-                        ),
-                        static=False,
-                    )
-
-                if pred_tracks is not None and track_mask is not None:
-                    tracks = np.asarray(pred_tracks)[cam_idx]
-                    mask = np.asarray(track_mask)[cam_idx].astype(bool)
-                    if tracks.shape[0] == mask.shape[0]:
-                        if is_keyframe:
-                            track_count = int(mask.sum())
-                            rr.log(
-                                f"camera/image_{cam_idx}/track_count",
-                                rr.TextLog(f"track_count: {track_count}"),
-                                static=False,
-                            )
-                        rr.log(
-                            f"camera/image_{cam_idx}/keypoints",
-                            rr.Points2D(tracks[mask], colors=[34, 138, 167]),
-                            static=False,
-                        )
+            log_all_frames(
+                visualizer=visualizer,
+                obj_provider=obj_provider,
+                intr=intr,
+                extr=extr,
+                args=args,
+                registered=registered,
+                pred_tracks=pred_tracks,
+                track_mask=track_mask,
+                keyframe_flags=keyframe_flags,
+            )
 
         # log the current camera view
         cam_idx = int(step['path'].name)
