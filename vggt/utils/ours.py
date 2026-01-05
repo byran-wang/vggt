@@ -7,15 +7,14 @@ import torch
 from common.viewer import ViewerData
 from PIL import Image
 from common.xdict import xdict
-from src.model.mano.server import MANOServer
-from src.model.obj.server import ObjectServer
-from src.utils.eval_modules import compute_bounding_box_centers
+from pathlib import Path
+
+from vggt.utils.eval_modules import compute_bounding_box_centers
 import trimesh
-from utils_simba.geometry import get_revert_tvec, transform_points
+from utils_simba.geometry import transform_points
 from utils_simba.hand import initialize_mano_model
 import smplx
-from common.body_models import seal_mano_mesh
-from utils_simba.geometry import get_intrinsic_matrix_from_projection
+from viewer.viewer_step import ObjDataProvider, HandDataProvider, _intrinsic_to_original
 
 
 
@@ -25,117 +24,75 @@ from utils_simba.geometry import get_intrinsic_matrix_from_projection
 def load_data(args):
     device = "cuda:0"
     print("Loading data")
+
+    obj_provider = ObjDataProvider(Path(args.result_folder))    
+    last_step = obj_provider.steps[-1]
+    data = last_step["data"]
     
-    # from src.utils.io.optim import load_data
-    # ckpt_p='logs/hold_GPMF14_ho3d_pre_train/checkpoints/last.pose_ref'
-    # ckpt_p='logs/' + seq_name.split('.')[0] + '_pre_train/checkpoints/last.pose_ref'
-    # "data/hold_MC1_ho3d/processed//colmap_hold_MC1_ho3d.80/sfm_superpoint+superglue/mvs/o2w_normalized_aligned.npy",
-    # out, ckpt = load_data(ckpt_p, pose_p=f"{mvs_root}/o2w_normalized_aligned.npy", object_mesh_f=object_mesh_f)
-    # breakpoint()
-    result_dir = args.result_folder
-    vis_p = f"{result_dir}/hold_fit.{args.hand_fit_prefix}.npy"
-    data = np.load(vis_p, allow_pickle=True).item()
-    intrinsic = data['object']["K"]        # Camera intrinsics
-    img_fs = data['object']["im_paths"]
+    intrinsic =  data.get("intrinsics")      # square image.
+    intrinsic = _intrinsic_to_original(intrinsic[0], data.get("original_coords"), 0) # origin image
 
-    ckpt = torch.load(ckpt_p, map_location='cpu')
-    sd = xdict(ckpt["state_dict"])
-    # param_dict = sd.search(".params.")
-    hand_scale = np.array(list(sd.search(".hand_scale").values())[0]) 
-    betas = sd['models.right.hand_beta'].clone().cuda()
-    betas = torch.tile(betas, (len(img_fs), 1))
-    h2c_rot = sd["models.right.hand_rot"].clone().cuda()
-    h2c_transl = sd["models.right.hand_transl"].clone().cuda()
-    hand_pose = sd["models.right.hand_pose"].clone().cuda()
+    img_fs = obj_provider.origin_images
+    seq_name = obj_provider.get_seq_name()    
+    mesh_file = last_step["gen_3d_mesh_aligned"]
 
 
-    # vis_p = f"{data_root}/hold_fit.aligned.npy"
-    # data = load_data(vis_p)    
-    
-    # # K = data['object']["K"].to(device).view(1, 4, 4)[:, :3, :3]
-    # scale = 1 / data['object']['obj_scale']
-    # scale = torch.tensor([scale]).float().to(device)
-    mesh_c_o = trimesh.load(object_mesh_f, process=False)
+    hand_fit_mode = args.hand_fit_mode
+    hand_provider = HandDataProvider(Path(Path(args.result_folder).parents[0]))
+    hand_poses = hand_provider.get_hand_poses(hand_fit_mode)
+    beta = hand_provider.get_hand_beta(hand_fit_mode)
+    h2c_transls = hand_provider.get_hand_transls(hand_fit_mode)
+    h2c_rots = hand_provider.get_hand_rots(hand_fit_mode)
 
-    # ## log object ##
-    # vis_p = f"{data_root}/hold_fit.aligned.npy"
-    # data = load_data(vis_p)
-
-    # Extract object data
-    # pts_w = data['object']["j3d"]          # Shape: (B, number_3d_points, 3)
-    # o2w_all = data['object']["o2w_all"]    # Shape: (B, 4, 4)
-    o2c_mat = np.load(f"{mvs_root}/o2w_normalized_aligned.npy")
-    c2o_mat = np.linalg.inv(o2c_mat) # camera to object
-    # obj_3d_o = trimesh.load(f"{mvs_root}/sparse_points_normalized_aligned.ply", process=False).vertices
-    # obj_3d_o = np.tile(obj_3d_o, (o2c_mat.shape[0], 1, 1))
-    # img_fs = data['object']["im_paths"]
-    # intrinsic = data['object']["K"]        # Camera intrinsics
-    # obj_scale = data['object']['obj_scale']
-
-    ###### log hand ########
-    # Initialize MANO model
-    f3d_r = initialize_mano_model(MANO_f)
-
-    # betas = data['right']["hand_beta"]
-    # betas = torch.tensor(np.tile(betas, (o2c_mat.shape[0], 1))).cuda()
-    # h2c_rot = torch.tensor(data['right']["hand_rot"]).cuda()
-    # h2c_transl = torch.tensor(data['right']["hand_transl"]).cuda()
-    # hand_pose = torch.tensor(data['right']["hand_pose"]).cuda()
-    
+    # Convert inputs to torch tensors on the target device for MANO
+    hand_poses = torch.as_tensor(hand_poses, device=device, dtype=torch.float32)
+    beta = torch.as_tensor(beta, device=device, dtype=torch.float32)
+    betas = beta.unsqueeze(0).repeat(hand_poses.shape[0], 1)
+    h2c_transls_np = np.asarray(h2c_transls)
+    h2c_transls = torch.as_tensor(h2c_transls_np, device=device, dtype=torch.float32)
+    h2c_rots = torch.as_tensor(h2c_rots, device=device, dtype=torch.float32)
 
     # Extract and transform right hand vertices
     mano_layer = smplx.create(
-            model_path=MANO_f, model_type="mano", use_pca=False, is_rhand=True
+            model_path='./body_models/MANO_RIGHT.pkl', model_type="mano", use_pca=False, is_rhand=True
     )
-    mano_layer.to(torch.device("cuda"))
-    ### Note: Hand coordinates to object coordinates only involves translation, not rotation
-    # hand vertices in canonical coordinates
-    # breakpoint()
+    mano_layer.to(torch.device(device))
+
     hand_out_can = mano_layer(
         betas=betas,
-        hand_pose=hand_pose,
-        transl=torch.zeros_like(h2c_transl),
-        global_orient=h2c_rot,
+        hand_pose=hand_poses,
+        transl=torch.zeros_like(h2c_transls),
+        global_orient=h2c_rots,
     )
-    hand_v_can = hand_out_can.vertices.cpu().numpy()
+
+    hand_v_c = hand_provider.get_hand_verts(hand_fit_mode)
     hand_jnts_can = hand_out_can.joints.cpu().numpy()
-    h2c_mat = np.tile(np.eye(4), (o2c_mat.shape[0], 1, 1))
-    h2c_mat[:, :3, 3] = h2c_transl.cpu().numpy()
-    h2c_mat = h2c_mat * hand_scale # scale the hand
-    h2c_mat[:, 3, 3] = 1
-    h2o_mat = c2o_mat @ h2c_mat
-    # hand vertices in camera coordinates 
-    # hand vertices in object coordinates
-    hand_v_o = transform_points(hand_v_can, h2o_mat)
-    hand_jnts_o = transform_points(hand_jnts_can, h2o_mat)
-
-
-    hand_v_c = transform_points(hand_v_o, o2c_mat)
-    hand_jnts_c = transform_points(hand_jnts_o, o2c_mat)
-
-    object_v_c = transform_points( mesh_c_o.vertices, o2c_mat)
-
-    hand_v_c /= hand_scale
-    hand_jnts_c /= hand_scale    
-
-    object_v_c = object_v_c / hand_scale
-
-
+    # Build homogeneous transforms if only translation vectors are provided
+    if h2c_transls_np.ndim == 2 and h2c_transls_np.shape[1] == 3:
+        h2c_transforms = np.repeat(np.eye(4)[None], h2c_transls_np.shape[0], axis=0)
+        h2c_transforms[:, :3, 3] = h2c_transls_np
+    else:
+        h2c_transforms = h2c_transls_np
+    hand_jnts_c = transform_points(hand_jnts_can, h2c_transforms)
+    obj_mesh_c = trimesh.load(mesh_file, process=False)
+    obj_v_c = obj_mesh_c.vertices
+    
+    f3d_r = hand_provider.get_hand_faces(hand_fit_mode)
 
     out = xdict()
-    out['verts.right'] = hand_v_c
-    out['jnts.right'] = hand_jnts_c
-    out['root.right'] = hand_jnts_c[:,0,:]
-    out['j3d_ra.right'] = hand_jnts_can - hand_jnts_can[:,0:1, :]
-    out['verts.object'] = object_v_c
-    out['v3d_c.object'] = out['verts.object']
-    out['root.object'] = compute_bounding_box_centers(out['verts.object'])
-    out['v3d_ra.object'] = out['verts.object'] - out['root.object'][:,None,:]
-    out["v3d_right.object"] = out["v3d_c.object"] - out["root.right"][:, None, :]
+    out['verts.right'] = hand_v_c    # B, 778, 3
+    out['jnts.right'] = hand_jnts_c  # B, 21, 3
+    out['root.right'] = hand_jnts_c[:,0,:] # B, 3
+    out['j3d_ra.right'] = hand_jnts_can - hand_jnts_can[:,0:1, :] # B, 21, 3
+    out['verts.object'] = obj_v_c[None]  # B, N, 3
+    out['v3d_c.object'] = out['verts.object'] # B, N, 3
+    out['root.object'] = compute_bounding_box_centers(out['verts.object']) # B, 3
+    out['v3d_ra.object'] = out['verts.object'] - out['root.object'][:,None,:] # B, N, 3
+    out["v3d_right.object"] = out["v3d_c.object"] - out["root.right"][:, None, :] # B, N, 3
 
     faces = {
-        'object' : np.array(mesh_c_o.faces),        
-        'right' : np.array(f3d_r),
+        'object' : np.array(obj_mesh_c.faces),   # M,3          
+        'right' : np.array(f3d_r), # 1538, 3
 
     }
     out["faces"] = faces
@@ -147,9 +104,9 @@ def load_data(args):
     out['verts.object'].float().to(device)
 
     out_dict = xdict()
-    out_dict["fnames"] = img_fs#.tolist()
+    out_dict["fnames"] = img_fs#.tolist() # B
 
-    out_dict["K"] = intrinsic[None]
+    out_dict["K"] = intrinsic[None] # 1, 3, 3
     out_dict["full_seq_name"] = seq_name    
     out_dict.merge(out)
     return out_dict

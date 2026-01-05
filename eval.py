@@ -4,7 +4,8 @@ import json
 import vggt.utils.eval_modules as eval_m
 import vggt.utils.gt as gt
 import os
-
+from pathlib import Path
+from viewer.viewer_step import ObjDataProvider
 device = "cuda:0"
 
 eval_fn_dict = {
@@ -19,7 +20,7 @@ def parse_args():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--result_folder", type=str, default="")
-    parser.add_argument("--hand_fit_prefix", type=str, default="aligned_h_intrinsic")
+    parser.add_argument("--hand_fit_mode", type=str, default="intrinsic", help="choices: intrinsic, trans, rot") 
     parser.add_argument("--out_dir", type=str, default="")
     parser.add_argument("--debug", default=False, action="store_true")
     parser.add_argument("--only_eval_hand", default=False, action="store_true")
@@ -38,14 +39,11 @@ def main():
     data_pred = ours.load_data(args)
 
     data_pred["out_dir"] = args.out_dir
-    data_gt = gt.load_data(
-        full_seq_name=args.seq_name,
-        mvs_root=args.mvs_root,
-        debug=args.debug,
-    )
-        
-    
+    obj_provider = ObjDataProvider(Path(args.result_folder))
     seq_name = data_pred["full_seq_name"]
+    data_gt = gt.load_data(seq_name, obj_provider.get_image_fids)        
+    
+    
     out_p = args.out_dir
     os.makedirs(out_p, exist_ok=True)
     if not args.only_eval_hand:

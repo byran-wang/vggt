@@ -113,6 +113,9 @@ class ObjDataProvider:
         self.cond_depth = gen3d_dir / "depth.png"
         self.camera_json = gen3d_dir / "camera.json"
 
+    def get_seq_name(self):
+        return self.base_dir.parents[0].name
+
     def get_reproj_error_vis_path(self, step_idx: int) -> Path:
         step_dir = self.base_dir / f"{step_idx:04d}"
         vis_path = step_dir / "reproj_error.png"
@@ -122,6 +125,11 @@ class ObjDataProvider:
         with open(self.result_dir / "image_paths.txt", "r") as f:
             image_fids = [int(Path(line.strip()).stem) for line in f.readlines()]
         return image_fids
+    
+    def get_image_fs(self):
+        with open(self.result_dir / "image_paths.txt", "r") as f:
+            image_fs = [Path(line.strip()) for line in f.readlines()]
+        return image_fs    
     
 class HandDataProvider:
     def __init__(self, base_dir: Path):
@@ -185,6 +193,30 @@ class HandDataProvider:
     def get_hand_verts_cam(self, mode: str, i: int):
         fit = self._get_fit(f"fit_{mode}")
         return self._extract_from_fit(fit, "v3d_cam", i)
+    
+    def get_hand_verts(self, mode: str):
+        fit = self._get_fit(f"fit_{mode}")
+        return self._extract_from_fit(fit, "v3d_cam") 
+
+    def get_hand_beta(self, mode: str):
+        fit = self._get_fit(f"fit_{mode}")
+        return self._extract_from_fit(fit, "hand_beta")  
+
+    def get_hand_poses(self, mode: str):
+        fit = self._get_fit(f"fit_{mode}")
+        return self._extract_from_fit(fit, "hand_pose")  
+
+    def get_hand_transls(self, mode: str):
+        fit = self._get_fit(f"fit_{mode}")
+        return self._extract_from_fit(fit, "hand_transl")  
+
+    def get_hand_rots(self, mode: str):
+        fit = self._get_fit(f"fit_{mode}")
+        return self._extract_from_fit(fit, "hand_rot")                   
+
+    def get_hand_scale(self, mode: str):
+        fit = self._get_fit(f"fit_{mode}")
+        return self._extract_from_fit(fit, "hand_scale")  
 
     @property
     def has_hand(self) -> bool:
@@ -559,7 +591,7 @@ def main(args):
         if _CODE_DIR.is_dir():
             sys.path = [str(_CODE_DIR)] + sys.path
         from vggt.utils.gt import load_data as load_gt_data        
-        seq_name = obj_provider.base_dir.parents[0].name
+        seq_name = obj_provider.get_seq_name()
         gt_data = load_gt_data(seq_name, obj_provider.get_image_fids)
     
     vis_name = obj_provider.base_dir.parents[0].name

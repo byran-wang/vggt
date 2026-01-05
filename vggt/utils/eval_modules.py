@@ -55,7 +55,7 @@ def convert_to_absolute_scale(scale):
 
 def eval_icp_first_frame(data_pred, data_gt, metric_dict):
     faces = data_pred["faces"]["object"]
-    from src.utils.icp import compute_icp_metrics
+    from vggt.utils.icp import compute_icp_metrics
     from open3d.geometry import TriangleMesh
     from open3d.utility import Vector3dVector, Vector3iVector
     selected_index = 0
