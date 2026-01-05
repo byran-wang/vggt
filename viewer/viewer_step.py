@@ -62,6 +62,12 @@ def parse_args():
         default=1,
         help="Only visualize the current camera view.",
     )
+    parser.add_argument(
+        "--gt_ho3d",
+        type=int,
+        default=1,
+        help="Visualize HO3D ground-truth cameras and object meshes when available.",
+    )
     return parser.parse_args()
 
 
@@ -111,6 +117,11 @@ class StepDataProvider:
         step_dir = self.base_dir / f"{step_idx:04d}"
         vis_path = step_dir / "reproj_error.png"
         return vis_path
+    
+    def get_image_fids(self):
+        with open(self.result_dir / "image_paths.txt", "r") as f:
+            image_fids = [int(Path(line.strip()).stem) for line in f.readlines()]
+        return image_fids
     
 class HandDataProvider:
     def __init__(self, base_dir: Path):
@@ -229,6 +240,12 @@ def _intrinsic_to_original(intrinsic, original_coords, cam_idx):
     return intr_adj
 
 
+def _to_numpy(arr):
+    if hasattr(arr, "detach"):
+        return arr.detach().cpu().numpy()
+    return np.asarray(arr)
+
+
 def log_mesh_with_pose(label: str, mesh_path: Path, pose: Optional[dict]):
     if not mesh_path.exists():
         return
@@ -264,6 +281,9 @@ def build_blueprint(args) -> rrb.BlueprintLike:
         )
     ]
     row_shares = [3]
+    if getattr(args, "gt_ho3d", False):
+        rows.append(rrb.Spatial3DView(name="gt_world", origin="/gt"))
+        row_shares.append(2)
 
     if not args.only_current_view:
         rows.append(
@@ -399,6 +419,60 @@ def log_points_3d(
     visualizer.log_points("points_conf", pts, colors=points_conf_color, static=False)
 
 
+def log_gt_frame(
+    visualizer: Visualizer,
+    gt_data,
+    obj_provider: StepDataProvider,
+    cam_idx: int,
+):
+    # breakpoint()
+    c2o = _to_numpy(gt_data.get("o2c"))
+    c2o = np.linalg.inv(c2o)
+
+    if cam_idx >= len(c2o):
+        print(f"[WARN][log_gt_frame] cam_idx {cam_idx} out of range for c2o with length {len(c2o)}")
+        return
+
+    is_valid = gt_data.get("is_valid")
+    if is_valid is not None:
+        valid_flags = _to_numpy(is_valid)
+        if cam_idx < len(valid_flags) and not bool(valid_flags[cam_idx]):
+            return
+
+
+    with Image.open(obj_provider.origin_images[cam_idx]) as im:
+        w, h = im.size
+    intr = gt_data.get("K")
+    if intr is not None:
+        visualizer.log_calibration(
+            "gt/camera/image",
+            resolution=[w, h],
+            intrins=_to_numpy(intr),
+            image_plane_distance=1,
+            static=False,
+        )
+    visualizer.log_cam_pose("gt/camera/image", c2o[cam_idx], static=False)
+    visualizer.log_image("gt/camera/image", str(obj_provider.origin_images[cam_idx]), static=False)
+
+    # v3d_object = gt_data.get("v3d_c.object")
+    # faces_object = gt_data.get("faces.object")
+    # if v3d_object is None or faces_object is None:
+    #     return
+    # verts_cam = _to_numpy(v3d_object[cam_idx])
+    # faces = _to_numpy(faces_object).astype(np.int32)
+    # colors_obj = gt_data.get("colors.object")
+    # colors = _to_numpy(colors_obj) if colors_obj is not None else None    
+    # rr.log(
+    #     "gt/object_mesh",
+    #     rr.Mesh3D(
+    #         vertex_positions=verts_cam,
+    #         triangle_indices=faces,
+    #         vertex_colors=colors,
+    #     ),
+    #     static=False,
+    # )
+
+
 def log_hands(hand_provider: HandDataProvider, extr, cam_idx: int):
     if not hand_provider.has_hand:
         return
@@ -445,19 +519,39 @@ def log_hands(hand_provider: HandDataProvider, extr, cam_idx: int):
                 mesh_material=mat,
             ),
             static=False,
-        )
-
+        )      
 
 def main(args):
+ 
     obj_provider = StepDataProvider(Path(args.result_folder))
     hand_provider = HandDataProvider(Path(Path(args.result_folder).parents[0]))
+    gt_data = None
+    if args.gt_ho3d:
+        _CODE_DIR = Path(__file__).resolve().parents[1]
+        if _CODE_DIR.is_dir():
+            sys.path = [str(_CODE_DIR)] + sys.path
+        from vggt.utils.gt import load_data as load_gt_data        
+        seq_name = obj_provider.base_dir.parents[0].name
+        gt_data = load_gt_data(seq_name, obj_provider.get_image_fids)
+    
     vis_name = obj_provider.base_dir.parents[0].name
     visualizer = Visualizer(vis_name, jpeg_quality=args.jpeg_quality)
 
     rr.send_blueprint(build_blueprint(args))
     rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
+    if args.gt_ho3d:
+        rr.log("/gt", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
     
     gen_3d = trimesh.load_mesh(obj_provider.mesh_path)
+
+    if args.gt_ho3d and gt_data is not None:
+        mesh_path = gt_data.get("mesh_name.object")
+        visualizer.log_mesh(
+            "gt/object_mesh/static",
+            mesh_path,
+            static=True,
+        )
+
 
     for step in obj_provider.steps:
         step_idx = step["index"]
@@ -501,8 +595,7 @@ def main(args):
             original_coords=original_coords,
             cam_idx=cam_idx,
         )
-
-        visualizer.log_mesh("aligned_mesh", gen_3d_mesh_aligned_path, static=False)
+        visualizer.log_mesh("aligned_mesh", gen_3d_mesh_aligned_path, colors=np.array([255, 255, 255]), static=False)
         log_points_3d(
             visualizer=visualizer,
             points_3d=points_3d,
@@ -511,6 +604,14 @@ def main(args):
         )
 
         log_hands(hand_provider=hand_provider, extr=extr, cam_idx=cam_idx)
+
+        if args.gt_ho3d:
+            log_gt_frame(
+                visualizer=visualizer,
+                gt_data=gt_data,
+                obj_provider=obj_provider,
+                cam_idx=cam_idx,
+            )
 
     if args.rrd_output_path:
         rr.save(args.rrd_output_path)

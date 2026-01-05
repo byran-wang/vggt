@@ -5,14 +5,6 @@ from abc import abstractmethod
 
 import matplotlib.cm as cm
 import numpy as np
-from aitviewer.headless import HeadlessRenderer
-from aitviewer.renderables.billboard import Billboard
-from aitviewer.renderables.meshes import Meshes
-from aitviewer.renderables.meshes import VariableTopologyMeshes
-from aitviewer.scene.camera import OpenCVCamera
-from aitviewer.scene.material import Material
-from aitviewer.utils.so3 import aa2rot_numpy
-from aitviewer.viewer import Viewer
 from easydict import EasyDict as edict
 from loguru import logger
 from PIL import Image
@@ -25,20 +17,6 @@ RIGHT_ID = 250
 SEGM_IDS = {"object": OBJ_ID, "smplx": SMPLX_ID, "left": LEFT_ID, "right": RIGHT_ID}
 
 cmap = cm.get_cmap("plasma")
-materials = {
-    "none": None,
-    "white": Material(color=(1.0, 1.0, 1.0, 1.0), diffuse=0.5, ambient=0.2),
-    "gray_white": Material(color=(0.914, 0.851, 0.851, 1.0), diffuse=0.6, ambient=0.2),
-    "red": Material(color=(0.969, 0.106, 0.059, 1.0), ambient=0.2),
-    "blue": Material(color=(0.0, 0.0, 1.0, 1.0), ambient=0.2),
-    "green": Material(color=(1.0, 0.0, 0.0, 1.0), ambient=0.2),
-    "cyan": Material(color=(0.051, 0.659, 0.051, 1.0), ambient=0.2),
-    "light-blue": Material(color=(0.588, 0.5647, 0.9725, 1.0), ambient=0.2),
-    "green-blue": Material(color=(0.020, 0.565, 0.788, 1.0), diffuse=0.60, ambient=0.14),
-    "cyan-light": Material(color=(0.051, 0.659, 0.051, 1.0), ambient=0.2),
-    "dark-light": Material(color=(0.404, 0.278, 0.278, 1.0), ambient=0.2),
-    "rice": Material(color=(0.922, 0.922, 0.102, 1.0), ambient=0.2),
-}
 
 
 class ViewerData(edict):

@@ -15,8 +15,7 @@ import common.transforms as tf
 
 # from src_data.smplx import MANO
 from common.xdict import xdict
-from src.utils.eval_modules import compute_bounding_box_centers
-from src.utils.const import SEGM_IDS
+from common.viewer import SEGM_IDS
 
 import trimesh
 
@@ -28,19 +27,41 @@ from utils_simba.geometry import transform_points
 
 
 
+def compute_bounding_box_centers(vertices):
+    """
+    Compute the centers of the tight bounding box for a moving point cloud.
+
+    Parameters:
+    - vertices: A numpy array of shape (frames, num_verts, 3) representing the vertices of the object over time.
+
+    Returns:
+    - A numpy array of shape (frames, 3) where each row represents the center of the bounding box for each frame.
+    """
+
+    if isinstance(vertices, list):
+        bbox_centers = []
+        for verts in vertices:
+            assert verts.shape[1] == 3
+            bmin = np.min(verts, axis=0)
+            bmax = np.max(verts, axis=0)
+            bbox_center = (bmin + bmax) / 2
+            bbox_centers.append(bbox_center)
+        bbox_centers = np.stack(bbox_centers, axis=0)
+    else:
+        bbox_min = np.min(vertices, axis=1)
+        bbox_max = np.max(vertices, axis=1)
+        bbox_centers = (bbox_min + bbox_max) / 2
+    return bbox_centers
 
 
-
-def load_data(full_seq_name, get_selected_fids_fn=None):
+def load_data(seq_name, get_selected_fids_fn=None):
     from smplx import MANO
 
     # load in opencv format
 
-    seq_name = full_seq_name.split("_")[1]
-
     device = "cuda:0"
     human_model = MANO(
-        "./code/body_models", is_rhand=True, flat_hand_mean=False, use_pca=False
+        "./body_models", is_rhand=True, flat_hand_mean=False, use_pca=False
     ).to(device)
     data = torch.load(f"./ho3d_v3/processed/{seq_name}.pt")
     mano_layer = build_mano_aa(True, flat_hand=False)
@@ -69,12 +90,10 @@ def load_data(full_seq_name, get_selected_fids_fn=None):
         )
     else:
         # Use callback function
-        selected_fids = get_selected_fids_fn(full_seq_name)
+        selected_fids = get_selected_fids_fn()
     assert len(selected_fids) > 0
-    obj_mesh = trimesh.load(
-        f"./ho3d_v3/models/{obj_name}/textured_simple.obj",
-        process=False,
-    )
+    mesh_path = f"./ho3d_v3/models/{obj_name}/textured_simple.obj"
+    obj_mesh = trimesh.load(mesh_path, process=False)
 
     # OpenGL to OpenCV
     num_frames = hand_pose.shape[0]
@@ -117,12 +136,12 @@ def load_data(full_seq_name, get_selected_fids_fn=None):
     v_cano_o = torch.FloatTensor(obj_mesh.vertices).repeat(num_frames, 1, 1)
     c_cano_o = torch.FloatTensor(obj_mesh.visual.to_color().vertex_colors)
 
-    Rt_o = torch.eye(4)[None, :, :].repeat(num_frames, 1, 1)
-    Rt_o[:, :3, :3] = obj_rot
-    Rt_o[:, :3, 3] = obj_trans
-    Rt_o[:, 1:3] *= -1
+    o2c = torch.eye(4)[None, :, :].repeat(num_frames, 1, 1)
+    o2c[:, :3, :3] = obj_rot
+    o2c[:, :3, 3] = obj_trans
+    o2c[:, 1:3] *= -1
 
-    v3d_o_cam = rigid_tf_torch_batch(v_cano_o, Rt_o[:, :3, :3], Rt_o[:, :3, 3:])
+    v3d_o_cam = rigid_tf_torch_batch(v_cano_o, o2c[:, :3, :3], o2c[:, :3, 3:])
     v2d_o = project2d_batch(K, v3d_o_cam)
     v2d_h = project2d_batch(K, v3d_h)
 
@@ -146,6 +165,7 @@ def load_data(full_seq_name, get_selected_fids_fn=None):
     # Select ground truth data based on selected file IDs
     v3d_h = v3d_h[selected_fids]
     v3d_o_cam = v3d_o_cam[selected_fids]
+    v_cano_o = v_cano_o[selected_fids]
     j3d_h = j3d_h[selected_fids]
     v2d_h = v2d_h[selected_fids]
     v2d_o = v2d_o[selected_fids]
@@ -156,13 +176,14 @@ def load_data(full_seq_name, get_selected_fids_fn=None):
     out["fnames"] = fnames
     out["v3d_c.right"] = v3d_h.detach().numpy()
     out["v3d_c.object"] = v3d_o_cam.detach().numpy()
+    out["v3d_can.object"] = v_cano_o.detach().numpy()
     out["j3d_c.right"] = j3d_h.detach().numpy()
     out["v2d_h"] = v2d_h.detach().numpy()
     out["v2d_o"] = v2d_o.detach().numpy()
     out["faces.object"] = np.array(obj_mesh.faces)
     out["faces.right"] = np.array(human_model.faces)
     out["K"] = K[0].numpy()
-    out["c2o"] = Rt_o[selected_fids].detach().numpy()
+    out["o2c"] = o2c[selected_fids].detach().numpy()
     out["colors.object"] = c_cano_o.detach().numpy()
     # out["masks_gt"] = masks_gt.detach().numpy()
     out["is_valid"] = is_valid.detach().numpy()
@@ -178,6 +199,7 @@ def load_data(full_seq_name, get_selected_fids_fn=None):
     out["j3d_ra.right"] = j3d_h - root_j3d
     out["v3d_ra.object"] = v3d_o_cam - root_o
     out["root.object"] = root_o[:, 0]
+    out["mesh_name.object"] = mesh_path
     out = xdict(out).to_torch()
     return out
 

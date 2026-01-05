@@ -1281,6 +1281,10 @@ def save_input_data(images, image_masks, depth_prior, gen_3d, image_path_list, o
         camera_path = getattr(gen_3d, "camera_path", None)
         if camera_path and os.path.exists(camera_path):
             shutil.copy2(camera_path, gen3d_dir / Path(camera_path).name)
+    # save image_path_list to a text file
+    with open(Path(out_dir) / "image_paths.txt", "w") as f:
+        for p in image_path_list:
+            f.write(f"{p}\n")
 
 def eval_reprojection(image_info, frame_idx, intr_np, pts_np, tracks_np, mask_np, R_final, t_final, out_dir):
     """Overlay reprojection error vectors on the raw image for a frame."""
