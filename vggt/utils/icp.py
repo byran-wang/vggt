@@ -170,7 +170,7 @@ def compute_icp_metrics(
     if no_tqdm:
         pbar = range(num_iters)
     else:
-        pbar = tqdm(range(num_iters))
+        pbar = tqdm(range(num_iters), desc="ICP iterations")
     # for iter in tqdm(range(num_iters)):
     for iter in pbar:
         if iter > num_iters/2:

@@ -53,6 +53,120 @@ def convert_to_absolute_scale(scale):
     else:
         return scale - 1
 
+
+def _get_model_pts(model_pts, idx):
+    if model_pts.ndim == 3:
+        return model_pts[min(idx, model_pts.shape[0] - 1)]
+    return model_pts
+
+
+def eval_add_object(data_pred, data_gt, metric_dict):
+    pred_extr = data_pred.get("extrinsics")
+    gt_o2c = data_gt.get("o2c")
+    model_pts = data_gt.get("v3d_can.object")
+    is_valid = data_gt.get("is_valid")
+
+    if pred_extr is None or gt_o2c is None or model_pts is None:
+        print("[WARN][eval_add_object] missing extrinsics/gt poses/model points; skipping ADD.")
+        return metric_dict
+
+    pred_extr = _to_numpy(pred_extr)
+    gt_o2c = _to_numpy(gt_o2c)
+    model_pts = _to_numpy(model_pts)
+    valid_flags = _to_numpy(is_valid) if is_valid is not None else None
+
+    # Align predicted sequence to GT using first valid frame (match BundleSDF)
+    pred_poses = [_build_pose_4x4(p) for p in pred_extr]
+    gt_poses = [np.array(g) for g in gt_o2c]
+    n = min(len(gt_poses), len(pred_poses))
+    if n > 0:
+        align_tf = np.linalg.inv(pred_poses[0]) @ gt_poses[0]
+        pred_poses = [p @ align_tf for p in pred_poses]
+
+    add_vals = []
+    for i in range(n):
+        if valid_flags is not None and not bool(valid_flags[i]):
+            add_vals.append(np.nan)
+            continue
+        pred_pose = pred_poses[i]
+        gt_pose = gt_poses[i]
+        cur_model_pts = _get_model_pts(model_pts, i)
+        add_vals.append(add_err(pred_pose, gt_pose, cur_model_pts))
+
+    metric_dict["add"] = np.array(add_vals)
+    return metric_dict
+
+
+def eval_add_s_object(data_pred, data_gt, metric_dict):
+    pred_extr = data_pred.get("extrinsics")
+    gt_o2c = data_gt.get("o2c")
+    model_pts = data_gt.get("v3d_can.object")
+    is_valid = data_gt.get("is_valid")
+
+    if pred_extr is None or gt_o2c is None or model_pts is None:
+        print("[WARN][eval_add_s_object] missing extrinsics/gt poses/model points; skipping ADD-S.")
+        return metric_dict
+
+    pred_extr = _to_numpy(pred_extr)
+    gt_o2c = _to_numpy(gt_o2c)
+    model_pts = _to_numpy(model_pts)
+    valid_flags = _to_numpy(is_valid) if is_valid is not None else None
+
+    pred_poses = [_build_pose_4x4(p) for p in pred_extr]
+    gt_poses = [np.array(g) for g in gt_o2c]
+    n = min(len(gt_poses), len(pred_poses))
+    if n > 0:
+        align_tf = np.linalg.inv(pred_poses[0]) @ gt_poses[0]
+        pred_poses = [p @ align_tf for p in pred_poses]
+
+    adds_vals = []
+    for i in range(n):
+        if valid_flags is not None and not bool(valid_flags[i]):
+            adds_vals.append(np.nan)
+            continue
+        pred_pose = pred_poses[i]
+        gt_pose = gt_poses[i]
+        cur_model_pts = _get_model_pts(model_pts, i)
+        adds_vals.append(adi_err(pred_pose, gt_pose, cur_model_pts))
+
+    metric_dict["add_s"] = np.array(adds_vals)
+    return metric_dict
+
+
+def _to_numpy(x):
+    if x is None:
+        return None
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    return x
+
+
+def to_homo(pts):
+    return np.concatenate((pts, np.ones((pts.shape[0], 1))), axis=-1)
+
+
+def add_err(pred, gt, model_pts):
+    pred_pts = (pred @ to_homo(model_pts).T).T[:, :3]
+    gt_pts = (gt @ to_homo(model_pts).T).T[:, :3]
+    return np.linalg.norm(pred_pts - gt_pts, axis=1).mean()
+
+
+def adi_err(pred, gt, model_pts):
+    pred_pts = (pred @ to_homo(model_pts).T).T[:, :3]
+    gt_pts = (gt @ to_homo(model_pts).T).T[:, :3]
+    nn_index = KDTree(pred_pts)
+    nn_dists, _ = nn_index.query(gt_pts, k=1, workers=-1)
+    return nn_dists.mean()
+
+
+def _build_pose_4x4(pose):
+    pose = np.array(pose)
+    if pose.shape == (4, 4):
+        return pose
+    out = np.eye(4)
+    out[:3] = pose
+    return out
+
 def eval_icp_first_frame(data_pred, data_gt, metric_dict):
     faces = data_pred["faces"]["object"]
     from vggt.utils.icp import compute_icp_metrics

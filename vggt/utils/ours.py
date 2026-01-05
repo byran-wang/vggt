@@ -31,6 +31,7 @@ def load_data(args):
     
     intrinsic =  data.get("intrinsics")      # square image.
     intrinsic = _intrinsic_to_original(intrinsic[0], data.get("original_coords"), 0) # origin image
+    extrinsics = data.get("extrinsics")
 
     img_fs = obj_provider.origin_images
     seq_name = obj_provider.get_seq_name()    
@@ -96,6 +97,9 @@ def load_data(args):
 
     }
     out["faces"] = faces
+    if extrinsics is not None:
+        # Store camera/object extrinsics (3x4 per frame) for downstream metrics such as ADD/ADD-S
+        out["extrinsics"] = np.array(extrinsics)
         
     print("Done loading data")
     out = out.to_torch()

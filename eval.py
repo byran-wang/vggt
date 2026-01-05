@@ -10,6 +10,8 @@ device = "cuda:0"
 
 eval_fn_dict = {
     "mpjpe_ra_r": eval_m.eval_mpjpe_right,
+    "add": eval_m.eval_add_object,
+    "add_s": eval_m.eval_add_s_object
     # "mrrpe_ho": eval_m.eval_mrrpe_ho_right,
     # "cd_f_ra": eval_m.eval_cd_f_ra,
     # "cd_f_right": eval_m.eval_cd_f_right,
