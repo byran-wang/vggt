@@ -450,9 +450,37 @@ def log_gt_frame(
             intrins=_to_numpy(intr),
             image_plane_distance=1,
             static=False,
-        )
+    )
     visualizer.log_cam_pose("gt/camera/image", c2o[cam_idx], static=False)
     visualizer.log_image("gt/camera/image", str(obj_provider.origin_images[cam_idx]), static=False)
+
+    # Log GT hand mesh/points in object/world space
+    verts_cam = gt_data.get("v3d_c.right")
+    faces_hand = gt_data.get("faces.right")
+    if verts_cam is not None and faces_hand is not None and cam_idx < len(verts_cam):
+        verts_cam_np = _to_numpy(verts_cam[cam_idx])
+        R = c2o[cam_idx][:3, :3]
+        t = c2o[cam_idx][:3, 3]
+        verts_world = (R @ verts_cam_np.T + t[:, None]).T
+        color_rgb = np.array([0, 255, 0], dtype=np.uint8)
+        rr.log(
+            "gt/hand/points",
+            rr.Points3D(
+                positions=verts_world,
+                colors=np.tile(color_rgb, (verts_world.shape[0], 1)),
+                radii=0.0005,
+            ),
+            static=False,
+        )
+        rr.log(
+            "gt/hand/mesh",
+            rr.Mesh3D(
+                vertex_positions=verts_world,
+                triangle_indices=_to_numpy(faces_hand).astype(np.int32),
+                mesh_material=add_material([0, 255, 0, 255]),
+            ),
+            static=False,
+        )
 
     # v3d_object = gt_data.get("v3d_c.object")
     # faces_object = gt_data.get("faces.object")
