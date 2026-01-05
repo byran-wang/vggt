@@ -71,7 +71,7 @@ def parse_args():
     return parser.parse_args()
 
 
-class StepDataProvider:
+class ObjDataProvider:
     """Lightweight loader for demo_colmap.py outputs."""
 
     def __init__(self, result_dir: Path):
@@ -304,7 +304,7 @@ def build_blueprint(args) -> rrb.BlueprintLike:
 
 def log_all_frames(
     visualizer: Visualizer,
-    obj_provider: StepDataProvider,
+    obj_provider: ObjDataProvider,
     intr,
     extr,
     args,
@@ -378,7 +378,7 @@ def log_all_frames(
 
 def log_current_frame(
     visualizer: Visualizer,
-    obj_provider: StepDataProvider,
+    obj_provider: ObjDataProvider,
     extr,
     intr,
     original_coords,
@@ -422,7 +422,7 @@ def log_points_3d(
 def log_gt_frame(
     visualizer: Visualizer,
     gt_data,
-    obj_provider: StepDataProvider,
+    obj_provider: ObjDataProvider,
     cam_idx: int,
 ):
     # breakpoint()
@@ -551,7 +551,7 @@ def log_hands(hand_provider: HandDataProvider, extr, cam_idx: int):
 
 def main(args):
  
-    obj_provider = StepDataProvider(Path(args.result_folder))
+    obj_provider = ObjDataProvider(Path(args.result_folder))
     hand_provider = HandDataProvider(Path(Path(args.result_folder).parents[0]))
     gt_data = None
     if args.gt_ho3d:
