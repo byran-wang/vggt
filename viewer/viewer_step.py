@@ -271,10 +271,10 @@ def build_blueprint(args) -> rrb.BlueprintLike:
     num_images = args.num_frames
     rows = [
         rrb.Horizontal(
-            rrb.Spatial3DView(name="world", origin="/"),
+            rrb.Spatial3DView(name="our_world", origin="/our"),
             rrb.Vertical(
-                rrb.Spatial2DView(name="camera_current", origin="/camera_current/image"),
-                rrb.Spatial2DView(name="camera_obj", origin="/camera_obj/image"),
+                rrb.Spatial2DView(name="camera_current", origin="/our/camera_current/image"),
+                rrb.Spatial2DView(name="camera_obj", origin="/our/camera_obj/image"),
                 row_shares=[3, 1],
             ),
             column_shares=[8, 2],
@@ -324,12 +324,12 @@ def log_all_frames(
                 continue
 
         visualizer.log_image(
-            f"camera/image_{cam_idx}", str(obj_provider.images[cam_idx]), static=False
+            f"/our/camera/image_{cam_idx}", str(obj_provider.images[cam_idx]), static=False
         )
         with Image.open(obj_provider.images[cam_idx]) as im:
             w, h = im.size
         visualizer.log_calibration(
-            f"camera/image_{cam_idx}",
+            f"/our/camera/image_{cam_idx}",
             resolution=[w, h],
             intrins=intr[cam_idx],
             image_plane_distance=args.image_plane_distance,
@@ -338,7 +338,7 @@ def log_all_frames(
         w2c = np.eye(4)
         w2c[:3] = extr[cam_idx]
         c2w = np.linalg.inv(w2c)
-        visualizer.log_cam_pose(f"camera/image_{cam_idx}", c2w, static=False)
+        visualizer.log_cam_pose(f"/our/camera/image_{cam_idx}", c2w, static=False)
 
         is_keyframe = (
             keyframe_flags is not None
@@ -348,7 +348,7 @@ def log_all_frames(
 
         if is_keyframe:
             rr.log(
-                f"camera/image_{cam_idx}/keyframe_border",
+                f"/our/camera/image_{cam_idx}/keyframe_border",
                 rr.Boxes2D(
                     centers=[[w / 2, h / 2]],
                     sizes=[[w, h]],
@@ -365,12 +365,12 @@ def log_all_frames(
                 if is_keyframe:
                     track_count = int(mask.sum())
                     rr.log(
-                        f"camera/image_{cam_idx}/track_count",
+                        f"/our/camera/image_{cam_idx}/track_count",
                         rr.TextLog(f"track_count: {track_count}"),
                         static=False,
                     )
                 rr.log(
-                    f"camera/image_{cam_idx}/keypoints",
+                    f"/our/camera/image_{cam_idx}/keypoints",
                     rr.Points2D(tracks[mask], colors=[34, 138, 167]),
                     static=False,
                 )
@@ -389,21 +389,21 @@ def log_current_frame(
     w2c = np.eye(4)
     w2c[:3] = extr[cam_idx]
     c2w = np.linalg.inv(w2c)
-    visualizer.log_cam_pose("camera_current/image", c2w, static=False)
+    visualizer.log_cam_pose("/our/camera_current/image", c2w, static=False)
     w, h = _get_original_resolution(original_coords, cam_idx, (w, h))
     intr_cam = _intrinsic_to_original(intr[cam_idx], original_coords, cam_idx)
     visualizer.log_calibration(
-        "camera_current/image",
+        "/our/camera_current/image",
         resolution=[w, h],
         intrins=intr_cam,
         image_plane_distance=1,
         static=False,
     )
     visualizer.log_image(
-        "camera_current/image", str(obj_provider.origin_images[cam_idx]), static=False
+        "/our/camera_current/image", str(obj_provider.origin_images[cam_idx]), static=False
     )
     visualizer.log_image(
-        "camera_obj/image",
+        "/our/camera_obj/image",
         str(obj_provider.get_reproj_error_vis_path(cam_idx)),
         static=False,
     )
@@ -415,8 +415,8 @@ def log_points_3d(
     if points_3d is None:
         return
     pts = np.asarray(points_3d)
-    visualizer.log_points("points_rgb", pts, colors=points_rgb, static=False)
-    visualizer.log_points("points_conf", pts, colors=points_conf_color, static=False)
+    visualizer.log_points("/our/points_rgb", pts, colors=points_rgb, static=False)
+    visualizer.log_points("/our/points_conf", pts, colors=points_conf_color, static=False)
 
 
 def log_gt_frame(
@@ -502,7 +502,7 @@ def log_hands(hand_provider: HandDataProvider, extr, cam_idx: int):
         verts_world = (c2w[:3, :3] @ verts_cam.T + c2w[:3, 3:4]).T
         color_rgb = np.array(color[:3], dtype=np.uint8)
         rr.log(
-            f"hand/{mode}/points",
+            f"our/hand/{mode}/points",
             rr.Points3D(
                 positions=verts_world,
                 colors=np.tile(color_rgb, (verts_world.shape[0], 1)),
@@ -512,7 +512,7 @@ def log_hands(hand_provider: HandDataProvider, extr, cam_idx: int):
         )
         mat = add_material(color)
         rr.log(
-            f"hand/{mode}/mesh",
+            f"our/hand/{mode}/mesh",
             rr.Mesh3D(
                 vertex_positions=verts_world,
                 triangle_indices=faces,
@@ -539,8 +539,6 @@ def main(args):
 
     rr.send_blueprint(build_blueprint(args))
     rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
-    if args.gt_ho3d:
-        rr.log("/gt", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
     
     gen_3d = trimesh.load_mesh(obj_provider.mesh_path)
 
@@ -595,7 +593,7 @@ def main(args):
             original_coords=original_coords,
             cam_idx=cam_idx,
         )
-        visualizer.log_mesh("aligned_mesh", gen_3d_mesh_aligned_path, colors=np.array([255, 255, 255]), static=False)
+        visualizer.log_mesh("/our/aligned_mesh", gen_3d_mesh_aligned_path, colors=np.array([255, 255, 255]), static=False)
         log_points_3d(
             visualizer=visualizer,
             points_3d=points_3d,
