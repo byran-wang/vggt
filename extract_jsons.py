@@ -5,7 +5,7 @@ import numpy as np
 from pathlib import Path
 
 def search_metrics_files(parent_dir, metric_folder):
-    search_items = ["ADD_AUC", "ADD_S_AUC", "cd_icp", "cd_icp_no_scale", "f5_icp", "f5_icp_no_scale", "mpjpe_ra_r", "cd_right"]
+    search_items = ["add_auc", "add_s_auc", "cd_icp", "cd_icp_no_scale", "f5_icp", "f5_icp_no_scale", "mpjpe_ra_r", "cd_right"]
     results = {}
     
     for root, dirs, files in os.walk(parent_dir):
@@ -71,33 +71,24 @@ def create_results_file(results, search_items, output_path):
             
             sorted_index = sorted(df.index, key=natural_sort_key)
             df = df.reindex(sorted_index)
-            
-            # Format float values to 2 decimal places
-            table_str = df.to_string(
+            averages = calculate_averages(df)
+            df_with_avg = df.copy()
+            df_with_avg.loc["Average"] = averages
+
+            table_str = df_with_avg.to_string(
                 float_format=lambda x: '{:.2f}'.format(round(float(x), 2)) if isinstance(x, (float, int)) else str(x)
             )
-            
-            header_line = table_str.split('\n')[0]
-            col_positions = {}
-            current_pos = len(df.index.name or '') + 2
-            
-            for col in df.columns:
-                col_pos = header_line.find(col, current_pos)
-                col_positions[col] = col_pos
-                current_pos = col_pos + len(col)
-            
-            f.write(table_str)
-            f.write("\n" + "-"*len(table_str.split('\n')[0]) + "\n")
-            
-            averages = calculate_averages(df)
-            avg_line = "Average" + " "*(len(df.index.name or '') + 2)
-            
-            for col in df.columns:
-                spaces_needed = col_positions[col] - len(avg_line)
-                avg_line += " "*spaces_needed + f"{averages[col]}"
-            
-            f.write(avg_line)
-            f.write("\n\n" + "="*80 + "\n\n")
+
+            lines = table_str.split('\n')
+            header = lines[0]
+            body = '\n'.join(lines[1:-1])
+            avg_line = lines[-1]
+
+            f.write(header + "\n")
+            f.write(body + "\n")
+            f.write("-" * len(header) + "\n")
+            f.write(avg_line + "\n\n")
+            f.write("="*80 + "\n\n")
 
 import argparse
 def parse_args():
@@ -115,7 +106,7 @@ def parse_args():
         help='metric folder name'
     )    
     parser.add_argument(
-        '--out_dir',
+        '--output_file',
         type=str,
         required=True,
         help='output folder name'
@@ -126,7 +117,7 @@ def main():
     # parent_dir = "outputs_Nov13_256_res_to_128"
     args = parse_args()
     parent_dir = args.parent_dir
-    output_file = f"{args.out_dir}/{args.metric_folder}_results.txt"
+    output_file = args.output_file
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     results, search_items = search_metrics_files(parent_dir, args.metric_folder)
     create_results_file(results, search_items, output_file)
