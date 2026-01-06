@@ -61,22 +61,22 @@ def _get_model_pts(model_pts, idx):
 
 
 def eval_add_object(data_pred, data_gt, metric_dict):
-    pred_extr = data_pred.get("extrinsics")
+    pred_o2c = data_pred.get("extrinsics")
     gt_o2c = data_gt.get("o2c")
     model_pts = data_gt.get("v3d_can.object")
     is_valid = data_gt.get("is_valid")
 
-    if pred_extr is None or gt_o2c is None or model_pts is None:
+    if pred_o2c is None or gt_o2c is None or model_pts is None:
         print("[WARN][eval_add_object] missing extrinsics/gt poses/model points; skipping ADD.")
         return metric_dict
 
-    pred_extr = _to_numpy(pred_extr)
+    pred_o2c = _to_numpy(pred_o2c)
     gt_o2c = _to_numpy(gt_o2c)
     model_pts = _to_numpy(model_pts)
     valid_flags = _to_numpy(is_valid) if is_valid is not None else None
 
     # Align predicted sequence to GT using first valid frame (match BundleSDF)
-    pred_poses = [_build_pose_4x4(p) for p in pred_extr]
+    pred_poses = [_build_pose_4x4(p) for p in pred_o2c]
     gt_poses = [np.array(g) for g in gt_o2c]
     n = min(len(gt_poses), len(pred_poses))
     if n > 0:
@@ -133,6 +133,22 @@ def eval_add_s_object(data_pred, data_gt, metric_dict):
     return metric_dict
 
 
+def eval_add_auc_object(data_pred, data_gt, metric_dict):
+    metric_dict = eval_add_object(data_pred, data_gt, metric_dict)
+    add_vals = np.array(metric_dict.get("add", []), dtype=float)
+    add_vals = add_vals[np.isfinite(add_vals)]
+    metric_dict["add_auc"] = compute_auc(add_vals) * 100.0 if add_vals.size else np.nan
+    return metric_dict
+
+
+def eval_add_s_auc_object(data_pred, data_gt, metric_dict):
+    metric_dict = eval_add_s_object(data_pred, data_gt, metric_dict)
+    adds_vals = np.array(metric_dict.get("add_s", []), dtype=float)
+    adds_vals = adds_vals[np.isfinite(adds_vals)]
+    metric_dict["add_s_auc"] = compute_auc(adds_vals) * 100.0 if adds_vals.size else np.nan
+    return metric_dict
+
+
 def _to_numpy(x):
     if x is None:
         return None
@@ -166,6 +182,33 @@ def _build_pose_4x4(pose):
     out = np.eye(4)
     out[:3] = pose
     return out
+
+
+def compute_auc(rec, max_val=0.1):
+    """
+    Area under recall-threshold curve for pose errors.
+    Matches BundleSDF: integrate fraction of samples below max_val (default 0.1m).
+    """
+    if len(rec) == 0:
+        return 0.0
+    rec = np.sort(np.array(rec))
+    n = len(rec)
+    prec = np.arange(1, n + 1) / float(n)
+    # keep only errors within threshold
+    idx = np.where(rec < max_val)[0]
+    rec = rec[idx].reshape(-1)
+    prec = prec[idx].reshape(-1)
+    if rec.size == 0:
+        return 0.0
+    # add endpoints
+    mrec = np.array([0.0, *rec.tolist(), max_val])
+    mpre = np.array([0.0, *prec.tolist(), prec[-1]])
+    # enforce monotonic precision
+    for i in range(1, len(mpre)):
+        mpre[i] = max(mpre[i], mpre[i - 1])
+    i = np.where(mrec[1:] != mrec[0:len(mrec) - 1])[0] + 1
+    ap = np.sum((mrec[i] - mrec[i - 1]) * mpre[i]) / max_val
+    return ap
 
 def eval_icp_first_frame(data_pred, data_gt, metric_dict):
     faces = data_pred["faces"]["object"]
