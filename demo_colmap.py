@@ -131,7 +131,7 @@ def load_images_and_intrinsics(args, device):
     image_masks = image_masks.to(device)
     print(f"Loaded {len(images)} images from {image_dir}")
 
-    intrinsic = load_intrinsics(os.path.join(args.scene_dir, "meta", "0000.pkl"))
+    intrinsic = load_intrinsics(os.path.join(args.scene_dir, "meta", f"{args.cond_index_raw:04d}.pkl"))
     intrinsic = adjust_intrinsic_for_new_image_size(intrinsic, original_coords, frame_idx=args.cond_index)
 
     depth_conf = np.ones_like(depth_prior)
@@ -1702,42 +1702,35 @@ def get_image_list(args):
 
     return None, []
 
-def demo_fn(args):
-    # Print configuration
+# =============================================================================
+# Helper functions for demo_fn
+# =============================================================================
+
+def setup_environment(args):
+    """Setup device, dtype, output directory, and seed."""
     print("Arguments:", vars(args))
+
     results_dir = Path(args.output_dir) / "results"
     if results_dir.exists():
         results_folders = [entry for entry in results_dir.iterdir() if entry.is_dir()]
         if len(results_folders) > 20:
             print(f"Found {len(results_folders)} result folders in {results_dir}, skipping.")
-            return
+            return None, None
 
     os.makedirs(args.output_dir, exist_ok=True)
-
-    # Set seed for reproducibility
     set_seed(args.seed)
 
-    # Set device and dtype
     dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
     print(f"Using dtype: {dtype}")
 
-    (
-        image_dir,
-        image_path_list,
-        base_image_path_list,
-        images,
-        original_coords,
-        image_masks,
-        depth_prior,
-        intrinsic,
-        depth_conf,
-        vggt_fixed_resolution,
-        img_load_resolution,
-        gen_3d,
-    ) = load_images_and_intrinsics(args, device)
-    with torch.cuda.amp.autocast(dtype=dtype) and torch.no_grad():
+    return device, dtype
+
+
+def predict_initial_tracks_wrapper(images, image_masks, args, dtype):
+    """Predict initial tracks using VGGSfM tracker."""
+    with torch.amp.autocast('cuda', dtype=dtype) and torch.no_grad():
         pred_tracks, pred_vis_scores, _, _, points_rgb = predict_tracks(
             images,
             image_masks=image_masks,
@@ -1750,32 +1743,48 @@ def demo_fn(args):
             complete_non_vis=False,
             query_frame_indexes=[args.cond_index]
         )
+    return pred_tracks, pred_vis_scores, points_rgb
 
-    visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(pred_vis_scores[None])>= pred_vis_scores.min(), out_dir=f"{args.output_dir}/track_raw")            
+
+def estimate_initial_poses(images, depth_prior, intrinsic, pred_tracks, pred_vis_scores, args, output_dir):
+    """Estimate initial camera extrinsics and unproject depth to 3D point map."""
+    visualize_tracks_on_images(
+        images[None],
+        torch.from_numpy(pred_tracks[None]),
+        torch.from_numpy(pred_vis_scores[None]) >= pred_vis_scores.min(),
+        out_dir=f"{output_dir}/track_raw"
+    )
+
     track_mask = pred_vis_scores > args.vis_thresh
-    visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_vis_thresh")
+    visualize_tracks_on_images(
+        images[None],
+        torch.from_numpy(pred_tracks[None]),
+        torch.from_numpy(track_mask[None]),
+        out_dir=f"{output_dir}/track_filter_vis_thresh"
+    )
+
     extrinsic = np.eye(4)[None].repeat(len(images), axis=0).astype(np.float32)
-    extrinsic = estimate_extrinsic(depth_prior, extrinsic, intrinsic, pred_tracks, track_mask, ref_index=args.cond_index, ransac_reproj_threshold=args.max_reproj_error)
-    
+    extrinsic = estimate_extrinsic(
+        depth_prior, extrinsic, intrinsic, pred_tracks, track_mask,
+        ref_index=args.cond_index,
+        ransac_reproj_threshold=args.max_reproj_error
+    )
+
     intrinsic = np.tile(intrinsic[None, :, :], (len(images), 1, 1))
     points_3d = unproject_depth_map_to_point_map(depth_prior[..., None], extrinsic, intrinsic)
-    vggt_fixed_resolution = img_load_resolution
+
+    return extrinsic, intrinsic, points_3d, track_mask
 
 
-    image_size = np.array(images.shape[-2:])
-    scale = img_load_resolution / vggt_fixed_resolution
-    shared_camera = args.shared_camera
-
-
-    # Process points_3d directly using existing pred_tracks instead of calling predict_tracks again
-    # This samples points_3d and depth_conf at the query point locations (same logic as in predict_tracks/_forward_on_query)
-    query_index = args.cond_index
-    height, width = images.shape[-2:]
-
-    # Get query points from existing tracks at the query frame
+def sample_points_at_track_locations(pred_tracks, pred_vis_scores, points_3d, depth_conf,
+                                      image_masks, points_rgb, query_index, image_shape):
+    """
+    Sample points_3d and depth_conf at query point locations.
+    This replicates the logic from predict_tracks/_forward_on_query without re-running tracking.
+    """
+    height, width = image_shape[-2:]
     query_points = pred_tracks[query_index]  # Shape: [N, 2]
 
-    # Query the confidence and points_3d at the keypoint locations
     if depth_conf is not None and points_3d is not None:
         assert height == width
         assert depth_conf.shape[-2] == depth_conf.shape[-1]
@@ -1785,32 +1794,33 @@ def demo_fn(args):
         query_points_scaled = np.round(query_points * scale).astype(np.int64)
 
         pred_confs = depth_conf[query_index][query_points_scaled[:, 1], query_points_scaled[:, 0]]
-        points_3d = points_3d[query_index][query_points_scaled[:, 1], query_points_scaled[:, 0]]
+        sampled_points_3d = points_3d[query_index][query_points_scaled[:, 1], query_points_scaled[:, 0]]
 
         if image_masks is not None:
             image_masks_np = image_masks.cpu().numpy()
             query_points_raw = np.round(query_points).astype(np.int64)
             pred_confs = pred_confs * image_masks_np[query_index][0][query_points_raw[:, 1], query_points_raw[:, 0]]
 
-        # heuristic to remove low confidence points
+        # Heuristic to remove low confidence points
         valid_mask = pred_confs > 1.2
         if valid_mask.sum() > 512:
             pred_tracks = pred_tracks[:, valid_mask]
             pred_vis_scores = pred_vis_scores[:, valid_mask]
             pred_confs = pred_confs[valid_mask]
-            points_3d = points_3d[valid_mask]
+            sampled_points_3d = sampled_points_3d[valid_mask]
             if points_rgb is not None:
                 points_rgb = points_rgb[valid_mask]
     else:
         pred_confs = None
+        sampled_points_3d = points_3d
 
-    # refresh track mask to match the current predictions
+    return pred_tracks, pred_vis_scores, pred_confs, sampled_points_3d, points_rgb
+
+
+def filter_and_verify_tracks(images, points_3d, extrinsic, intrinsic, pred_tracks, pred_vis_scores,
+                             points_rgb, args, output_dir):
+    """Filter tracks by geometry verification and valid correspondences."""
     track_mask = pred_vis_scores > args.vis_thresh
-
-    # rescale the intrinsic matrix from 518 to 1024
-    intrinsic[:, :2, :] *= scale
-    # track_mask = pred_vis_scores > args.vis_thresh
-    # visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_vis_thresh")            
 
     track_mask = verify_tracks_by_geometry(
         points_3d,
@@ -1821,18 +1831,34 @@ def demo_fn(args):
         masks=track_mask,
         max_reproj_error=args.max_reproj_error,
     )
-    visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_max_proj_err")
-    
-    # step: Prep valid correspondences and drop 3D points without surviving tracks
+    visualize_tracks_on_images(
+        images[None],
+        torch.from_numpy(pred_tracks[None]),
+        torch.from_numpy(track_mask[None]),
+        out_dir=f"{output_dir}/track_filter_max_proj_err"
+    )
+
+    # Prep valid correspondences and drop 3D points without surviving tracks
     track_mask, points_3d, keep_pts = prep_valid_correspondences(
         points_3d, track_mask, args.min_inlier_per_frame, args.min_inlier_per_track
     )
     pred_tracks = pred_tracks[:, keep_pts]
     if points_rgb is not None:
         points_rgb = points_rgb[keep_pts]
-    visualize_tracks_on_images(images[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(track_mask[None]), out_dir=f"{args.output_dir}/track_filter_frame_track_inlier")
+    visualize_tracks_on_images(
+        images[None],
+        torch.from_numpy(pred_tracks[None]),
+        torch.from_numpy(track_mask[None]),
+        out_dir=f"{output_dir}/track_filter_frame_track_inlier"
+    )
 
-    # step: optimize 3D points and camera poses using sparse reprojection and point-to-ray losses
+    return track_mask, points_3d, pred_tracks, points_rgb
+
+
+def optimize_and_build_image_info(images, image_path_list, base_image_path_list, original_coords,
+                                   image_masks, depth_prior, intrinsic, extrinsic,
+                                   pred_tracks, track_mask, points_3d, points_rgb, args):
+    """Optimize poses and build the image info dictionary."""
     extrinsic, points_3d, uncertainties = optimize_poses_with_losses(
         points_3d,
         extrinsic,
@@ -1844,7 +1870,7 @@ def demo_fn(args):
         iters=5,
         lr=1e-3,
     )
-    
+
     image_info = {
         "image_paths": image_path_list,
         "image_names": base_image_path_list,
@@ -1859,105 +1885,147 @@ def demo_fn(args):
         "track_mask": track_mask,
         "points_3d": points_3d,
         "points_rgb": points_rgb,
-
     }
-    corres = get_3D_correspondences(gen_3d, image_info, reference_idx=args.cond_index, out_dir=f"{args.output_dir}/3D_corres/", min_vis_score=args.vis_thresh)
-    
-    aligned_pose = align_3D_model_with_images(
-        corres, gen_3d, image_info, reference_idx=args.cond_index, out_dir=f"{args.output_dir}/aligned/"
-    )
+    return image_info
 
-        
 
-    image_info["registered"] =  np.array([False] * len(images))
+def register_remaining_frames(image_info, gen_3d, args):
+    """Register all remaining frames in the sequence."""
+    num_images = len(image_info["images"])
+    image_info["registered"] = np.array([False] * num_images)
     image_info["registered"][args.cond_index] = True
 
-    image_info["invalid"] =  np.array([False] * len(images))
+    image_info["invalid"] = np.array([False] * num_images)
 
-    image_info["keyframe"] =  np.array([False] * len(images))
+    image_info["keyframe"] = np.array([False] * num_images)
     image_info["keyframe"][args.cond_index] = True
 
-    save_results(image_info, gen_3d, out_dir=f"{args.output_dir}/results/0000/")
+    save_results(image_info, gen_3d, out_dir=f"{args.output_dir}/results/{args.cond_index:04d}/")
 
-    while (image_info["registered"].sum() + image_info["invalid"].sum() < len(images)):
-
+    while image_info["registered"].sum() + image_info["invalid"].sum() < num_images:
         next_frame_idx = find_next_frame(image_info)
         print("+" * 50)
         print(f"Next frame to register: {next_frame_idx}")
-        
-        if check_frame_invalid(image_info, next_frame_idx, min_inlier_per_frame=args.min_inlier_per_frame, min_depth_pixels=args.min_depth_pixels):
+
+        if check_frame_invalid(
+            image_info, next_frame_idx,
+            min_inlier_per_frame=args.min_inlier_per_frame,
+            min_depth_pixels=args.min_depth_pixels
+        ):
             image_info["invalid"][next_frame_idx] = True
             continue
 
-        register_new_frame(image_info, gen_3d, next_frame_idx, args, out_dir=Path(args.output_dir) / "results" / f"{next_frame_idx:04d}")
+        register_new_frame(
+            image_info, gen_3d, next_frame_idx, args,
+            out_dir=Path(args.output_dir) / "results" / f"{next_frame_idx:04d}"
+        )
         image_info["registered"][next_frame_idx] = True
-        print(f"Frame {next_frame_idx} registered.")        
+        print(f"Frame {next_frame_idx} registered.")
 
-        if (check_key_frame(image_info, next_frame_idx, rot_thresh=args.kf_rot_thresh, trans_thresh=args.kf_trans_thresh, depth_thresh=args.kf_depth_thresh, frame_inliner_thresh=args.kf_inlier_thresh)):
+        if check_key_frame(
+            image_info, next_frame_idx,
+            rot_thresh=args.kf_rot_thresh,
+            trans_thresh=args.kf_trans_thresh,
+            depth_thresh=args.kf_depth_thresh,
+            frame_inliner_thresh=args.kf_inlier_thresh
+        ):
             process_key_frame(image_info, next_frame_idx, args)
             image_info["keyframe"][next_frame_idx] = True
             print(f"Frame {next_frame_idx} marked as keyframe.")
 
-
-        # snapshot current state
         save_results(image_info, gen_3d, out_dir=Path(args.output_dir) / "results" / f"{next_frame_idx:04d}")
-
         print("-" * 50)
 
 
-    if 0:
-        # step: convert to pycolmap reconstruction
-        reconstruction, track_masks = build_reconstruction_from_tracks(
-            points_3d,
-            extrinsic,
-            intrinsic,
-            pred_tracks,
-            image_size,
-            track_mask,
-            shared_camera,
-            args.camera_type,
-            points_rgb=points_rgb,
-        )
+# =============================================================================
+# Main demo function
+# =============================================================================
 
-        reconstruction, track_masks = batch_np_matrix_to_pycolmap(
-            points_3d,
-            extrinsic,
-            intrinsic,
-            pred_tracks,
-            image_size,
-            masks=track_mask,
-            max_reproj_error=args.max_reproj_error,
-            min_inlier_per_frame=args.min_inlier_per_frame,
-            min_inlier_per_track=args.min_inlier_per_track,
-            shared_camera=shared_camera,
-            camera_type=args.camera_type,
-            points_rgb=points_rgb,
-            images=images,
-            out_dir=args.output_dir,
-        )        
+def demo_fn(args):
+    """
+    Main demo function for 3D reconstruction from image sequences.
 
-        ########### export to colmap format ############
+    Pipeline steps:
+    1. Setup environment (device, dtype, output directory)
+    2. Load images and intrinsics
+    3. Predict initial tracks
+    4. Estimate camera poses
+    5. Sample 3D points at track locations
+    6. Filter and verify tracks
+    7. Optimize poses and build image info
+    8. Get 3D correspondences and align model
+    9. Register remaining frames
+    """
+    # Step 1: Setup environment
+    device, dtype = setup_environment(args)
+    if device is None:
+        return
 
-        reconstruction = rename_colmap_recons_and_rescale_camera(
-            reconstruction,
-            base_image_path_list,
-            original_coords.cpu().numpy(),
-            img_size=img_load_resolution,
-            shift_point2d_to_original_res=True,
-            shared_camera=shared_camera,
-        )
+    # Step 2: Load images and intrinsics
+    (
+        _,  # image_dir (unused)
+        image_path_list,
+        base_image_path_list,
+        images,
+        original_coords,
+        image_masks,
+        depth_prior,
+        intrinsic,
+        depth_conf,
+        _,  # vggt_fixed_resolution (unused, overwritten)
+        img_load_resolution,
+        gen_3d,
+    ) = load_images_and_intrinsics(args, device)
 
-        ba_out_dir = Path(args.output_dir) / "vggt_ba" / "sparse"
-        print(f"Saving ba reconstruction to {ba_out_dir}")
-        os.makedirs(ba_out_dir, exist_ok=True)
+    # Step 3: Predict initial tracks
+    pred_tracks, pred_vis_scores, points_rgb = predict_initial_tracks_wrapper(
+        images, image_masks, args, dtype
+    )
 
+    # Step 4: Estimate initial camera poses and unproject depth to 3D
+    extrinsic, intrinsic, points_3d_map, _ = estimate_initial_poses(
+        images, depth_prior, intrinsic, pred_tracks, pred_vis_scores, args, args.output_dir
+    )
 
-        reconstruction.write(ba_out_dir)
-        if reconstruction is not None:
-            print(
-                f"Reconstruction statistics:\n{reconstruction.summary()}"
-                + f"\n\tnum_input_images = {len(images)}"
-            )
+    # Step 5: Sample 3D points and confidence at track locations
+    pred_tracks, pred_vis_scores, _, points_3d, points_rgb = sample_points_at_track_locations(
+        pred_tracks, pred_vis_scores, points_3d_map, depth_conf,
+        image_masks, points_rgb, args.cond_index, images.shape
+    )
+
+    # Rescale intrinsics to match image resolution
+    scale = depth_conf.shape[-1] / images.shape[-1] if depth_conf is not None else 1.0
+    intrinsic[:, :2, :] *= scale
+
+    # Step 6: Filter and verify tracks by geometry
+    track_mask, points_3d, pred_tracks, points_rgb = filter_and_verify_tracks(
+        images, points_3d, extrinsic, intrinsic, pred_tracks, pred_vis_scores,
+        points_rgb, args, args.output_dir
+    )
+
+    # Step 7: Optimize poses and build image info dictionary
+    image_info = optimize_and_build_image_info(
+        images, image_path_list, base_image_path_list, original_coords,
+        image_masks, depth_prior, intrinsic, extrinsic,
+        pred_tracks, track_mask, points_3d, points_rgb, args
+    )
+
+    # Step 8: Get 3D correspondences and align generated model with images
+    corres = get_3D_correspondences(
+        gen_3d, image_info,
+        reference_idx=args.cond_index,
+        out_dir=f"{args.output_dir}/3D_corres/",
+        min_vis_score=args.vis_thresh
+    )
+    align_3D_model_with_images(
+        corres, gen_3d, image_info,
+        reference_idx=args.cond_index,
+        out_dir=f"{args.output_dir}/aligned/"
+    )
+
+    # Step 9: Register remaining frames
+    register_remaining_frames(image_info, gen_3d, args)
+
     return True
 
 
