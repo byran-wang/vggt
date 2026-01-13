@@ -1767,26 +1767,42 @@ def demo_fn(args):
     shared_camera = args.shared_camera
 
 
-    with torch.cuda.amp.autocast(dtype=dtype) and torch.no_grad():
-        # Predicting Tracks
-        # Using VGGSfM tracker instead of VGGT tracker for efficiency
-        # VGGT tracker requires multiple backbone runs to query different frames (this is a problem caused by the training process)
-        # Will be fixed in VGGT v2
+    # Process points_3d directly using existing pred_tracks instead of calling predict_tracks again
+    # This samples points_3d and depth_conf at the query point locations (same logic as in predict_tracks/_forward_on_query)
+    query_index = args.cond_index
+    height, width = images.shape[-2:]
 
-        # You can also change the pred_tracks to tracks from any other methods
-        # e.g., from COLMAP, from CoTracker, or by chaining 2D matches from Lightglue/LoFTR.
-        pred_tracks, pred_vis_scores, pred_confs, points_3d, points_rgb = predict_tracks(
-            images,
-            image_masks=image_masks,
-            conf=depth_conf,
-            points_3d=points_3d,
-            max_query_pts=args.max_query_pts,
-            query_frame_num=args.query_frame_num,
-            keypoint_extractor="aliked+sp",
-            fine_tracking=args.fine_tracking,
-            complete_non_vis=False,
-            query_frame_indexes=[args.cond_index]
-        )
+    # Get query points from existing tracks at the query frame
+    query_points = pred_tracks[query_index]  # Shape: [N, 2]
+
+    # Query the confidence and points_3d at the keypoint locations
+    if depth_conf is not None and points_3d is not None:
+        assert height == width
+        assert depth_conf.shape[-2] == depth_conf.shape[-1]
+        assert depth_conf.shape[:3] == points_3d.shape[:3]
+        scale = depth_conf.shape[-1] / width
+
+        query_points_scaled = np.round(query_points * scale).astype(np.int64)
+
+        pred_confs = depth_conf[query_index][query_points_scaled[:, 1], query_points_scaled[:, 0]]
+        points_3d = points_3d[query_index][query_points_scaled[:, 1], query_points_scaled[:, 0]]
+
+        if image_masks is not None:
+            image_masks_np = image_masks.cpu().numpy()
+            query_points_raw = np.round(query_points).astype(np.int64)
+            pred_confs = pred_confs * image_masks_np[query_index][0][query_points_raw[:, 1], query_points_raw[:, 0]]
+
+        # heuristic to remove low confidence points
+        valid_mask = pred_confs > 1.2
+        if valid_mask.sum() > 512:
+            pred_tracks = pred_tracks[:, valid_mask]
+            pred_vis_scores = pred_vis_scores[:, valid_mask]
+            pred_confs = pred_confs[valid_mask]
+            points_3d = points_3d[valid_mask]
+            if points_rgb is not None:
+                points_rgb = points_rgb[valid_mask]
+    else:
+        pred_confs = None
 
     # refresh track mask to match the current predictions
     track_mask = pred_vis_scores > args.vis_thresh
