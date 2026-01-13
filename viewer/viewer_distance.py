@@ -33,6 +33,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Visualize hand-object distance")
     parser.add_argument("--seq_name", type=str, required=True, help="Sequence name (e.g., MC1)")
     parser.add_argument("--max_frames", type=int, default=None, help="Max frames to visualize")
+    parser.add_argument("--frame_interval", type=int, default=3, help="Frame interval (e.g., 5 to show every 5th frame)")
     parser.add_argument("--distance_threshold", type=float, default=0.05, help="Distance threshold for colormap (meters)")
     parser.add_argument("--colormap", type=str, default="plasma", help="Colormap name (plasma, viridis, jet, etc.)")
     parser.add_argument("--rrd_output_path", type=str, default=None, help="Save to .rrd file")
@@ -152,11 +153,12 @@ def load_gt_data(seq_name: str, max_frames: int = None):
 
 def build_blueprint(num_frames: int) -> rrb.BlueprintLike:
     """Build Rerun blueprint for visualization."""
+    white_bg = [255, 255, 255]
     return rrb.Horizontal(
         rrb.Spatial2DView(name="Camera Image", origin="/world/camera"),
-        rrb.Spatial3DView(name="3D View", origin="/world/scene"),
-        rrb.Spatial3DView(name="Hand Distance", origin="/world/hand_distance"),
-        rrb.Spatial3DView(name="Object Distance", origin="/world/object_distance"),
+        rrb.Spatial3DView(name="3D View", origin="/world/scene", background=white_bg),
+        rrb.Spatial3DView(name="Hand Distance", origin="/world/hand_distance", background=white_bg),
+        rrb.Spatial3DView(name="Object Distance", origin="/world/object_distance", background=white_bg),
         column_shares=[1, 1, 1, 1],
     )
 
@@ -266,15 +268,18 @@ def visualize_gt_distance(args):
     rr.send_blueprint(build_blueprint(num_frames))
     rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
 
-    print("Visualizing frames...")    
-    for frame_idx in tqdm(range(num_frames)):
+    print("Visualizing frames...")
+    vis_frame_idx = 0
+    for frame_idx in tqdm(range(0, num_frames, args.frame_interval)):
         if not is_valid[frame_idx]:
             continue
 
-        rr.set_time_sequence("frame", frame_idx)
+        rr.set_time_sequence("frame", vis_frame_idx)
+        vis_frame_idx += 1
 
         hand_verts = v3d_hand[frame_idx]
-        hand_verts_flat = v3d_hand_flat[frame_idx]
+        # TODO: hard code due to beta in different frame
+        hand_verts_flat = v3d_hand_flat[0]
         obj_verts = v3d_object[frame_idx]
         obj_verts_can = v3d_object_can[frame_idx]  # Canonical object vertices (identity pose)
 
@@ -420,7 +425,7 @@ def visualize_gt_distance(args):
             width=width,
             height=height,
             image_path=image_path,  # Show image in 3D scene view
-            image_plane_distance=0.3,
+            image_plane_distance=1.0,
         )
 
     if args.rrd_output_path:
