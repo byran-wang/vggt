@@ -69,6 +69,11 @@ def parse_args():
         help="Visualize HO3D ground-truth cameras and object meshes when available.",
     )
     parser.add_argument(
+        "--aliggned_mesh",
+        action="store_true",
+        help="Visualize the aligned remeshed 3D mesh at each step.",
+    )
+    parser.add_argument(
         "--vis_only_keyframes",
         action="store_true",
         help="Only visualize keyframes (skip non-keyframe steps).",
@@ -669,7 +674,10 @@ def main(args):
             original_coords=original_coords,
             cam_idx=cam_idx,
         )
-        visualizer.log_mesh("/our/aligned_mesh", gen_3d_mesh_aligned_path, colors=np.array([255, 255, 255]), static=False)
+
+        if args.aliggned_mesh:
+            visualizer.log_mesh("/our/aligned_mesh", gen_3d_mesh_aligned_path, colors=np.array([255, 255, 255]), static=False)
+        
         log_points_3d(
             visualizer=visualizer,
             points_3d=points_3d,
