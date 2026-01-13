@@ -189,6 +189,54 @@ def save_intrinsics(intrinsic, filepath):
     np.savetxt(filepath, K, fmt="%.8f")
 
 
+def remove_duplicate_tracks(existing_tracks, new_tracks, new_track_mask, new_points_3d, new_points_rgb,
+                            ref_frame_idx, dist_thresh=3.0):
+    """
+    Remove new track points that are too close to existing tracks at the reference frame.
+
+    Args:
+        existing_tracks: Existing tracks array of shape [S, N_existing, 2]
+        new_tracks: New tracks array of shape [S, N_new, 2]
+        new_track_mask: Visibility mask for new tracks [S, N_new]
+        new_points_3d: 3D points for new tracks [N_new, 3]
+        new_points_rgb: RGB colors for new tracks [N_new, 3] or None
+        ref_frame_idx: Reference frame index to compare 2D positions
+        dist_thresh: Distance threshold in pixels to consider as duplicate
+
+    Returns:
+        Filtered new_tracks, new_track_mask, new_points_3d, new_points_rgb
+    """
+    if new_tracks.shape[1] == 0:
+        return new_tracks, new_track_mask, new_points_3d, new_points_rgb
+
+    # Get 2D positions at reference frame
+    existing_pts_2d = existing_tracks[ref_frame_idx]  # [N_existing, 2]
+    new_pts_2d = new_tracks[ref_frame_idx]  # [N_new, 2]
+
+    # Compute pairwise distances between new and existing points
+    # Using broadcasting: [N_new, 1, 2] - [1, N_existing, 2] -> [N_new, N_existing, 2]
+    diff = new_pts_2d[:, None, :] - existing_pts_2d[None, :, :]
+    distances = np.linalg.norm(diff, axis=2)  # [N_new, N_existing]
+
+    # Find minimum distance to any existing track for each new track
+    min_distances = distances.min(axis=1)  # [N_new]
+
+    # Keep only new tracks that are far enough from all existing tracks
+    keep_mask = min_distances > dist_thresh
+
+    num_removed = (~keep_mask).sum()
+    if num_removed > 0:
+        print(f"[remove_duplicate_tracks] Removed {num_removed} duplicate tracks (dist_thresh={dist_thresh}px)")
+
+    new_tracks = new_tracks[:, keep_mask]
+    new_track_mask = new_track_mask[:, keep_mask]
+    new_points_3d = new_points_3d[keep_mask]
+    if new_points_rgb is not None:
+        new_points_rgb = new_points_rgb[keep_mask]
+
+    return new_tracks, new_track_mask, new_points_3d, new_points_rgb
+
+
 def prep_valid_correspondences(points_3d, track_mask, min_inlier_per_frame, min_inlier_per_track):
     """Filter tracks by per-frame/track counts and drop 3D points with no surviving tracks."""
     mask = np.copy(track_mask)
@@ -1660,6 +1708,13 @@ def process_key_frame(image_info, frame_idx, args):
     )
     pred_tracks_new = pred_tracks[:, keep_pts]
     points_rgb_new = points_rgb[keep_pts] if points_rgb is not None else None
+
+    # Remove duplicate track points that are too close to existing tracks
+    if existing_pred_tracks is not None and len(existing_pred_tracks) > 0:
+        pred_tracks_new, track_mask_new, points_3d_new, points_rgb_new = remove_duplicate_tracks(
+            existing_pred_tracks, pred_tracks_new, track_mask_new, points_3d_new, points_rgb_new,
+            ref_frame_idx=frame_idx, dist_thresh=3.0
+        )
 
     # Append new keyframe tracks/points to existing state instead of overwriting.
     if existing_pred_tracks is not None and existing_track_mask is not None and existing_points_3d is not None:
