@@ -224,6 +224,7 @@ def visualize_gt_distance(args):
     gt_data = load_gt_data(args.seq_name, args.max_frames)
 
     v3d_hand = gt_data["v3d_c.right"]  # (num_frames, 778, 3)
+    v3d_hand_flat = gt_data["v3d_flat.right"]  # (num_frames, 778, 3)
     v3d_object = gt_data["v3d_c.object"]  # (num_frames, num_obj_verts, 3)
     v3d_object_can = gt_data["v3d_can.object"]  # (num_frames, num_obj_verts, 3) canonical object
     faces_hand = gt_data["faces.right"]
@@ -235,6 +236,8 @@ def visualize_gt_distance(args):
 
     if hasattr(v3d_hand, 'numpy'):
         v3d_hand = v3d_hand.numpy()
+    if hasattr(v3d_hand_flat, 'numpy'):
+        v3d_hand_flat = v3d_hand_flat.numpy()        
     if hasattr(v3d_object, 'numpy'):
         v3d_object = v3d_object.numpy()
     if hasattr(v3d_object_can, 'numpy'):
@@ -251,7 +254,9 @@ def visualize_gt_distance(args):
         is_valid = is_valid.numpy()
 
     # Seal the hand mesh (close the wrist opening)
+
     v3d_hand, faces_hand = seal_mano_mesh_np(v3d_hand, faces_hand.astype(np.int64), is_rhand=True)
+    v3d_hand_flat, faces_hand_flat = seal_mano_mesh_np(v3d_hand_flat, faces_hand.astype(np.int64), is_rhand=True)
 
     num_frames = len(v3d_hand)
     print(f"Loaded {num_frames} frames")
@@ -261,7 +266,7 @@ def visualize_gt_distance(args):
     rr.send_blueprint(build_blueprint(num_frames))
     rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
 
-    print("Visualizing frames...")
+    print("Visualizing frames...")    
     for frame_idx in tqdm(range(num_frames)):
         if not is_valid[frame_idx]:
             continue
@@ -269,19 +274,13 @@ def visualize_gt_distance(args):
         rr.set_time_sequence("frame", frame_idx)
 
         hand_verts = v3d_hand[frame_idx]
+        hand_verts_flat = v3d_hand_flat[frame_idx]
         obj_verts = v3d_object[frame_idx]
         obj_verts_can = v3d_object_can[frame_idx]  # Canonical object vertices (identity pose)
 
         # Skip invalid frames
         if np.any(hand_verts < -100) or np.any(obj_verts < -100):
             continue
-
-        # Compute c2o (camera to object) transform for canonical space
-        o2c_mat = o2c[frame_idx]  # 4x4
-        c2o = np.linalg.inv(o2c_mat)  # Inverse: camera to object
-
-        # Transform hand to canonical (object-centric) coordinates
-        hand_verts_can = (c2o[:3, :3] @ hand_verts.T + c2o[:3, 3:4]).T
 
         # Compute distances
         hand_to_obj_dist = compute_hand_object_distance(hand_verts, obj_verts)
@@ -297,7 +296,7 @@ def visualize_gt_distance(args):
 
         # Compute vertex normals for better lighting
         hand_normals = compute_vertex_normals(hand_verts, faces_hand.astype(np.int32))
-        hand_normals_can = compute_vertex_normals(hand_verts_can, faces_hand.astype(np.int32))
+        hand_normals_flat = compute_vertex_normals(hand_verts_flat, faces_hand.astype(np.int32))
         obj_normals = compute_vertex_normals(obj_verts, faces_object.astype(np.int32))
         obj_normals_can = compute_vertex_normals(obj_verts_can, faces_object.astype(np.int32))
 
@@ -327,10 +326,10 @@ def visualize_gt_distance(args):
         rr.log(
             "/world/hand_distance/hand",
             rr.Mesh3D(
-                vertex_positions=hand_verts_can,
-                triangle_indices=faces_hand.astype(np.int32),
+                vertex_positions=hand_verts_flat,
+                triangle_indices=faces_hand_flat.astype(np.int32),
                 vertex_colors=hand_dist_colors,
-                vertex_normals=hand_normals_can,
+                vertex_normals=hand_normals_flat,
             ),
             static=False,
         )

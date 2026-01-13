@@ -172,9 +172,22 @@ def load_data(seq_name, get_selected_fids_fn=None):
     fnames = np.array(fnames)[selected_fids]
     is_valid = is_valid[selected_fids]
 
+
+    hand_rot[...] = 0.0
+    hand_pose[...] = 0.0
+    hand_transl[...] = 0.0
+    mano_layer = build_mano_aa(True, flat_hand=True)    
+    mano_output = mano_layer(
+        betas=hand_beta,
+        hand_pose=hand_pose,
+        global_orient=hand_rot,
+        transl=hand_transl,
+    )
+    v3d_h_flat = mano_output.vertices  
     out = {}
     out["fnames"] = fnames
     out["v3d_c.right"] = v3d_h.detach().numpy()
+    out["v3d_flat.right"] = v3d_h_flat.detach().numpy()
     out["v3d_c.object"] = v3d_o_cam.detach().numpy()
     out["v3d_can.object"] = v_cano_o.detach().numpy()
     out["j3d_c.right"] = j3d_h.detach().numpy()
