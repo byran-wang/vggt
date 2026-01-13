@@ -152,18 +152,12 @@ def load_gt_data(seq_name: str, max_frames: int = None):
 
 def build_blueprint(num_frames: int) -> rrb.BlueprintLike:
     """Build Rerun blueprint for visualization."""
-    return rrb.Vertical(
-        rrb.Horizontal(
-            rrb.Spatial2DView(name="Camera Image", origin="/world/camera"),
-            rrb.Spatial3DView(name="3D View", origin="/world"),
-            column_shares=[1, 1],
-        ),
-        rrb.Horizontal(
-            rrb.Spatial3DView(name="Hand Distance", origin="/world/hand_distance"),
-            rrb.Spatial3DView(name="Object Distance", origin="/world/object_distance"),
-            column_shares=[1, 1],
-        ),
-        row_shares=[2, 1],
+    return rrb.Horizontal(
+        rrb.Spatial2DView(name="Camera Image", origin="/world/camera"),
+        rrb.Spatial3DView(name="3D View", origin="/world/scene"),
+        rrb.Spatial3DView(name="Hand Distance", origin="/world/hand_distance"),
+        rrb.Spatial3DView(name="Object Distance", origin="/world/object_distance"),
+        column_shares=[1, 1, 1, 1],
     )
 
 
@@ -231,6 +225,7 @@ def visualize_gt_distance(args):
 
     v3d_hand = gt_data["v3d_c.right"]  # (num_frames, 778, 3)
     v3d_object = gt_data["v3d_c.object"]  # (num_frames, num_obj_verts, 3)
+    v3d_object_can = gt_data["v3d_can.object"]  # (num_frames, num_obj_verts, 3) canonical object
     faces_hand = gt_data["faces.right"]
     faces_object = gt_data["faces.object"]
     o2c = gt_data["o2c"]  # (num_frames, 4, 4)
@@ -242,6 +237,8 @@ def visualize_gt_distance(args):
         v3d_hand = v3d_hand.numpy()
     if hasattr(v3d_object, 'numpy'):
         v3d_object = v3d_object.numpy()
+    if hasattr(v3d_object_can, 'numpy'):
+        v3d_object_can = v3d_object_can.numpy()
     if hasattr(faces_hand, 'numpy'):
         faces_hand = faces_hand.numpy()
     if hasattr(faces_object, 'numpy'):
@@ -264,11 +261,6 @@ def visualize_gt_distance(args):
     rr.send_blueprint(build_blueprint(num_frames))
     rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
 
-    # # Load object mesh for static display
-    # mesh_path = gt_data.get("mesh_name.object")
-    # if mesh_path:
-    #     visualizer.log_mesh("/world/object_canonical", mesh_path, static=True)
-
     print("Visualizing frames...")
     for frame_idx in tqdm(range(num_frames)):
         if not is_valid[frame_idx]:
@@ -278,73 +270,104 @@ def visualize_gt_distance(args):
 
         hand_verts = v3d_hand[frame_idx]
         obj_verts = v3d_object[frame_idx]
+        obj_verts_can = v3d_object_can[frame_idx]  # Canonical object vertices (identity pose)
 
         # Skip invalid frames
         if np.any(hand_verts < -100) or np.any(obj_verts < -100):
             continue
 
+        # Compute c2o (camera to object) transform for canonical space
+        o2c_mat = o2c[frame_idx]  # 4x4
+        c2o = np.linalg.inv(o2c_mat)  # Inverse: camera to object
+
+        # Transform hand to canonical (object-centric) coordinates
+        hand_verts_can = (c2o[:3, :3] @ hand_verts.T + c2o[:3, 3:4]).T
+
         # Compute distances
         hand_to_obj_dist = compute_hand_object_distance(hand_verts, obj_verts)
         obj_to_hand_dist = compute_object_hand_distance(obj_verts, hand_verts)
 
-        # Convert to colors
-        hand_colors = np.full((hand_verts.shape[0], 3), 180, dtype=np.uint8)  # Gray color for hand
-        obj_colors = distance_to_color(obj_to_hand_dist, args.colormap, args.distance_threshold)
+        # Convert distances to colors
+        hand_dist_colors = distance_to_color(hand_to_obj_dist, args.colormap, args.distance_threshold)
+        obj_dist_colors = distance_to_color(obj_to_hand_dist, args.colormap, args.distance_threshold)
+
+        # Gray colors for non-distance views
+        hand_purple = np.full((hand_verts.shape[0], 3), [200, 180, 220], dtype=np.uint8)  # Light purple
+        obj_blue = np.full((obj_verts.shape[0], 3), [180, 200, 230], dtype=np.uint8)  # Light blue
 
         # Compute vertex normals for better lighting
         hand_normals = compute_vertex_normals(hand_verts, faces_hand.astype(np.int32))
+        hand_normals_can = compute_vertex_normals(hand_verts_can, faces_hand.astype(np.int32))
         obj_normals = compute_vertex_normals(obj_verts, faces_object.astype(np.int32))
+        obj_normals_can = compute_vertex_normals(obj_verts_can, faces_object.astype(np.int32))
 
-        # Log hand mesh with distance colors and normals
+        # === View 2: 3D Scene (hand, object, camera - no distance colors) ===
         rr.log(
-            "/world/hand_distance/mesh",
+            "/world/scene/hand",
             rr.Mesh3D(
                 vertex_positions=hand_verts,
                 triangle_indices=faces_hand.astype(np.int32),
-                vertex_colors=hand_colors,
+                vertex_colors=hand_purple,
                 vertex_normals=hand_normals,
             ),
             static=False,
         )
-
-        # Log object mesh with distance colors and normals
         rr.log(
-            "/world/object_distance/mesh",
+            "/world/scene/object",
             rr.Mesh3D(
                 vertex_positions=obj_verts,
                 triangle_indices=faces_object.astype(np.int32),
-                vertex_colors=obj_colors,
+                vertex_colors=obj_blue,
                 vertex_normals=obj_normals,
             ),
             static=False,
         )
 
-        # Log original meshes (gray)
+        # === View 3: Hand Distance (hand in canonical space with distance colors) ===
+        rr.log(
+            "/world/hand_distance/hand",
+            rr.Mesh3D(
+                vertex_positions=hand_verts_can,
+                triangle_indices=faces_hand.astype(np.int32),
+                vertex_colors=hand_dist_colors,
+                vertex_normals=hand_normals_can,
+            ),
+            static=False,
+        )
+        # Also show object in canonical space (gray) for reference
         # rr.log(
-        #     "/world/hand/mesh",
+        #     "/world/hand_distance/object",
         #     rr.Mesh3D(
-        #         vertex_positions=hand_verts,
-        #         triangle_indices=faces_hand.astype(np.int32),
-        #         mesh_material=add_material([200, 200, 200, 255]),
-        #     ),
-        #     static=False,
-        # )
-
-        # rr.log(
-        #     "/world/object/mesh",
-        #     rr.Mesh3D(
-        #         vertex_positions=obj_verts,
+        #         vertex_positions=obj_verts_can,
         #         triangle_indices=faces_object.astype(np.int32),
-        #         mesh_material=add_material([100, 150, 200, 255]),
+        #         vertex_colors=obj_gray,
+        #         vertex_normals=obj_normals_can,
         #     ),
         #     static=False,
         # )
 
-        # # Log image if available
-        # if frame_idx < len(fnames):
-        #     fname = fnames[frame_idx]
-        #     if isinstance(fname, (str, Path)) and os.path.exists(fname):
-        #         visualizer.log_image("/camera/image", str(fname), static=False)
+        # === View 4: Object Distance (object in canonical space with distance colors) ===
+        rr.log(
+            "/world/object_distance/object",
+            rr.Mesh3D(
+                vertex_positions=obj_verts_can,
+                triangle_indices=faces_object.astype(np.int32),
+                vertex_colors=obj_dist_colors,
+                vertex_normals=obj_normals_can,
+            ),
+            static=False,
+        )
+        # Also show hand in canonical space (gray) for reference
+        # rr.log(
+        #     "/world/object_distance/hand",
+        #     rr.Mesh3D(
+        #         vertex_positions=hand_verts_can,
+        #         triangle_indices=faces_hand.astype(np.int32),
+        #         vertex_colors=hand_gray,
+        #         vertex_normals=hand_normals_can,
+        #     ),
+        #     static=False,
+        # )
 
         # Log distance statistics as text
         min_hand_dist = np.min(hand_to_obj_dist)
@@ -361,11 +384,7 @@ def visualize_gt_distance(args):
         )
 
         # Log camera with image and intrinsics
-        # o2c is object-to-camera, we need camera-to-object (c2w in object frame)
-        o2c_mat = o2c[frame_idx]
         c2w = np.eye(4)
-        # c2w[:3, :3] = o2c_mat[:3, :3].T  # R^T
-        # c2w[:3, 3] = -o2c_mat[:3, :3].T @ o2c_mat[:3, 3]  # -R^T * t
 
         # Get image path and dimensions
         image_path = None
@@ -392,6 +411,17 @@ def visualize_gt_distance(args):
             height=height,
             image_path=image_path,
             image_plane_distance=1.0,
+        )
+
+        # Also log camera in scene view with image
+        log_camera(
+            label="/world/scene/camera",
+            c2w=c2w,
+            K=K_mat,
+            width=width,
+            height=height,
+            image_path=image_path,  # Show image in 3D scene view
+            image_plane_distance=0.3,
         )
 
     if args.rrd_output_path:
