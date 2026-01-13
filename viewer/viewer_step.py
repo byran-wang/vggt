@@ -68,6 +68,11 @@ def parse_args():
         default=1,
         help="Visualize HO3D ground-truth cameras and object meshes when available.",
     )
+    parser.add_argument(
+        "--vis_only_keyframes",
+        action="store_true",
+        help="Only visualize keyframes (skip non-keyframe steps).",
+    )
     return parser.parse_args()
 
 
@@ -628,6 +633,17 @@ def main(args):
         points_rgb = data.get("points_rgb")
         points_conf_color = data.get("points_conf_color")
         keyframe_flags = data.get("keyframe")
+
+        # Skip non-keyframe steps if vis_only_keyframes is enabled
+        if args.vis_only_keyframes:
+            cam_idx = int(step["path"].name)
+            is_keyframe = (
+                keyframe_flags is not None
+                and cam_idx < len(keyframe_flags)
+                and bool(np.asarray(keyframe_flags)[cam_idx])
+            )
+            if not is_keyframe:
+                continue
         
 
         if not args.only_current_view:

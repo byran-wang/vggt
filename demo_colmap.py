@@ -841,7 +841,6 @@ def get_3D_correspondences(gen_3d, reference, reference_idx=0, out_dir=None, min
     visualize_tracks_on_images(imgs_stack[None], torch.from_numpy(pred_tracks[None]), out_dir=f"{out_dir}/track_raw")
     vis_mask = pred_vis_scores > min_vis_score
     visualize_tracks_on_images(imgs_stack[None], torch.from_numpy(pred_tracks[None]), torch.from_numpy(vis_mask[None]), out_dir=f"{out_dir}/track_vis")
-    vis_mask = pred_vis_scores > min_vis_score
     valid = vis_mask[0] & vis_mask[1]
     if not np.any(valid):
         raise ValueError("[get_3D_correspondences] No valid predicted correspondences.")    

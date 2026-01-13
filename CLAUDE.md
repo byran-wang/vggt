@@ -49,6 +49,9 @@ python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum_intr
 # Visualize hand and object GT results with Rerun
 python viewer/viewer_step.py --result_folder output/MC1/results/ --gt_ho3d 1 --num_frames 150
 
+# Visualize only keyframes (skip non-keyframe steps)
+python viewer/viewer_step.py --result_folder output/MC1/results/ --vis_only_keyframes --gt_ho3d 1
+
 # Visualize hand-object distance (like ARCTIC InterField)
 # GT data:
 python viewer/viewer_distance.py --seq_name MC1
