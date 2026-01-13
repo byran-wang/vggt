@@ -87,12 +87,12 @@ def parse_args():
     parser.add_argument("--min_PnP_inlier_num", type=int, default=200, help="Minimum inliers for registration")
     parser.add_argument("--instance_id", type=int, default=0, help="Instance ID for image preprocessing")
     parser.add_argument("--cond_index", type=int, default=0, help="Conditioning frame index for tracking")
+    parser.add_argument("--cond_index_raw", type=int, default=0, help="Conditioning frame index for tracking")
     parser.add_argument("--kf_rot_thresh", type=float, default=5.0, help="Keyframe rotation threshold (degrees)")
     parser.add_argument("--kf_trans_thresh", type=float, default=0.02, help="Keyframe translation threshold (units)")
     parser.add_argument("--kf_depth_thresh", type=float, default=500, help="Keyframe depth change threshold (units)")
     parser.add_argument("--kf_inlier_thresh", type=int, default=10, help="Keyframe inlier count threshold")
     return parser.parse_args()
-
 
 def run_VGGT(model, images, dtype, resolution=518):
     # images: [B, 3, H, W]
@@ -1650,6 +1650,13 @@ def get_image_list(args):
 def demo_fn(args):
     # Print configuration
     print("Arguments:", vars(args))
+    # TODO if the foulders number in f"{args.output_dir}/results/" is less great than 10, then return
+    results_dir = Path(args.output_dir) / "results"
+    if results_dir.exists():
+        results_folders = [entry for entry in results_dir.iterdir() if entry.is_dir()]
+        if len(results_folders) > 20:
+            print(f"Found {len(results_folders)} result folders in {results_dir}, skipping.")
+            return
 
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -1683,7 +1690,7 @@ def demo_fn(args):
     img_load_resolution = Image.open(image_path_list[0]).size[0]
 
     images, original_coords, image_masks, depth_prior = load_and_preprocess_images_square(image_path_list, args, target_size=img_load_resolution, out_dir=f"{args.output_dir}/data_processed")
-    gen_3d = GEN_3D(f"{args.scene_dir}/align_mesh_image/0000")
+    gen_3d = GEN_3D(f"{args.scene_dir}/align_mesh_image/{args.cond_index_raw:04d}")
     save_input_data(images, image_masks, depth_prior, gen_3d, image_path_list, f"{args.output_dir}/results/")
     
     images = images.to(device)
@@ -1693,7 +1700,7 @@ def demo_fn(args):
 
 
     intrinsic = load_intrinsics(os.path.join(args.scene_dir, "meta", "0000.pkl"))
-    intrinsic = adjust_intrinsic_for_new_image_size(intrinsic, original_coords, frame_idx=getattr(args, "cond_index", 0))
+    intrinsic = adjust_intrinsic_for_new_image_size(intrinsic, original_coords, frame_idx=args.cond_index)
     
     depth_conf = np.ones_like(depth_prior)
     with torch.cuda.amp.autocast(dtype=dtype) and torch.no_grad():
@@ -1804,10 +1811,10 @@ def demo_fn(args):
         "points_rgb": points_rgb,
 
     }
-    corres = get_3D_correspondences(gen_3d, image_info, reference_idx=0, out_dir=f"{args.output_dir}/3D_corres/", min_vis_score=args.vis_thresh)
+    corres = get_3D_correspondences(gen_3d, image_info, reference_idx=args.cond_index, out_dir=f"{args.output_dir}/3D_corres/", min_vis_score=args.vis_thresh)
     
     aligned_pose = align_3D_model_with_images(
-        corres, gen_3d, image_info, reference_idx=0, out_dir=f"{args.output_dir}/aligned/"
+        corres, gen_3d, image_info, reference_idx=args.cond_index, out_dir=f"{args.output_dir}/aligned/"
     )
 
         
