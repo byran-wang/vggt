@@ -148,8 +148,8 @@ def build_blueprint(num_frames: int) -> rrb.BlueprintLike:
     return rrb.Vertical(
         rrb.Horizontal(
             rrb.Spatial3DView(name="3D View", origin="/world"),
-            rrb.Spatial2DView(name="Image", origin="/camera/image"),
-            column_shares=[2, 1],
+            # rrb.Spatial2DView(name="Image", origin="/camera/image"),
+            # column_shares=[2, 1],
         ),
         rrb.Horizontal(
             rrb.Spatial3DView(name="Hand Distance", origin="/world/hand_distance"),
@@ -197,10 +197,10 @@ def visualize_gt_distance(args):
     rr.send_blueprint(build_blueprint(num_frames))
     rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
 
-    # Load object mesh for static display
-    mesh_path = gt_data.get("mesh_name.object")
-    if mesh_path:
-        visualizer.log_mesh("/world/object_canonical", mesh_path, static=True)
+    # # Load object mesh for static display
+    # mesh_path = gt_data.get("mesh_name.object")
+    # if mesh_path:
+    #     visualizer.log_mesh("/world/object_canonical", mesh_path, static=True)
 
     print("Visualizing frames...")
     for frame_idx in tqdm(range(num_frames)):
@@ -247,31 +247,31 @@ def visualize_gt_distance(args):
         )
 
         # Log original meshes (gray)
-        rr.log(
-            "/world/hand/mesh",
-            rr.Mesh3D(
-                vertex_positions=hand_verts,
-                triangle_indices=faces_hand.astype(np.int32),
-                mesh_material=add_material([200, 200, 200, 255]),
-            ),
-            static=False,
-        )
+        # rr.log(
+        #     "/world/hand/mesh",
+        #     rr.Mesh3D(
+        #         vertex_positions=hand_verts,
+        #         triangle_indices=faces_hand.astype(np.int32),
+        #         mesh_material=add_material([200, 200, 200, 255]),
+        #     ),
+        #     static=False,
+        # )
 
-        rr.log(
-            "/world/object/mesh",
-            rr.Mesh3D(
-                vertex_positions=obj_verts,
-                triangle_indices=faces_object.astype(np.int32),
-                mesh_material=add_material([100, 150, 200, 255]),
-            ),
-            static=False,
-        )
+        # rr.log(
+        #     "/world/object/mesh",
+        #     rr.Mesh3D(
+        #         vertex_positions=obj_verts,
+        #         triangle_indices=faces_object.astype(np.int32),
+        #         mesh_material=add_material([100, 150, 200, 255]),
+        #     ),
+        #     static=False,
+        # )
 
-        # Log image if available
-        if frame_idx < len(fnames):
-            fname = fnames[frame_idx]
-            if isinstance(fname, (str, Path)) and os.path.exists(fname):
-                visualizer.log_image("/camera/image", str(fname), static=False)
+        # # Log image if available
+        # if frame_idx < len(fnames):
+        #     fname = fnames[frame_idx]
+        #     if isinstance(fname, (str, Path)) and os.path.exists(fname):
+        #         visualizer.log_image("/camera/image", str(fname), static=False)
 
         # Log distance statistics as text
         min_hand_dist = np.min(hand_to_obj_dist)
