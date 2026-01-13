@@ -43,6 +43,42 @@ def parse_args():
     return parser.parse_args()
 
 
+def compute_vertex_normals(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """
+    Compute vertex normals from mesh vertices and faces.
+
+    Args:
+        vertices: (N, 3) vertex positions
+        faces: (F, 3) face indices
+
+    Returns:
+        normals: (N, 3) normalized vertex normals
+    """
+    # Initialize vertex normals
+    vertex_normals = np.zeros_like(vertices)
+
+    # Get vertices for each face
+    v0 = vertices[faces[:, 0]]
+    v1 = vertices[faces[:, 1]]
+    v2 = vertices[faces[:, 2]]
+
+    # Compute face normals (cross product of edges)
+    edge1 = v1 - v0
+    edge2 = v2 - v0
+    face_normals = np.cross(edge1, edge2)
+
+    # Accumulate face normals to vertices
+    for i in range(3):
+        np.add.at(vertex_normals, faces[:, i], face_normals)
+
+    # Normalize
+    norms = np.linalg.norm(vertex_normals, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1, norms)  # Avoid division by zero
+    vertex_normals = vertex_normals / norms
+
+    return vertex_normals
+
+
 def compute_hand_object_distance(hand_verts: np.ndarray, object_verts: np.ndarray) -> np.ndarray:
     """
     Compute minimum distance from each hand vertex to object surface.
@@ -148,8 +184,8 @@ def build_blueprint(num_frames: int) -> rrb.BlueprintLike:
     return rrb.Vertical(
         rrb.Horizontal(
             rrb.Spatial3DView(name="3D View", origin="/world"),
-            # rrb.Spatial2DView(name="Image", origin="/camera/image"),
-            # column_shares=[2, 1],
+            rrb.Spatial2DView(name="Camera Image", origin="/world/camera"),
+            column_shares=[2, 1],
         ),
         rrb.Horizontal(
             rrb.Spatial3DView(name="Hand Distance", origin="/world/hand_distance"),
@@ -158,6 +194,63 @@ def build_blueprint(num_frames: int) -> rrb.BlueprintLike:
         ),
         row_shares=[2, 1],
     )
+
+
+def log_camera(
+    label: str,
+    c2w: np.ndarray,
+    K: np.ndarray,
+    width: int,
+    height: int,
+    image_path: str = None,
+    image_plane_distance: float = 0.1,
+    axis_length: float = 0.1,
+):
+    """
+    Log camera with pose, intrinsics, and optional image to Rerun.
+
+    Args:
+        label: Rerun entity path (e.g., "/world/camera")
+        c2w: (4, 4) camera-to-world transformation matrix
+        K: (3, 3) camera intrinsic matrix
+        width: image width
+        height: image height
+        image_path: optional path to image file
+        image_plane_distance: distance to display image plane in 3D
+        axis_length: length of camera axis visualization
+    """
+    # Log camera transform (camera-to-world)
+    rotation = c2w[:3, :3]
+    translation = c2w[:3, 3]
+    # Log pinhole camera intrinsics
+    fx, fy = K[0, 0], K[1, 1]
+    cx, cy = K[0, 2], K[1, 2]
+
+    rr.log(
+        label,
+        rr.Pinhole(
+            resolution=[width, height],
+            focal_length=[fx, fy],
+            principal_point=[cx, cy],
+            image_plane_distance=image_plane_distance,
+        ),
+        static=False,
+    )
+
+    rr.log(
+        label,
+        rr.Transform3D(
+            translation=translation,
+            mat3x3=rotation,
+        ),
+        # rr.components.AxisLength(axis_length),
+        static=False,
+    )
+    # Log image if available
+    if image_path and os.path.exists(image_path):
+        img = Image.open(image_path)
+        img_array = np.array(img)
+        rr.log(f"{label}", rr.Image(img_array), static=False)
 
 
 def visualize_gt_distance(args):
@@ -221,27 +314,33 @@ def visualize_gt_distance(args):
         obj_to_hand_dist = compute_object_hand_distance(obj_verts, hand_verts)
 
         # Convert to colors
-        hand_colors = distance_to_color(hand_to_obj_dist, args.colormap, args.distance_threshold)
+        hand_colors = np.full((hand_verts.shape[0], 3), 180, dtype=np.uint8)  # Gray color for hand
         obj_colors = distance_to_color(obj_to_hand_dist, args.colormap, args.distance_threshold)
 
-        # Log hand mesh with distance colors
+        # Compute vertex normals for better lighting
+        hand_normals = compute_vertex_normals(hand_verts, faces_hand.astype(np.int32))
+        obj_normals = compute_vertex_normals(obj_verts, faces_object.astype(np.int32))
+
+        # Log hand mesh with distance colors and normals
         rr.log(
             "/world/hand_distance/mesh",
             rr.Mesh3D(
                 vertex_positions=hand_verts,
                 triangle_indices=faces_hand.astype(np.int32),
                 vertex_colors=hand_colors,
+                vertex_normals=hand_normals,
             ),
             static=False,
         )
 
-        # Log object mesh with distance colors
+        # Log object mesh with distance colors and normals
         rr.log(
             "/world/object_distance/mesh",
             rr.Mesh3D(
                 vertex_positions=obj_verts,
                 triangle_indices=faces_object.astype(np.int32),
                 vertex_colors=obj_colors,
+                vertex_normals=obj_normals,
             ),
             static=False,
         )
@@ -287,6 +386,40 @@ def visualize_gt_distance(args):
             static=False,
         )
 
+        # Log camera with image and intrinsics
+        # o2c is object-to-camera, we need camera-to-object (c2w in object frame)
+        o2c_mat = o2c[frame_idx]
+        c2w = np.eye(4)
+        # c2w[:3, :3] = o2c_mat[:3, :3].T  # R^T
+        # c2w[:3, 3] = -o2c_mat[:3, :3].T @ o2c_mat[:3, 3]  # -R^T * t
+
+        # Get image path and dimensions
+        image_path = None
+        if frame_idx < len(fnames):
+            fname = fnames[frame_idx]
+            if isinstance(fname, (str, Path)) and os.path.exists(str(fname)):
+                image_path = str(fname)
+
+        # Get image dimensions
+        if image_path:
+            with Image.open(image_path) as img:
+                width, height = img.size
+        else:
+            width, height = 640, 480  # default
+
+        # Reshape K if needed
+        K_mat = K.reshape(3, 3) if K.ndim == 1 else K
+
+        log_camera(
+            label="/world/camera",
+            c2w=c2w,
+            K=K_mat,
+            width=width,
+            height=height,
+            image_path=image_path,
+            image_plane_distance=1.0,
+        )
+
     if args.rrd_output_path:
         rr.save(args.rrd_output_path)
         print(f"Saved to {args.rrd_output_path}")
@@ -303,8 +436,9 @@ def visualize_pred_distance(args):
 
     # Load hand data
     hand_base_dir = Path(args.result_folder).parent
-    from viewer.viewer_step import HandDataProvider
+    from viewer.viewer_step import HandDataProvider, ObjDataProvider
     hand_provider = HandDataProvider(hand_base_dir)
+    obj_provider = ObjDataProvider(Path(args.result_folder))
 
     if not hand_provider.has_hand:
         print("No hand data found in results!")
@@ -337,6 +471,7 @@ def visualize_pred_distance(args):
         rr.set_time_sequence("frame", step_idx)
 
         extr = data.get("extrinsics")
+        intr = data.get("intrinsics")
         aligned_pose = data.get("aligned_pose")
 
         if extr is None or step_idx >= len(extr):
@@ -379,27 +514,33 @@ def visualize_pred_distance(args):
         obj_to_hand_dist = compute_object_hand_distance(obj_verts, hand_verts_world)
 
         # Convert to colors
-        hand_colors = distance_to_color(hand_to_obj_dist, args.colormap, args.distance_threshold)
+        hand_colors = np.full((hand_verts_world.shape[0], 3), 180, dtype=np.uint8)  # Gray color for hand
         obj_colors = distance_to_color(obj_to_hand_dist, args.colormap, args.distance_threshold)
 
-        # Log hand mesh with distance colors
+        # Compute vertex normals for better lighting
+        hand_normals = compute_vertex_normals(hand_verts_world, hand_faces)
+        obj_normals = compute_vertex_normals(obj_verts, obj_faces.astype(np.int32))
+
+        # Log hand mesh with distance colors and normals
         rr.log(
             "/world/hand_distance/mesh",
             rr.Mesh3D(
                 vertex_positions=hand_verts_world,
                 triangle_indices=hand_faces,
                 vertex_colors=hand_colors,
+                vertex_normals=hand_normals,
             ),
             static=False,
         )
 
-        # Log object mesh with distance colors
+        # Log object mesh with distance colors and normals
         rr.log(
             "/world/object_distance/mesh",
             rr.Mesh3D(
                 vertex_positions=obj_verts,
                 triangle_indices=obj_faces.astype(np.int32),
                 vertex_colors=obj_colors,
+                vertex_normals=obj_normals,
             ),
             static=False,
         )
@@ -416,6 +557,44 @@ def visualize_pred_distance(args):
                 f"mean_dist={mean_hand_dist:.4f}m, contact_ratio={contact_ratio:.2%}"
             ),
             static=False,
+        )
+
+        # Log camera with image and intrinsics
+        # Get image path
+        image_path = None
+        if step_idx < len(obj_provider.origin_images):
+            image_path = str(obj_provider.origin_images[step_idx])
+        elif step_idx < len(obj_provider.images):
+            image_path = str(obj_provider.images[step_idx])
+
+        # Get image dimensions
+        if image_path and os.path.exists(image_path):
+            with Image.open(image_path) as img:
+                width, height = img.size
+        else:
+            width, height = 640, 480
+
+        # Get intrinsics
+        if intr is not None and step_idx < len(intr):
+            K_mat = np.asarray(intr[step_idx])
+            if K_mat.ndim == 1:
+                K_mat = K_mat.reshape(3, 3)
+        else:
+            # Default intrinsics
+            K_mat = np.array([
+                [500, 0, width / 2],
+                [0, 500, height / 2],
+                [0, 0, 1]
+            ])
+
+        log_camera(
+            label="/world/camera",
+            c2w=c2w,
+            K=K_mat,
+            width=width,
+            height=height,
+            image_path=image_path,
+            image_plane_distance=0.15,
         )
 
     if args.rrd_output_path:
