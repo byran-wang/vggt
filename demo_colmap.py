@@ -94,6 +94,62 @@ def parse_args():
     parser.add_argument("--kf_inlier_thresh", type=int, default=10, help="Keyframe inlier count threshold")
     return parser.parse_args()
 
+def set_seed(seed):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)  # for multi-GPU
+    print(f"Setting seed as: {seed}")
+
+def load_images_and_intrinsics(args, device):
+    image_dir, image_path_list = get_image_list(args)
+    if len(image_path_list) == 0:
+        raise ValueError(f"No images found in {image_dir}")
+    # check the frame index range
+    base_image_path_list = [os.path.basename(path) for path in image_path_list]
+    print(f"Processing images in {image_dir} with the list  {base_image_path_list}")
+
+    # Load images and original coordinates
+    # Load Image in 1024, while running VGGT with 518
+    vggt_fixed_resolution = 518
+
+    img_load_resolution = Image.open(image_path_list[0]).size[0]
+
+    images, original_coords, image_masks, depth_prior = load_and_preprocess_images_square(
+        image_path_list,
+        args,
+        target_size=img_load_resolution,
+        out_dir=f"{args.output_dir}/data_processed",
+    )
+    gen_3d = GEN_3D(f"{args.scene_dir}/align_mesh_image/{args.cond_index_raw:04d}")
+    save_input_data(images, image_masks, depth_prior, gen_3d, image_path_list, f"{args.output_dir}/results/")
+
+    images = images.to(device)
+    original_coords = original_coords.to(device)
+    image_masks = image_masks.to(device)
+    print(f"Loaded {len(images)} images from {image_dir}")
+
+    intrinsic = load_intrinsics(os.path.join(args.scene_dir, "meta", "0000.pkl"))
+    intrinsic = adjust_intrinsic_for_new_image_size(intrinsic, original_coords, frame_idx=args.cond_index)
+
+    depth_conf = np.ones_like(depth_prior)
+    return (
+        image_dir,
+        image_path_list,
+        base_image_path_list,
+        images,
+        original_coords,
+        image_masks,
+        depth_prior,
+        intrinsic,
+        depth_conf,
+        vggt_fixed_resolution,
+        img_load_resolution,
+        gen_3d,
+    )
+
 def run_VGGT(model, images, dtype, resolution=518):
     # images: [B, 3, H, W]
 
@@ -1649,7 +1705,6 @@ def get_image_list(args):
 def demo_fn(args):
     # Print configuration
     print("Arguments:", vars(args))
-    # TODO if the foulders number in f"{args.output_dir}/results/" is less great than 10, then return
     results_dir = Path(args.output_dir) / "results"
     if results_dir.exists():
         results_folders = [entry for entry in results_dir.iterdir() if entry.is_dir()]
@@ -1660,13 +1715,7 @@ def demo_fn(args):
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Set seed for reproducibility
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    random.seed(args.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(args.seed)
-        torch.cuda.manual_seed_all(args.seed)  # for multi-GPU
-    print(f"Setting seed as: {args.seed}")
+    set_seed(args.seed)
 
     # Set device and dtype
     dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
@@ -1674,34 +1723,20 @@ def demo_fn(args):
     print(f"Using device: {device}")
     print(f"Using dtype: {dtype}")
 
-    # Get image paths and preprocess them
-    image_dir, image_path_list = get_image_list(args)
-    if len(image_path_list) == 0:
-        raise ValueError(f"No images found in {image_dir}")
-    # check the frame index range
-    base_image_path_list = [os.path.basename(path) for path in image_path_list]
-    print(f"Processing images in {image_dir} with the list  {base_image_path_list}")
-
-    # Load images and original coordinates
-    # Load Image in 1024, while running VGGT with 518
-    vggt_fixed_resolution = 518
-
-    img_load_resolution = Image.open(image_path_list[0]).size[0]
-
-    images, original_coords, image_masks, depth_prior = load_and_preprocess_images_square(image_path_list, args, target_size=img_load_resolution, out_dir=f"{args.output_dir}/data_processed")
-    gen_3d = GEN_3D(f"{args.scene_dir}/align_mesh_image/{args.cond_index_raw:04d}")
-    save_input_data(images, image_masks, depth_prior, gen_3d, image_path_list, f"{args.output_dir}/results/")
-    
-    images = images.to(device)
-    original_coords = original_coords.to(device)
-    image_masks = image_masks.to(device)
-    print(f"Loaded {len(images)} images from {image_dir}")
-
-
-    intrinsic = load_intrinsics(os.path.join(args.scene_dir, "meta", "0000.pkl"))
-    intrinsic = adjust_intrinsic_for_new_image_size(intrinsic, original_coords, frame_idx=args.cond_index)
-    
-    depth_conf = np.ones_like(depth_prior)
+    (
+        image_dir,
+        image_path_list,
+        base_image_path_list,
+        images,
+        original_coords,
+        image_masks,
+        depth_prior,
+        intrinsic,
+        depth_conf,
+        vggt_fixed_resolution,
+        img_load_resolution,
+        gen_3d,
+    ) = load_images_and_intrinsics(args, device)
     with torch.cuda.amp.autocast(dtype=dtype) and torch.no_grad():
         pred_tracks, pred_vis_scores, _, _, points_rgb = predict_tracks(
             images,
