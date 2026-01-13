@@ -29,6 +29,7 @@ if _CODE_DIR.is_dir():
     sys.path.append(str(_CODE_DIR / "third_party/utils_simba"))
 
 from utils_simba.rerun import Visualizer, add_material
+from common.body_models import seal_mano_mesh_np
 
 
 def parse_args():
@@ -183,9 +184,9 @@ def build_blueprint(num_frames: int) -> rrb.BlueprintLike:
     """Build Rerun blueprint for visualization."""
     return rrb.Vertical(
         rrb.Horizontal(
-            rrb.Spatial3DView(name="3D View", origin="/world"),
             rrb.Spatial2DView(name="Camera Image", origin="/world/camera"),
-            column_shares=[2, 1],
+            rrb.Spatial3DView(name="3D View", origin="/world"),
+            column_shares=[1, 1],
         ),
         rrb.Horizontal(
             rrb.Spatial3DView(name="Hand Distance", origin="/world/hand_distance"),
@@ -281,6 +282,9 @@ def visualize_gt_distance(args):
         K = K.numpy()
     if hasattr(is_valid, 'numpy'):
         is_valid = is_valid.numpy()
+
+    # Seal the hand mesh (close the wrist opening)
+    v3d_hand, faces_hand = seal_mano_mesh_np(v3d_hand, faces_hand.astype(np.int64), is_rhand=True)
 
     num_frames = len(v3d_hand)
     print(f"Loaded {num_frames} frames")
@@ -493,7 +497,13 @@ def visualize_pred_distance(args):
             continue
 
         hand_verts_cam = np.asarray(hand_verts_cam)
-        hand_faces = np.asarray(hand_faces, dtype=np.int32)
+        hand_faces = np.asarray(hand_faces, dtype=np.int64)
+
+        # Seal the hand mesh (close the wrist opening)
+        hand_verts_cam_sealed, hand_faces = seal_mano_mesh_np(
+            hand_verts_cam[None], hand_faces, is_rhand=True
+        )
+        hand_verts_cam = hand_verts_cam_sealed[0]
 
         # Transform hand to world space
         w2c = np.eye(4)
@@ -518,7 +528,7 @@ def visualize_pred_distance(args):
         obj_colors = distance_to_color(obj_to_hand_dist, args.colormap, args.distance_threshold)
 
         # Compute vertex normals for better lighting
-        hand_normals = compute_vertex_normals(hand_verts_world, hand_faces)
+        hand_normals = compute_vertex_normals(hand_verts_world, hand_faces.astype(np.int32))
         obj_normals = compute_vertex_normals(obj_verts, obj_faces.astype(np.int32))
 
         # Log hand mesh with distance colors and normals
@@ -526,7 +536,7 @@ def visualize_pred_distance(args):
             "/world/hand_distance/mesh",
             rr.Mesh3D(
                 vertex_positions=hand_verts_world,
-                triangle_indices=hand_faces,
+                triangle_indices=hand_faces.astype(np.int32),
                 vertex_colors=hand_colors,
                 vertex_normals=hand_normals,
             ),
