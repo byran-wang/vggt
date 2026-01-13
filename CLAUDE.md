@@ -43,6 +43,24 @@ python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum_intr
 
 
 ```
+
+### Visualization Commands
+```bash
+# Visualize hand and object GT results with Rerun
+python viewer/viewer_step.py --result_folder output/MC1/results/ --gt_ho3d 1 --num_frames 150
+
+# Visualize hand-object distance (like ARCTIC InterField)
+# GT data:
+python viewer/viewer_distance.py --seq_name MC1
+python viewer/viewer_distance.py --seq_name MC1 --max_frames 50 --colormap plasma
+
+# Predicted data:
+python viewer/viewer_distance.py --seq_name MC1 --use_pred --result_folder output/MC1/results
+
+# Save to .rrd file:
+python viewer/viewer_distance.py --seq_name MC1 --rrd_output_path output/MC1/distance.rrd
+```
+
 ## Data Structure
 
 ### HO3D_v3 Dataset Structure
