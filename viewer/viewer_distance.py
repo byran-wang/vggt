@@ -37,6 +37,9 @@ def parse_args():
     parser.add_argument("--distance_threshold", type=float, default=0.05, help="Distance threshold for colormap (meters)")
     parser.add_argument("--colormap", type=str, default="plasma", help="Colormap name (plasma, viridis, jet, etc.)")
     parser.add_argument("--rrd_output_path", type=str, default=None, help="Save to .rrd file")
+    parser.add_argument("--obj_rot_x", type=float, default=0.0, help="Object rotation around X axis (degrees)")
+    parser.add_argument("--obj_rot_y", type=float, default=0.0, help="Object rotation around Y axis (degrees)")
+    parser.add_argument("--obj_rot_z", type=float, default=0.0, help="Object rotation around Z axis (degrees)")
     return parser.parse_args()
 
 
@@ -74,6 +77,67 @@ def compute_vertex_normals(vertices: np.ndarray, faces: np.ndarray) -> np.ndarra
     vertex_normals = vertex_normals / norms
 
     return vertex_normals
+
+
+def rotation_matrix_xyz(rot_x: float, rot_y: float, rot_z: float) -> np.ndarray:
+    """
+    Create a combined rotation matrix from Euler angles (in degrees).
+    Rotation order: X -> Y -> Z.
+
+    Args:
+        rot_x: Rotation around X axis in degrees
+        rot_y: Rotation around Y axis in degrees
+        rot_z: Rotation around Z axis in degrees
+
+    Returns:
+        R: (3, 3) rotation matrix
+    """
+    # Convert to radians
+    rx = np.radians(rot_x)
+    ry = np.radians(rot_y)
+    rz = np.radians(rot_z)
+
+    # Rotation around X axis
+    Rx = np.array([
+        [1, 0, 0],
+        [0, np.cos(rx), -np.sin(rx)],
+        [0, np.sin(rx), np.cos(rx)]
+    ])
+
+    # Rotation around Y axis
+    Ry = np.array([
+        [np.cos(ry), 0, np.sin(ry)],
+        [0, 1, 0],
+        [-np.sin(ry), 0, np.cos(ry)]
+    ])
+
+    # Rotation around Z axis
+    Rz = np.array([
+        [np.cos(rz), -np.sin(rz), 0],
+        [np.sin(rz), np.cos(rz), 0],
+        [0, 0, 1]
+    ])
+
+    # Combined rotation: R = Rz @ Ry @ Rx
+    R = Rz @ Ry @ Rx
+    return R
+
+
+def rotate_vertices(vertices: np.ndarray, R: np.ndarray) -> np.ndarray:
+    """
+    Rotate vertices around their centroid.
+
+    Args:
+        vertices: (N, 3) vertex positions
+        R: (3, 3) rotation matrix
+
+    Returns:
+        rotated_vertices: (N, 3) rotated vertex positions
+    """
+    centroid = np.mean(vertices, axis=0)
+    centered = vertices - centroid
+    rotated = centered @ R.T
+    return rotated + centroid
 
 
 def compute_hand_object_distance(hand_verts: np.ndarray, object_verts: np.ndarray) -> np.ndarray:
@@ -305,6 +369,11 @@ def visualize_gt_distance(args):
         obj_normals = compute_vertex_normals(obj_verts, faces_object.astype(np.int32))
         obj_normals_can = compute_vertex_normals(obj_verts_can, faces_object.astype(np.int32))
 
+        # Rotate object in canonical space for better view
+        R_obj = rotation_matrix_xyz(args.obj_rot_x, args.obj_rot_y, args.obj_rot_z)
+        obj_verts_can_rotated = rotate_vertices(obj_verts_can, R_obj)
+        obj_normals_can_rotated = obj_normals_can @ R_obj.T
+
         # === View 2: 3D Scene (hand, object, camera - no distance colors) ===
         rr.log(
             "/world/scene/hand",
@@ -354,10 +423,10 @@ def visualize_gt_distance(args):
         rr.log(
             "/world/object_distance/object",
             rr.Mesh3D(
-                vertex_positions=obj_verts_can,
+                vertex_positions=obj_verts_can_rotated,
                 triangle_indices=faces_object.astype(np.int32),
                 vertex_colors=obj_dist_colors,
-                vertex_normals=obj_normals_can,
+                vertex_normals=obj_normals_can_rotated,
             ),
             static=False,
         )

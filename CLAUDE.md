@@ -54,8 +54,9 @@ python viewer/viewer_step.py --result_folder output/MC1/results/ --vis_only_keyf
 
 # Visualize hand-object distance (like ARCTIC InterField)
 # GT data:
-python viewer/viewer_distance.py --seq_name MC1
+python viewer/viewer_distance.py --seq_name ABF12
 python viewer/viewer_distance.py --seq_name GPMF10
+python viewer/viewer_distance.py --seq_name MDF11
 python viewer/viewer_distance.py --seq_name SMu1
 python viewer/viewer_distance.py --seq_name MC1 --max_frames 50 --colormap plasma
 
