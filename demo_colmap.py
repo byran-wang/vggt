@@ -524,6 +524,156 @@ def optimize_poses_with_losses(
     return extr_final.detach().cpu().numpy(), points3d_t.detach().cpu().numpy(), uncertainties
 
 
+def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=10, lr=1e-3):
+    """
+    Perform bundle adjustment on keyframes to jointly optimize 3D points and camera poses.
+
+    This function optimizes the merged points_3d and extrinsics for all keyframes using
+    reprojection and point-to-ray losses, similar to traditional bundle adjustment.
+
+    Args:
+        image_info: Dictionary containing:
+            - "keyframe": Boolean array indicating which frames are keyframes
+            - "points_3d": 3D points array [N, 3]
+            - "pred_tracks": Track predictions [S, N, 2]
+            - "track_mask": Visibility mask [S, N]
+            - "extrinsics": Camera extrinsics [S, 4, 4]
+            - "intrinsics": Camera intrinsics [S, 3, 3]
+            - "depth_priors": Depth maps
+        ref_frame_idx: Reference frame index (pose is fixed during optimization)
+        iters: Number of optimization iterations
+        lr: Learning rate for optimizer
+
+    Returns:
+        Updated image_info with optimized points_3d and extrinsics
+    """
+    keyframe_mask = image_info["keyframe"]
+    keyframe_indices = np.where(keyframe_mask)[0]
+
+    if len(keyframe_indices) < 2:
+        print("[bundle_adjust_keyframes] Less than 2 keyframes, skipping bundle adjustment.")
+        return image_info
+
+    points_3d = image_info["points_3d"]
+    pred_tracks = image_info["pred_tracks"]
+    track_mask = image_info["track_mask"]
+    extrinsics = image_info["extrinsics"]
+    intrinsics = image_info["intrinsics"]
+    depth_priors = image_info["depth_priors"]
+
+    # Extract keyframe-only data
+    kf_tracks = pred_tracks[keyframe_indices]  # [K, N, 2]
+    kf_mask = track_mask[keyframe_indices]  # [K, N]
+    kf_extrinsics = extrinsics[keyframe_indices]  # [K, 4, 4]
+    kf_intrinsics = intrinsics[keyframe_indices]  # [K, 3, 3]
+
+    # Find the reference index within the keyframe subset
+    kf_ref_idx = np.where(keyframe_indices == ref_frame_idx)[0]
+    if len(kf_ref_idx) == 0:
+        # Reference frame is not a keyframe, use first keyframe as reference
+        kf_ref_idx = 0
+    else:
+        kf_ref_idx = kf_ref_idx[0]
+
+    print(f"[bundle_adjust_keyframes] Optimizing {len(keyframe_indices)} keyframes, "
+          f"{points_3d.shape[0]} points, ref_idx={kf_ref_idx}")
+
+    # Run optimization
+    device = depth_priors.device if torch.is_tensor(depth_priors) else "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.float32
+
+    K = len(keyframe_indices)
+    P = points_3d.shape[0]
+
+    points3d_t = torch.from_numpy(points_3d).to(device=device, dtype=dtype)
+    points3d_t.requires_grad_(True)
+    tracks_t = torch.from_numpy(kf_tracks).to(device=device, dtype=dtype)
+    mask_t = torch.from_numpy(kf_mask).to(device=device)
+
+    intr_t = torch.from_numpy(kf_intrinsics).to(device=device, dtype=dtype)
+
+    # Convert extrinsics to rotation vectors and translation vectors
+    rvecs = []
+    tvecs = []
+    for i in range(K):
+        rvec, _ = cv2.Rodrigues(kf_extrinsics[i, :3, :3])
+        rvecs.append(rvec.reshape(-1))
+        tvecs.append(kf_extrinsics[i, :3, 3])
+    rvecs_t = torch.from_numpy(np.stack(rvecs)).to(device=device, dtype=dtype)
+    tvecs_t = torch.from_numpy(np.stack(tvecs)).to(device=device, dtype=dtype)
+    rvecs_t.requires_grad_(True)
+    tvecs_t.requires_grad_(True)
+
+    optim = torch.optim.Adam([rvecs_t, tvecs_t, points3d_t], lr=lr)
+    inv_intr_t = torch.inverse(intr_t)
+
+    for it in range(iters):
+        optim.zero_grad(set_to_none=True)
+        R = axis_angle_to_matrix(rvecs_t)
+        extr_mat = torch.cat([R, tvecs_t.unsqueeze(-1)], dim=-1)  # K,3,4
+        ones = torch.ones((K, P, 1), device=device, dtype=dtype)
+        pts_h = torch.cat([points3d_t.unsqueeze(0).expand(K, -1, -1), ones], dim=-1)  # K,P,4
+        cam_pts = torch.bmm(extr_mat, pts_h.transpose(1, 2))  # K,3,P
+
+        z = cam_pts[:, 2:3, :]
+        uv = cam_pts[:, :2, :] / (z + 1e-6)
+        ones2 = torch.ones((K, 1, P), device=device, dtype=dtype)
+        uv_h = torch.cat([uv, ones2], dim=1)
+        proj = torch.bmm(intr_t, uv_h)[:, :2, :].transpose(1, 2)  # K,P,2
+
+        rep_err = (proj - tracks_t) * mask_t.unsqueeze(-1)
+        rep_loss = torch.nn.functional.smooth_l1_loss(rep_err, torch.zeros_like(rep_err), reduction="sum")
+
+        # Point-to-ray consistency loss
+        uv1 = torch.cat([tracks_t, torch.ones((K, P, 1), device=device, dtype=dtype)], dim=-1)  # K,P,3
+        rays = torch.bmm(inv_intr_t, uv1.transpose(1, 2))  # K,3,P
+        rays = torch.nn.functional.normalize(rays, dim=1, eps=1e-6)
+        cross = torch.cross(cam_pts, rays, dim=1)
+        ray_err = torch.linalg.norm(cross, dim=1) * mask_t
+        ray_loss = torch.nn.functional.smooth_l1_loss(ray_err, torch.zeros_like(ray_err), reduction="sum")
+
+        loss = rep_loss + 0.1 * ray_loss
+        loss.backward()
+
+        # Freeze reference pose update
+        if rvecs_t.grad is not None:
+            rvecs_t.grad[kf_ref_idx].zero_()
+        if tvecs_t.grad is not None:
+            tvecs_t.grad[kf_ref_idx].zero_()
+        optim.step()
+
+    # Extract optimized values
+    with torch.no_grad():
+        R_final = axis_angle_to_matrix(rvecs_t)
+        extr_final = torch.zeros((K, 4, 4), device=device, dtype=dtype)
+        extr_final[:, :3, :3] = R_final
+        extr_final[:, :3, 3] = tvecs_t
+        extr_final[:, 3, 3] = 1.0
+
+        optimized_extrinsics = extr_final.cpu().numpy()
+        optimized_points_3d = points3d_t.cpu().numpy()
+
+    # Update image_info with optimized values
+    # Put optimized keyframe extrinsics back into the full array
+    # Handle both 4x4 and 3x4 extrinsic formats
+    extr_shape = image_info["extrinsics"].shape[-2:]
+    for i, kf_idx in enumerate(keyframe_indices):
+        if extr_shape == (4, 4):
+            image_info["extrinsics"][kf_idx] = optimized_extrinsics[i]
+        else:
+            # 3x4 format: only copy the top 3 rows
+            image_info["extrinsics"][kf_idx] = optimized_extrinsics[i, :3, :]
+
+    image_info["points_3d"] = optimized_points_3d
+
+    # Compute final reprojection error for logging
+    with torch.no_grad():
+        final_rep_err = torch.linalg.norm(rep_err, dim=-1).mean().item()
+    print(f"[bundle_adjust_keyframes] Optimization complete. Final mean reproj error: {final_rep_err:.4f}px")
+
+    return image_info
+
+
 def build_reconstruction_from_tracks(
     points_3d,
     extrinsic,
@@ -1730,6 +1880,11 @@ def process_key_frame(image_info, frame_idx, args):
         image_info["track_mask"] = track_mask_new
         image_info["points_3d"] = points_3d_new
         image_info["points_rgb"] = points_rgb_new
+
+    # Perform bundle adjustment on all keyframes to jointly optimize 3D points and camera poses
+    # Use the first keyframe (cond_index) as reference to keep the coordinate frame consistent
+    first_keyframe_idx = np.where(image_info["keyframe"])[0][0] if image_info["keyframe"].any() else args.cond_index
+    bundle_adjust_keyframes(image_info, ref_frame_idx=first_keyframe_idx, iters=10, lr=1e-3)
 
 def get_image_list_ZED(args):
     image_dir = Path(os.path.join(args.scene_dir, "images"))
