@@ -1519,7 +1519,7 @@ def save_results(image_info, gen_3d, out_dir):
             return x.detach().cpu().numpy()
         return np.asarray(x)
     
-    points_conf_color = get_points_conf_colors(points_3d=image_info.get("points_3d"), uncertainties=image_info.get("uncertainties")['points3d'])
+    points_conf_color = get_points_uncertainty_colors(points_3d=image_info.get("points_3d"), uncertainties=image_info.get("uncertainties")['points3d'])
 
     payload = {
         "intrinsics": _to_cpu_numpy(image_info.get("intrinsics")),
@@ -2355,24 +2355,30 @@ def rename_colmap_recons_and_rescale_camera(
     return reconstruction
 
 
-def get_points_conf_colors(points_3d, uncertainties):
-    conf = uncertainties.astype(np.float64)
-    conf_norm = conf / (conf.max() + 1e-8)
-    conf_colors = np.stack(
-        [
-            conf_norm * 255.0,          # green channel high -> high confidence
-            (1.0 - conf_norm) * 255.0,  # red channel high -> low confidence
-            np.zeros_like(conf_norm),
-        ],
-        axis=-1,
-    ).clip(0, 255).astype(np.uint8)
-    if len(conf_colors) != len(points_3d):
-        conf_colors = conf_colors[: len(points_3d)]    
-    return conf_colors
+def get_points_uncertainty_colors(points_3d, uncertainties):
+    uncertainty = np.asarray(uncertainties, dtype=np.float64)
+    uncertainty_colors = np.zeros((len(uncertainty), 3), dtype=np.uint8)
+    finite_mask = np.isfinite(uncertainty)
+    if finite_mask.any():
+        finite_uncertainty = uncertainty[finite_mask]
+        uncertainty_norm = finite_uncertainty / (finite_uncertainty.max() + 1e-8)
+        finite_colors = np.stack(
+            [
+                uncertainty_norm * 255.0,  # red channel high -> high uncertainty
+                (1.0 - uncertainty_norm) * 255.0,          # green channel high -> low confidence
+                np.zeros_like(uncertainty_norm),
+            ],
+            axis=-1,
+        ).clip(0, 255).astype(np.uint8)
+        uncertainty_colors[finite_mask] = finite_colors
+    # Non-finite uncertainties (e.g., np.inf) remain black.
+    if len(uncertainty_colors) != len(points_3d):
+        uncertainty_colors = uncertainty_colors[: len(points_3d)]
+    return uncertainty_colors
 
 def save_point_cloud_with_conf(points_3d, points_rgb, uncertainties, ply_path):
     """Save point cloud; color by uncertainty if provided, else by rgb."""
-    conf_colors = get_points_conf_colors(points_3d, uncertainties)
+    conf_colors = get_points_uncertainty_colors(points_3d, uncertainties)
 
     trimesh.PointCloud(points_3d, colors=conf_colors).export(ply_path)
 
