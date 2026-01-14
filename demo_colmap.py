@@ -324,8 +324,23 @@ def propagate_uncertainties(
     pred_tracks,
     depth_prior,
     track_mask,
+    rot_thresh=5.0,
+    trans_thresh=0.05,
+    depth_thresh=1000,
+    track_inlier_thresh=50,
 ):
-    """Propagate uncertainties for extrinsics, 3D points, and depth priors."""
+    """Propagate uncertainties for extrinsics, 3D points, and depth priors.
+
+    Only cameras that pass the threshold criteria are used for uncertainty computation:
+    - depth_thresh: minimum number of valid depth pixels
+    - track_inlier_thresh: minimum number of track inliers
+    - rot_thresh: minimum rotation delta (degrees) from reference camera
+    - trans_thresh: minimum translation delta from reference camera
+
+    The function first filters valid frames (enough track inliers + valid depth),
+    then selects keyframes from valid frames based on rotation/translation thresholds.
+    Only keyframes are used for depth uncertainty computation.
+    """
     device = depth_prior.device if torch.is_tensor(depth_prior) else "cpu"
     dtype = torch.float32
 
@@ -339,7 +354,58 @@ def propagate_uncertainties(
     intr_t = torch.from_numpy(intrinsic).to(device=device, dtype=dtype)
     extr_t = torch.from_numpy(extrinsic[:, :3, :]).to(device=device, dtype=dtype)
 
-    inv_intr_t = torch.inverse(intr_t)
+    # Step 1: Identify valid frames (enough track inliers + valid depth)
+    track_inliers = mask_t.sum(dim=-1).cpu().numpy()  # (B,)
+    valid_depth_counts = np.zeros(B, dtype=np.int64)
+    if torch.is_tensor(depth_prior):
+        for i in range(B):
+            valid_depth_counts[i] = int((depth_prior[i] > 0).sum().item())
+
+    valid_frames = []
+    for i in range(B):
+        has_enough_inliers = track_inliers[i] >= track_inlier_thresh
+        has_enough_depth = valid_depth_counts[i] >= depth_thresh
+        if has_enough_inliers and has_enough_depth:
+            valid_frames.append(i)
+
+    # Step 2: From valid frames, select keyframes based on rotation/translation thresholds
+    keyframes = []
+    for frame_idx in valid_frames:
+        if len(keyframes) == 0:
+            # First valid frame is always a keyframe
+            keyframes.append(frame_idx)
+            continue
+
+        # Check rotation and translation delta with all existing keyframes
+        T_curr = extrinsic[frame_idx]
+        R_curr, t_curr = T_curr[:3, :3], T_curr[:3, 3]
+
+        is_keyframe = True
+        for kf_idx in keyframes:
+            T_kf = extrinsic[kf_idx]
+            R_kf, t_kf = T_kf[:3, :3], T_kf[:3, 3]
+
+            # Compute rotation delta (degrees)
+            R_delta = R_curr @ R_kf.T
+            angle = np.rad2deg(np.arccos(np.clip((np.trace(R_delta) - 1) / 2, -1.0, 1.0)))
+
+            # Compute translation delta
+            trans = np.linalg.norm(t_curr - t_kf)
+
+            # Reject if too close to any existing keyframe
+            if angle < rot_thresh and trans < trans_thresh:
+                is_keyframe = False
+                break
+
+        if is_keyframe:
+            keyframes.append(frame_idx)
+
+    print(f"[propagate_uncertainties] Valid frames: {len(valid_frames)}/{B}, Keyframes: {len(keyframes)} {keyframes}")
+
+    # Create keyframe mask: (B, P) mask that is only True for keyframe indices
+    kf_frame_mask = torch.zeros(B, device=device, dtype=torch.bool)
+    kf_frame_mask[keyframes] = True
+    kf_mask = mask_t & kf_frame_mask.unsqueeze(-1)  # (B, P)
 
     with torch.no_grad():
         extr_final = extr_t
@@ -355,15 +421,12 @@ def propagate_uncertainties(
         proj = torch.bmm(intr_t, uv_h)[:, :2, :].transpose(1, 2)
 
         rep_err = (proj - tracks_t) * mask_t.unsqueeze(-1)
-        rep_l2 = torch.linalg.norm(rep_err, dim=-1)
+        rep_l2 = torch.linalg.norm(rep_err, dim=-1)  # (B, P)
         rep_unc_frame = torch.sqrt((rep_l2.pow(2) * mask_t).sum(-1) / mask_t.sum(-1).clamp(min=1)).cpu().numpy()
 
-        uv1 = torch.cat([tracks_t, torch.ones((B, P, 1), device=device, dtype=dtype)], dim=-1)
-        rays = torch.bmm(inv_intr_t, uv1.transpose(1, 2))
-        rays = torch.nn.functional.normalize(rays, dim=1, eps=1e-6)
-        cross = torch.cross(cam_pts, rays, dim=1)
-        ray_err = torch.linalg.norm(cross, dim=1) * mask_t
-        pts_unc = torch.sqrt((ray_err.pow(2)).sum(0) / mask_t.sum(0).clamp(min=1)).cpu().numpy()
+        # Use keyframe mask and rep_l2 for pts_unc calculation
+        rep_l2_kf = rep_l2 * kf_mask
+        pts_unc = torch.sqrt((rep_l2_kf.pow(2)).sum(0) / kf_mask.sum(0).clamp(min=1)).cpu().numpy()
 
         depth_unc = None
         if torch.is_tensor(depth_prior):
@@ -375,17 +438,21 @@ def propagate_uncertainties(
             )
             depth_unc = torch.zeros_like(depth_prior, dtype=dtype, device=device)
             depth_cnt = torch.zeros_like(depth_prior, dtype=dtype, device=device)
-            for ref in range(B):
+
+            # Only iterate over keyframes for depth uncertainty computation
+            for ref in keyframes:
                 fx_r, fy_r = intr_t[ref, 0, 0], intr_t[ref, 1, 1]
                 cx_r, cy_r = intr_t[ref, 0, 2], intr_t[ref, 1, 2]
                 Rr = extr_final[ref, :3, :3]
                 tr = extr_final[ref, :3, 3]
                 unc_flat = depth_unc[ref].view(-1)
                 cnt_flat = depth_cnt[ref].view(-1)
-                for src in range(B):
+
+                # Only use other keyframes as source frames
+                for src in keyframes:
                     if src == ref:
                         continue
-                    if rep_unc_frame[src] > 5.0 or rep_unc_frame[src] == 0.: # 0 means no extrinsic estimated
+                    if rep_unc_frame[src] > 5.0 or rep_unc_frame[src] == 0.:  # 0 means no extrinsic estimated
                         continue
                     depth_src = depth_prior[src].to(device=device, dtype=dtype)
                     valid_src = depth_src > 0
@@ -402,7 +469,7 @@ def propagate_uncertainties(
                     pts_cam_s = pts_cam_s[valid_src]  # M,3
                     if pts_cam_s.numel() == 0:
                         continue
-                    
+
                     pts_world = torch.matmul(pts_cam_s - ts, Rs.transpose(0, 1))
                     # transform pts_world to ref camera
                     pts_cam_r = torch.matmul(pts_world, Rr.transpose(0, 1)) + tr
@@ -442,10 +509,6 @@ def propagate_uncertainties(
                     resid = (depth_ref_sampled - zr)
                     unc_flat.scatter_add_(0, flat_idx, resid.pow(2))
                     cnt_flat.scatter_add_(0, flat_idx, torch.ones_like(resid))
-                    
-                    # save depth_unc to a png for visualization
-                    # depth_unc_debug = (depth_unc / depth_cnt.clamp(min=1)).sqrt().cpu().numpy()
-                    # save_depth_prior_with_uncertainty(depth_unc_debug[:1], out_dir="depth_uncertainty_vis")
 
             depth_unc = (depth_unc / depth_cnt.clamp(min=1)).sqrt().cpu().numpy()
 
@@ -453,6 +516,7 @@ def propagate_uncertainties(
         "extrinsic": rep_unc_frame,
         "points3d": pts_unc,
         "depth_prior": depth_unc,
+        "keyframes": keyframes,
     }
 
     return uncertainties
@@ -2076,6 +2140,10 @@ def propagate_uncertainty_and_build_image_info(images, image_path_list, base_ima
         pred_tracks,
         depth_prior,
         track_mask,
+        rot_thresh=args.kf_rot_thresh,
+        trans_thresh=args.kf_trans_thresh,
+        depth_thresh=args.kf_depth_thresh,
+        track_inlier_thresh=args.kf_inlier_thresh,    
     )
 
     image_info = {
