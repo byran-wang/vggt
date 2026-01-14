@@ -27,7 +27,40 @@ def find_next_frame(image_info):
     for i in range(len(registered)):
         if not registered[i] and not invalid[i]:
             return i
-    return -1
+def find_next_frame(image_info):
+    track_mask = image_info.get("track_mask")
+    registered = image_info.get("registered")
+    invalid = image_info.get("invalid")
+    if track_mask is None or registered is None or invalid is None:
+        return None
+
+    track_mask = np.asarray(track_mask)
+    registered = np.asarray(registered)
+    invalid = np.asarray(invalid)
+
+    if registered.ndim != 1:
+        registered = registered.reshape(-1)
+    if invalid.ndim != 1:
+        invalid = invalid.reshape(-1)
+
+    num_frames = track_mask.shape[0]
+    registered_mask = registered & (~invalid)
+    if not np.any(registered_mask):
+        return None
+
+    # tracks visible in any registered frame
+    vis_in_registered = track_mask[registered_mask].any(axis=0)
+
+    best_idx = None
+    best_count = -1
+    for idx in range(num_frames):
+        if registered[idx] or invalid[idx]:
+            continue
+        count = np.count_nonzero(track_mask[idx] & vis_in_registered)
+        if count > best_count:
+            best_count = count
+            best_idx = idx
+    return best_idx
 
 
 def check_frame_invalid(image_info, frame_idx, min_inlier_per_frame=10, min_depth_pixels=500):
