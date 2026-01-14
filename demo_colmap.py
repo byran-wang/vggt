@@ -317,18 +317,15 @@ def axis_angle_to_matrix(rvecs):
     return R
 
 
-def optimize_poses_with_losses(
+def propagate_uncertainties(
     points_3d,
     extrinsic,
     intrinsic,
     pred_tracks,
     depth_prior,
     track_mask,
-    ref_index=0,
-    iters=5,
-    lr=1e-3,
 ):
-    """Lightweight pose refinement using reprojection and point-to-ray losses; also returns simple uncertainty estimates."""
+    """Propagate uncertainties for extrinsics, 3D points, and depth priors."""
     device = depth_prior.device if torch.is_tensor(depth_prior) else "cpu"
     dtype = torch.float32
 
@@ -336,62 +333,16 @@ def optimize_poses_with_losses(
     B = extrinsic.shape[0]
 
     points3d_t = torch.from_numpy(points_3d).to(device=device, dtype=dtype)
-    points3d_t.requires_grad_(True)
     tracks_t = torch.from_numpy(pred_tracks).to(device=device, dtype=dtype)
     mask_t = torch.from_numpy(track_mask).to(device=device)
 
     intr_t = torch.from_numpy(intrinsic).to(device=device, dtype=dtype)
-    rvecs = []
-    tvecs = []
-    for i in range(B):
-        rvec, _ = cv2.Rodrigues(extrinsic[i, :3, :3])
-        rvecs.append(rvec.reshape(-1))
-        tvecs.append(extrinsic[i, :3, 3])
-    rvecs_t = torch.from_numpy(np.stack(rvecs)).to(device=device, dtype=dtype)
-    tvecs_t = torch.from_numpy(np.stack(tvecs)).to(device=device, dtype=dtype)
-    rvecs_t.requires_grad_(True)
-    tvecs_t.requires_grad_(True)
+    extr_t = torch.from_numpy(extrinsic[:, :3, :]).to(device=device, dtype=dtype)
 
-    optim = torch.optim.Adam([rvecs_t, tvecs_t, points3d_t], lr=lr)
     inv_intr_t = torch.inverse(intr_t)
 
-    for _ in range(iters):
-        optim.zero_grad(set_to_none=True)
-        R = axis_angle_to_matrix(rvecs_t)
-        extr_mat = torch.cat([R, tvecs_t.unsqueeze(-1)], dim=-1)  # B,3,4
-        ones = torch.ones((B, P, 1), device=device, dtype=dtype)
-        pts_h = torch.cat([points3d_t.unsqueeze(0).expand(B, -1, -1), ones], dim=-1)  # B,P,4
-        cam_pts = torch.bmm(extr_mat, pts_h.transpose(1, 2))  # B,3,P
-
-        z = cam_pts[:, 2:3, :]
-        uv = cam_pts[:, :2, :] / (z + 1e-6)
-        ones2 = torch.ones((B, 1, P), device=device, dtype=dtype)
-        uv_h = torch.cat([uv, ones2], dim=1)
-        proj = torch.bmm(intr_t, uv_h)[:, :2, :].transpose(1, 2)  # B,P,2
-
-        rep_err = (proj - tracks_t) * mask_t.unsqueeze(-1)
-        rep_loss = torch.nn.functional.smooth_l1_loss(rep_err, torch.zeros_like(rep_err), reduction="sum")
-
-        # sparse 3D correspondence loss: point-to-ray consistency from 2D tracks
-        uv1 = torch.cat([tracks_t, torch.ones((B, P, 1), device=device, dtype=dtype)], dim=-1)  # B,P,3
-        rays = torch.bmm(inv_intr_t, uv1.transpose(1, 2))  # B,3,P
-        rays = torch.nn.functional.normalize(rays, dim=1, eps=1e-6)
-        cross = torch.cross(cam_pts, rays, dim=1)
-        ray_err = torch.linalg.norm(cross, dim=1) * mask_t
-        ray_loss = torch.nn.functional.smooth_l1_loss(ray_err, torch.zeros_like(ray_err), reduction="sum")
-
-        loss = rep_loss + 0.1 * ray_loss
-        loss.backward()
-        # freeze reference pose update
-        if rvecs_t.grad is not None:
-            rvecs_t.grad[ref_index].zero_()
-        if tvecs_t.grad is not None:
-            tvecs_t.grad[ref_index].zero_()
-        optim.step()
-    # propagate uncertainties
     with torch.no_grad():
-        R_final = axis_angle_to_matrix(rvecs_t)
-        extr_final = torch.cat([R_final, tvecs_t.unsqueeze(-1)], dim=-1)
+        extr_final = extr_t
 
         ones = torch.ones((B, P, 1), device=device, dtype=dtype)
         pts_h = torch.cat([points3d_t.unsqueeze(0).expand(B, -1, -1), ones], dim=-1)
@@ -452,27 +403,10 @@ def optimize_poses_with_losses(
                     if pts_cam_s.numel() == 0:
                         continue
                     
-                    if 0:
-                        w2c_s = torch.eye(4)
-                        w2c_s[:3, :3] = Rs
-                        w2c_s[:3, 3] = ts
-                        w2c_s = w2c_s.to(device=device, dtype=dtype)
-                        ones = torch.ones((pts_cam_s.shape[0], 1), device=device, dtype=dtype)
-                        pts_cam_s = torch.cat([pts_cam_s, ones], dim=-1).transpose(0, 1)  # 4,M
-                        pts_world = w2c_s.inverse() @ pts_cam_s  # M,4
-                        
-                        # transform pts_world to ref camera
-                        w2c_r = torch.eye(4)
-                        w2c_r[:3, :3] = Rr
-                        w2c_r[:3, 3] = tr
-                        w2c_r = w2c_r.to(device=device, dtype=dtype)
-                        pts_cam_r = w2c_r @ pts_world  # 4,M
-                        pts_cam_r = pts_cam_r.transpose(0, 1)  # M,4
-                        pts_cam_r = pts_cam_r[:, :3]
-                    else:
-                        pts_world = torch.matmul(pts_cam_s - ts, Rs.transpose(0, 1))
-                        # transform pts_world to ref camera
-                        pts_cam_r = torch.matmul(pts_world, Rr.transpose(0, 1)) + tr
+                    pts_world = torch.matmul(pts_cam_s - ts, Rs.transpose(0, 1))
+                    # transform pts_world to ref camera
+                    pts_cam_r = torch.matmul(pts_world, Rr.transpose(0, 1)) + tr
+
                     zr = pts_cam_r[:, 2]
                     positive = zr > 0
                     if not positive.any():
@@ -521,7 +455,7 @@ def optimize_poses_with_losses(
         "depth_prior": depth_unc,
     }
 
-    return extr_final.detach().cpu().numpy(), points3d_t.detach().cpu().numpy(), uncertainties
+    return uncertainties
 
 
 def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3, rep_loss_thresh=0.3):
@@ -2131,20 +2065,17 @@ def filter_and_verify_tracks(images, points_3d, extrinsic, intrinsic, pred_track
     return track_mask, points_3d, pred_tracks, points_rgb
 
 
-def optimize_and_build_image_info(images, image_path_list, base_image_path_list, original_coords,
+def propagate_uncertainty_and_build_image_info(images, image_path_list, base_image_path_list, original_coords,
                                    image_masks, depth_prior, intrinsic, extrinsic,
                                    pred_tracks, track_mask, points_3d, points_rgb, args):
     """Optimize poses and build the image info dictionary."""
-    extrinsic, points_3d, uncertainties = optimize_poses_with_losses(
+    uncertainties = propagate_uncertainties(
         points_3d,
         extrinsic,
         intrinsic,
         pred_tracks,
         depth_prior,
         track_mask,
-        ref_index=args.cond_index,
-        iters=5,
-        lr=1e-3,
     )
 
     image_info = {
@@ -2280,7 +2211,7 @@ def demo_fn(args):
     )
 
     # Step 7: Optimize poses and build image info dictionary
-    image_info = optimize_and_build_image_info(
+    image_info = propagate_uncertainty_and_build_image_info(
         images, image_path_list, base_image_path_list, original_coords,
         image_masks, depth_prior, intrinsic, extrinsic,
         pred_tracks, track_mask, points_3d, points_rgb, args

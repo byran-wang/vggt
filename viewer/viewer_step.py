@@ -429,7 +429,7 @@ def log_current_frame(
     with Image.open(obj_provider.images[cam_idx]) as im:
         w, h = im.size
     w2c = np.eye(4)
-    w2c[:3] = extr[cam_idx]
+    w2c[:3] = extr[cam_idx][:3]
     c2w = np.linalg.inv(w2c)
     visualizer.log_cam_pose("/our/camera_current/image", c2w, static=False)
     w, h = _get_original_resolution(original_coords, cam_idx, (w, h))
@@ -510,7 +510,7 @@ def log_depth_points_3d(
     y = (uvs[:, 1] - cy) * z / fy
     pts_cam = np.stack([x, y, z], axis=1)
     w2c = np.eye(4)
-    w2c[:3] = extr[cam_idx]
+    w2c[:3] = extr[cam_idx][:3]
     c2w = np.linalg.inv(w2c)
     pts_world = (c2w[:3, :3] @ pts_cam.T + c2w[:3, 3:4]).T
     visualizer.log_points("/our/depth_points", pts_world, static=False)
