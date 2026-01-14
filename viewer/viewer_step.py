@@ -70,7 +70,8 @@ def parse_args():
     )
     parser.add_argument(
         "--aliggned_mesh",
-        action="store_true",
+        type=int,
+        default=0,
         help="Visualize the aligned remeshed 3D mesh at each step.",
     )
     parser.add_argument(
@@ -457,7 +458,7 @@ def log_points_3d(
     if points_3d is None:
         return
     pts = np.asarray(points_3d)
-    visualizer.log_points("/our/points_rgb", pts, colors=points_rgb, static=False)
+    # visualizer.log_points("/our/points_rgb", pts, colors=points_rgb, static=False)
     visualizer.log_points("/our/points_conf", pts, colors=points_conf_color, static=False)
 
 
@@ -513,7 +514,7 @@ def log_depth_points_3d(
     w2c[:3] = extr[cam_idx][:3]
     c2w = np.linalg.inv(w2c)
     pts_world = (c2w[:3, :3] @ pts_cam.T + c2w[:3, 3:4]).T
-    visualizer.log_points("/our/depth_points", pts_world, static=False)
+    visualizer.log_points("/our/depth_points", pts_world, colors=[0, 0, 255], static=False)
 
 
 def log_gt_frame(
