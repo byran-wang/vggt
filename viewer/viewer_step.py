@@ -461,6 +461,61 @@ def log_points_3d(
     visualizer.log_points("/our/points_conf", pts, colors=points_conf_color, static=False)
 
 
+def log_depth_points_3d(
+    visualizer: Visualizer,
+    obj_provider: ObjDataProvider,
+    cam_idx: int,
+    extr,
+    intr,
+    pred_tracks,
+    track_mask,
+):
+    if cam_idx >= len(obj_provider.depths):
+        return
+    depth_path = obj_provider.depths[cam_idx]
+    if not depth_path.exists():
+        return
+    if intr is None or cam_idx >= len(intr):
+        return
+    if pred_tracks is None or track_mask is None:
+        return
+    tracks = np.asarray(pred_tracks)[cam_idx]
+    mask = np.asarray(track_mask)[cam_idx].astype(bool)
+    if tracks.shape[0] != mask.shape[0]:
+        return
+    if not np.any(mask):
+        return
+    depth = get_depth(str(depth_path))
+    intr_cam = intr[cam_idx]
+    uvs = np.round(tracks[mask]).astype(int)
+    h, w = depth.shape[:2]
+    in_bounds = (
+        (uvs[:, 0] >= 0)
+        & (uvs[:, 0] < w)
+        & (uvs[:, 1] >= 0)
+        & (uvs[:, 1] < h)
+    )
+    if not np.any(in_bounds):
+        return
+    uvs = uvs[in_bounds]
+    z = depth[uvs[:, 1], uvs[:, 0]]
+    valid_depth = z > 0
+    if not np.any(valid_depth):
+        return
+    uvs = uvs[valid_depth]
+    z = z[valid_depth]
+    fx, fy = intr_cam[0, 0], intr_cam[1, 1]
+    cx, cy = intr_cam[0, 2], intr_cam[1, 2]
+    x = (uvs[:, 0] - cx) * z / fx
+    y = (uvs[:, 1] - cy) * z / fy
+    pts_cam = np.stack([x, y, z], axis=1)
+    w2c = np.eye(4)
+    w2c[:3] = extr[cam_idx]
+    c2w = np.linalg.inv(w2c)
+    pts_world = (c2w[:3, :3] @ pts_cam.T + c2w[:3, 3:4]).T
+    visualizer.log_points("/our/depth_points", pts_world, static=False)
+
+
 def log_gt_frame(
     visualizer: Visualizer,
     gt_data,
@@ -683,6 +738,15 @@ def main(args):
             points_3d=points_3d,
             points_rgb=points_rgb,
             points_conf_color=points_conf_color,
+        )
+        log_depth_points_3d(
+            visualizer=visualizer,
+            obj_provider=obj_provider,
+            cam_idx=cam_idx,
+            extr=extr,
+            intr=intr,
+            pred_tracks=pred_tracks,
+            track_mask=track_mask,
         )
 
         log_hands(hand_provider=hand_provider, extr=extr, cam_idx=cam_idx)
