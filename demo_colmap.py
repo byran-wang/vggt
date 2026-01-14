@@ -92,6 +92,7 @@ def parse_args():
     parser.add_argument("--kf_trans_thresh", type=float, default=0.02, help="Keyframe translation threshold (units)")
     parser.add_argument("--kf_depth_thresh", type=float, default=500, help="Keyframe depth change threshold (units)")
     parser.add_argument("--kf_inlier_thresh", type=int, default=10, help="Keyframe inlier count threshold")
+    parser.add_argument("--min_track_number", type=int, default=4, help="Minimum track number for 3D point uncertainty; points with fewer tracks get high uncertainty")
     return parser.parse_args()
 
 def set_seed(seed):
@@ -328,6 +329,7 @@ def propagate_uncertainties(
     trans_thresh=0.05,
     depth_thresh=1000,
     track_inlier_thresh=50,
+    min_track_number=3,
 ):
     """Propagate uncertainties for extrinsics, 3D points, and depth priors.
 
@@ -336,6 +338,8 @@ def propagate_uncertainties(
     - track_inlier_thresh: minimum number of track inliers
     - rot_thresh: minimum rotation delta (degrees) from reference camera
     - trans_thresh: minimum translation delta from reference camera
+    - min_track_number: minimum keyframe observations for a 3D point; points with
+      fewer observations get high uncertainty
 
     The function first filters valid frames (enough track inliers + valid depth),
     then selects keyframes from valid frames based on rotation/translation thresholds.
@@ -426,7 +430,12 @@ def propagate_uncertainties(
 
         # Use keyframe mask and rep_l2 for pts_unc calculation
         rep_l2_kf = rep_l2 * kf_mask
-        pts_unc = torch.sqrt((rep_l2_kf.pow(2)).sum(0) / kf_mask.sum(0).clamp(min=1)).cpu().numpy()
+        kf_track_count = kf_mask.sum(0)  # (P,) - number of keyframe observations per point
+        pts_unc = torch.sqrt((rep_l2_kf.pow(2)).sum(0) / kf_track_count.clamp(min=1)).cpu().numpy()
+
+        # Set high uncertainty for points with insufficient keyframe tracks
+        insufficient_tracks = kf_track_count.cpu().numpy() < min_track_number
+        pts_unc[insufficient_tracks] = np.inf
 
         depth_unc = None
         if torch.is_tensor(depth_prior):
@@ -2143,7 +2152,8 @@ def propagate_uncertainty_and_build_image_info(images, image_path_list, base_ima
         rot_thresh=args.kf_rot_thresh,
         trans_thresh=args.kf_trans_thresh,
         depth_thresh=args.kf_depth_thresh,
-        track_inlier_thresh=args.kf_inlier_thresh,    
+        track_inlier_thresh=args.kf_inlier_thresh,
+        min_track_number=args.min_track_number,
     )
 
     image_info = {
