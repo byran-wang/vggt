@@ -524,7 +524,7 @@ def optimize_poses_with_losses(
     return extr_final.detach().cpu().numpy(), points3d_t.detach().cpu().numpy(), uncertainties
 
 
-def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=10, lr=1e-3):
+def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3, rep_loss_thresh=0.3):
     """
     Perform bundle adjustment on keyframes to jointly optimize 3D points and camera poses.
 
@@ -543,6 +543,7 @@ def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=10, lr=1e-3):
         ref_frame_idx: Reference frame index (pose is fixed during optimization)
         iters: Number of optimization iterations
         lr: Learning rate for optimizer
+        rep_loss_thresh: Early-stop threshold for reprojection loss (sum of smooth L1)
 
     Returns:
         Updated image_info with optimized points_3d and extrinsics
@@ -607,6 +608,13 @@ def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=10, lr=1e-3):
     optim = torch.optim.Adam([rvecs_t, tvecs_t, points3d_t], lr=lr)
     inv_intr_t = torch.inverse(intr_t)
 
+    # Prepare depth priors for keyframes
+    kf_depth_priors = depth_priors[keyframe_indices] if depth_priors is not None else None
+    if kf_depth_priors is not None:
+        if not torch.is_tensor(kf_depth_priors):
+            kf_depth_priors = torch.from_numpy(kf_depth_priors)
+        kf_depth_priors = kf_depth_priors.to(device=device, dtype=dtype)
+
     for it in range(iters):
         optim.zero_grad(set_to_none=True)
         R = axis_angle_to_matrix(rvecs_t)
@@ -621,19 +629,76 @@ def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=10, lr=1e-3):
         uv_h = torch.cat([uv, ones2], dim=1)
         proj = torch.bmm(intr_t, uv_h)[:, :2, :].transpose(1, 2)  # K,P,2
 
-        rep_err = (proj - tracks_t) * mask_t.unsqueeze(-1)
-        rep_loss = torch.nn.functional.smooth_l1_loss(rep_err, torch.zeros_like(rep_err), reduction="sum")
+        rep_raw = proj - tracks_t                          # K,P,2
+        valid = mask_t.unsqueeze(-1).to(rep_raw.dtype)     # K,P,1
+
+        rep_loss = torch.nn.functional.smooth_l1_loss(
+            rep_raw * valid,
+            torch.zeros_like(rep_raw),
+            reduction="sum"
+        ) / (valid.sum() * rep_raw.shape[-1] + 1e-8)       # divide by (#valid * 2)
 
         # Point-to-ray consistency loss
         uv1 = torch.cat([tracks_t, torch.ones((K, P, 1), device=device, dtype=dtype)], dim=-1)  # K,P,3
         rays = torch.bmm(inv_intr_t, uv1.transpose(1, 2))  # K,3,P
         rays = torch.nn.functional.normalize(rays, dim=1, eps=1e-6)
         cross = torch.cross(cam_pts, rays, dim=1)
-        ray_err = torch.linalg.norm(cross, dim=1) * mask_t
-        ray_loss = torch.nn.functional.smooth_l1_loss(ray_err, torch.zeros_like(ray_err), reduction="sum")
+        ray_raw = torch.linalg.norm(cross, dim=1)          # K,P  (distance to ray)
+        valid = mask_t.to(ray_raw.dtype)                   # K,P
 
-        loss = rep_loss + 0.1 * ray_loss
+        ray_loss = torch.nn.functional.smooth_l1_loss(
+            ray_raw * valid,
+            torch.zeros_like(ray_raw),
+            reduction="sum"
+        ) / (valid.sum() + 1e-8)
+
+        # Depth consistency loss: compare z-coordinate in camera space with depth prior
+        if kf_depth_priors is not None:
+            # Get predicted depth (z-coordinate in camera space)
+            z_pred = cam_pts[:, 2, :]  # K, P
+
+            # Sample depth prior at track locations using grid_sample
+            H, W = kf_depth_priors.shape[-2:]
+            # Normalize track coordinates to [-1, 1] for grid_sample
+            grid_x = 2.0 * tracks_t[..., 0] / (W - 1) - 1.0  # K, P
+            grid_y = 2.0 * tracks_t[..., 1] / (H - 1) - 1.0  # K, P
+            grid = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(2)  # K, P, 1, 2
+
+            # Sample depth at track locations
+            depth_prior_sampled = torch.nn.functional.grid_sample(
+                kf_depth_priors.unsqueeze(1),  # K, 1, H, W
+                grid,  # K, P, 1, 2
+                mode='bilinear',
+                padding_mode='zeros',
+                align_corners=True
+            ).squeeze(1).squeeze(-1)  # K, P
+
+            # Only compute loss where depth is valid and track is visible
+            valid_depth_mask = (depth_prior_sampled > 0) & mask_t
+            if valid_depth_mask.any():
+                depth_raw = z_pred - depth_prior_sampled       # K,P
+                valid = valid_depth_mask.to(depth_raw.dtype)
+
+                depth_loss = torch.nn.functional.smooth_l1_loss(
+                    depth_raw * valid,
+                    torch.zeros_like(depth_raw),
+                    reduction="sum"
+                ) / (valid.sum() + 1e-8)
+            else:
+                depth_loss = torch.zeros((), device=device, dtype=dtype)
+        ray_loss *= 10
+        depth_loss *= 1000
+        loss = rep_loss + ray_loss + depth_loss
         loss.backward()
+        print(f"[bundle_adjust_keyframes] Iter {it}: rep_loss={rep_loss.item():.4f}, "
+              f"ray_loss={ray_loss.item():.4f}, depth_loss={depth_loss.item():.4f}, total_loss={loss.item():.4f}")
+
+        if rep_loss_thresh is not None and rep_loss.item() < rep_loss_thresh:
+            print(
+                f"[bundle_adjust_keyframes] Early stop at iter {it}: rep_loss {rep_loss.item():.6f} "
+                f"< {rep_loss_thresh}"
+            )
+            break                
 
         # Freeze reference pose update
         if rvecs_t.grad is not None:
@@ -668,6 +733,7 @@ def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=10, lr=1e-3):
 
     # Compute final reprojection error for logging
     with torch.no_grad():
+        rep_err = (proj - tracks_t) * mask_t.unsqueeze(-1)
         final_rep_err = torch.linalg.norm(rep_err, dim=-1).mean().item()
     print(f"[bundle_adjust_keyframes] Optimization complete. Final mean reproj error: {final_rep_err:.4f}px")
 
@@ -1884,7 +1950,7 @@ def process_key_frame(image_info, frame_idx, args):
     # Perform bundle adjustment on all keyframes to jointly optimize 3D points and camera poses
     # Use the first keyframe (cond_index) as reference to keep the coordinate frame consistent
     first_keyframe_idx = np.where(image_info["keyframe"])[0][0] if image_info["keyframe"].any() else args.cond_index
-    bundle_adjust_keyframes(image_info, ref_frame_idx=first_keyframe_idx, iters=10, lr=1e-3)
+    bundle_adjust_keyframes(image_info, ref_frame_idx=first_keyframe_idx, lr=1e-3)
 
 def get_image_list_ZED(args):
     image_dir = Path(os.path.join(args.scene_dir, "images"))
@@ -2115,7 +2181,7 @@ def register_remaining_frames(image_info, gen_3d, args):
     while image_info["registered"].sum() + image_info["invalid"].sum() < num_images:
         next_frame_idx = find_next_frame(image_info)
         print("+" * 50)
-        print(f"Next frame to register: {next_frame_idx}")
+        print(f"Next frame to register: {next_frame_idx}, registered: {image_info['registered'].sum()}, keyframes: {image_info['keyframe'].sum()}, invalid: {image_info['invalid'].sum()}")
 
         if check_frame_invalid(
             image_info, next_frame_idx,
