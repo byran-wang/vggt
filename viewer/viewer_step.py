@@ -65,7 +65,7 @@ def parse_args():
     parser.add_argument(
         "--gt_ho3d",
         type=int,
-        default=1,
+        default=0,
         help="Visualize HO3D ground-truth cameras and object meshes when available.",
     )
     parser.add_argument(
@@ -317,9 +317,9 @@ def build_blueprint(args) -> rrb.BlueprintLike:
             rrb.Vertical(
                 rrb.Spatial2DView(name="camera_current", origin="/our/camera_current/image"),
                 rrb.Spatial2DView(name="camera_obj", origin="/our/camera_obj/image"),
-                row_shares=[3, 1],
+                row_shares=[1, 3],
             ),
-            column_shares=[8, 2],
+            column_shares=[6, 2],
         )
     ]
     row_shares = [3]
