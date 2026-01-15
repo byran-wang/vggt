@@ -716,7 +716,7 @@ def _update_image_info(image_info, keyframe_indices, rvecs_t, tvecs_t, points3d_
 
 
 def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3,
-                            rep_loss_thresh=0.2, depth_loss_thresh=0.001):
+                            rep_loss_thresh=0.2, depth_loss_thresh=0.001, unc_thresh=2.0):
     """Perform bundle adjustment on keyframes to jointly optimize 3D points and camera poses.
 
     This function optimizes the merged points_3d and extrinsics for all keyframes using:
@@ -735,6 +735,7 @@ def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3,
         lr: Learning rate for optimizer
         rep_loss_thresh: Early-stop threshold for reprojection loss
         depth_loss_thresh: Early-stop threshold for depth loss
+        unc_thresh: Uncertainty threshold for excluding high-uncertainty points from optimization
 
     Returns:
         Updated image_info with optimized points_3d and extrinsics
@@ -774,7 +775,7 @@ def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3,
         return image_info
 
     # Step 2: Initialize optimization tensors (includes uncertainty weights)
-    tensors = _init_optimization_tensors(kf_data, device, dtype)
+    tensors = _init_optimization_tensors(kf_data, device, dtype, unc_thresh=unc_thresh)
 
     # Step 3: Run optimization with uncertainty-weighted losses
     rvecs_t, tvecs_t, points3d_t, proj, cam_pts = _run_ba_optimization(

@@ -359,6 +359,7 @@ def _run_bundle_adjustment(image_info, args):
         print(f"[process_key_frame] Step 7: Running bundle adjustment on {len(keyframe_indices)} keyframes")
         image_info = bundle_adjust_keyframes(
             image_info, ref_frame_idx=args.cond_index, iters=30, lr=1e-3,
+            unc_thresh=getattr(args, 'unc_thresh', 2.0),
         )
     return image_info
 
