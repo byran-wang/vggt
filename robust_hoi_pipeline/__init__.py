@@ -52,7 +52,7 @@ from .visualization_io import (
     save_results,
     save_input_data,
     eval_reprojection,
-    get_points_conf_colors,
+    get_points_uncertainty_colors,
     save_point_cloud_with_conf,
     save_depth_prior_with_uncertainty,
 )
@@ -105,7 +105,7 @@ __all__ = [
     "save_results",
     "save_input_data",
     "eval_reprojection",
-    "get_points_conf_colors",
+    "get_points_uncertainty_colors",
     "save_point_cloud_with_conf",
     "save_depth_prior_with_uncertainty",
     # geometry_utils

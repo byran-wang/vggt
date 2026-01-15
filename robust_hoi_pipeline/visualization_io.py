@@ -24,7 +24,7 @@ sys.path.append("third_party/utils_simba")
 from utils_simba.depth import save_depth
 
 
-def get_points_conf_colors(points_3d, uncertainties):
+def get_points_uncertainty_colors(points_3d, uncertainties):
     """Map uncertainty values to RGB colors for visualization.
 
     Args:
@@ -32,27 +32,27 @@ def get_points_conf_colors(points_3d, uncertainties):
         uncertainties: Uncertainty values for each point
 
     Returns:
-        RGB colors array where green=high confidence, red=low confidence
+        RGB colors array where green=low uncertainty, red=high uncertainty
     """
     uncertainty = np.asarray(uncertainties, dtype=np.float64)
-    conf_colors = np.zeros((len(uncertainty), 3), dtype=np.uint8)
+    uncertainty_colors = np.zeros((len(uncertainty), 3), dtype=np.uint8)
     finite_mask = np.isfinite(uncertainty)
     if finite_mask.any():
-        finite_conf = uncertainty[finite_mask]
-        conf_norm = finite_conf / (finite_conf.max() + 1e-8)
+        finite_uncertainty = uncertainty[finite_mask]
+        uncertainty_norm = finite_uncertainty / (finite_uncertainty.max() + 1e-8)
         finite_colors = np.stack(
             [
-                (1.0 - conf_norm) * 255.0,  # red channel high -> low confidence
-                conf_norm * 255.0,          # green channel high -> high confidence
-                np.zeros_like(conf_norm),
+                uncertainty_norm * 255.0,  # red channel high -> low confidence
+                (1.0 - uncertainty_norm) * 255.0,          # green channel high -> high confidence
+                np.zeros_like(uncertainty_norm),
             ],
             axis=-1,
         ).clip(0, 255).astype(np.uint8)
-        conf_colors[finite_mask] = finite_colors
+        uncertainty_colors[finite_mask] = finite_colors
     # Non-finite uncertainties (e.g., np.inf) remain black.
-    if len(conf_colors) != len(points_3d):
-        conf_colors = conf_colors[: len(points_3d)]
-    return conf_colors
+    if len(uncertainty_colors) != len(points_3d):
+        uncertainty_colors = uncertainty_colors[: len(points_3d)]
+    return uncertainty_colors
 
 
 def save_point_cloud_with_conf(points_3d, points_rgb, uncertainties, ply_path):
@@ -64,7 +64,7 @@ def save_point_cloud_with_conf(points_3d, points_rgb, uncertainties, ply_path):
         uncertainties: Uncertainty values for coloring
         ply_path: Output PLY file path
     """
-    conf_colors = get_points_conf_colors(points_3d, uncertainties)
+    conf_colors = get_points_uncertainty_colors(points_3d, uncertainties)
     trimesh.PointCloud(points_3d, colors=conf_colors).export(ply_path)
 
 
@@ -189,7 +189,7 @@ def save_results(image_info, gen_3d, out_dir):
             return x.detach().cpu().numpy()
         return np.asarray(x)
 
-    points_conf_color = get_points_conf_colors(
+    points_conf_color = get_points_uncertainty_colors(
         points_3d=image_info.get("points_3d"),
         uncertainties=image_info.get("uncertainties")['points3d']
     )
