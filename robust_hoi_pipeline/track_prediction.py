@@ -83,8 +83,12 @@ def predict_initial_tracks_wrapper(images, image_masks, args, dtype):
 
 
 def remove_duplicate_tracks(existing_tracks, new_tracks, new_track_mask, new_points_3d, new_points_rgb,
-                            ref_frame_idx, dist_thresh=3.0):
-    """Remove new track points that are too close to existing tracks at the reference frame.
+                            ref_frame_idx, dist_thresh=3.0, existing_track_mask=None):
+    """Remove new track points that have similar positions to existing tracks.
+
+    Compares track positions across all frames where both tracks are visible.
+    A new track is considered a duplicate if its average distance to any existing
+    track (across co-visible frames) is below the threshold.
 
     Args:
         existing_tracks: Existing tracks array of shape [S, N_existing, 2]
@@ -92,8 +96,10 @@ def remove_duplicate_tracks(existing_tracks, new_tracks, new_track_mask, new_poi
         new_track_mask: Visibility mask for new tracks [S, N_new]
         new_points_3d: 3D points for new tracks [N_new, 3]
         new_points_rgb: RGB colors for new tracks [N_new, 3] or None
-        ref_frame_idx: Reference frame index to compare 2D positions
+        ref_frame_idx: Reference frame index (used as fallback)
         dist_thresh: Distance threshold in pixels to consider as duplicate
+        existing_track_mask: Visibility mask for existing tracks [S, N_existing].
+                             If None, assumes all existing tracks are visible in all frames.
 
     Returns:
         Filtered new_tracks, new_track_mask, new_points_3d, new_points_rgb
@@ -101,24 +107,51 @@ def remove_duplicate_tracks(existing_tracks, new_tracks, new_track_mask, new_poi
     if new_tracks.shape[1] == 0:
         return new_tracks, new_track_mask, new_points_3d, new_points_rgb
 
-    # Get 2D positions at reference frame
-    existing_pts_2d = existing_tracks[ref_frame_idx]  # [N_existing, 2]
-    new_pts_2d = new_tracks[ref_frame_idx]  # [N_new, 2]
+    S = new_tracks.shape[0]
+    N_new = new_tracks.shape[1]
+    N_existing = existing_tracks.shape[1]
 
-    # Compute pairwise distances between new and existing points
-    # Using broadcasting: [N_new, 1, 2] - [1, N_existing, 2] -> [N_new, N_existing, 2]
-    diff = new_pts_2d[:, None, :] - existing_pts_2d[None, :, :]
-    distances = np.linalg.norm(diff, axis=2)  # [N_new, N_existing]
+    # If no existing track mask provided, assume all are visible
+    if existing_track_mask is None:
+        existing_track_mask = np.ones((S, N_existing), dtype=bool)
 
-    # Find minimum distance to any existing track for each new track
-    min_distances = distances.min(axis=1)  # [N_new]
+    existing_track_mask = np.asarray(existing_track_mask).astype(bool)
+    new_track_mask_bool = np.asarray(new_track_mask).astype(bool)
 
-    # Keep only new tracks that are far enough from all existing tracks
-    keep_mask = min_distances > dist_thresh
+    keep_mask = np.ones(N_new, dtype=bool)
+
+    for i in range(N_new):
+        # Get frames where the new track is visible
+        new_vis_frames = np.where(new_track_mask_bool[:, i])[0]
+        if len(new_vis_frames) == 0:
+            keep_mask[i] = False
+            continue
+
+        # For each existing track, compute average distance across co-visible frames
+        min_avg_dist = np.inf
+        for j in range(N_existing):
+            # Find frames where both tracks are visible
+            existing_vis_frames = np.where(existing_track_mask[:, j])[0]
+            co_visible_frames = np.intersect1d(new_vis_frames, existing_vis_frames)
+
+            if len(co_visible_frames) == 0:
+                continue
+
+            # Compute distances across co-visible frames
+            new_pts = new_tracks[co_visible_frames, i, :]  # [K, 2]
+            existing_pts = existing_tracks[co_visible_frames, j, :]  # [K, 2]
+            distances = np.linalg.norm(new_pts - existing_pts, axis=1)  # [K]
+
+            avg_dist = distances.mean()
+            min_avg_dist = min(min_avg_dist, avg_dist)
+
+        # If minimum average distance is below threshold, mark as duplicate
+        if min_avg_dist < dist_thresh:
+            keep_mask[i] = False
 
     num_removed = (~keep_mask).sum()
     if num_removed > 0:
-        print(f"[remove_duplicate_tracks] Removed {num_removed} duplicate tracks (dist_thresh={dist_thresh}px)")
+        print(f"[remove_duplicate_tracks] Removed {num_removed} duplicate tracks (dist_thresh={dist_thresh}px, checked across co-visible frames)")
 
     new_tracks = new_tracks[:, keep_mask]
     new_track_mask = new_track_mask[:, keep_mask]

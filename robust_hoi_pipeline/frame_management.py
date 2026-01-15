@@ -13,21 +13,14 @@ import torch
 
 
 def find_next_frame(image_info):
-    """Select next unregistered frame to process.
+    """Select next unregistered frame that shares the most tracks with registered frames.
 
     Args:
-        image_info: Dictionary containing registered and invalid frame flags
+        image_info: Dictionary containing track_mask, registered, and invalid frame flags
 
     Returns:
-        Index of next frame to process, or -1 if all processed
+        Index of next frame to process, or None if all processed
     """
-    registered = image_info.get("registered", np.array([]))
-    invalid = image_info.get("invalid", np.array([]))
-
-    for i in range(len(registered)):
-        if not registered[i] and not invalid[i]:
-            return i
-def find_next_frame(image_info):
     track_mask = image_info.get("track_mask")
     registered = image_info.get("registered")
     invalid = image_info.get("invalid")
@@ -168,31 +161,283 @@ def check_key_frame(image_info, frame_idx, rot_thresh, trans_thresh, depth_thres
     return True
 
 
-def process_key_frame(image_info, frame_idx, args):
-    """Process frame designated as keyframe (trigger BA if needed).
+def _predict_new_tracks(images, image_masks, frame_idx, args, dtype):
+    """Step 1: Predict new tracks using the keyframe as query frame.
+
+    Returns:
+        Tuple of (new_pred_tracks, new_pred_vis_scores, new_points_rgb) or None if failed
+    """
+    from .track_prediction import predict_initial_tracks_wrapper
+
+    print(f"[process_key_frame] Step 1: Predicting new tracks from keyframe {frame_idx}")
+    try:
+        new_pred_tracks, new_pred_vis_scores, new_points_rgb = predict_initial_tracks_wrapper(
+            images, image_masks, args, dtype
+        )
+        # Convert to numpy
+        new_pred_tracks = new_pred_tracks.cpu().numpy() if torch.is_tensor(new_pred_tracks) else new_pred_tracks
+        new_pred_vis_scores = new_pred_vis_scores.cpu().numpy() if torch.is_tensor(new_pred_vis_scores) else new_pred_vis_scores
+        if new_points_rgb is not None and torch.is_tensor(new_points_rgb):
+            new_points_rgb = new_points_rgb.cpu().numpy()
+        print(f"[process_key_frame] Predicted {new_pred_tracks.shape[1]} new tracks")
+        return new_pred_tracks, new_pred_vis_scores, new_points_rgb
+    except Exception as e:
+        print(f"[process_key_frame] Track prediction failed: {e}")
+        return None
+
+
+def _sample_3d_points(gen_3d, new_pred_tracks, new_pred_vis_scores, new_points_rgb,
+                      image_masks, frame_idx, image_shape):
+    """Step 2: Sample 3D points at new track locations.
+
+    Returns:
+        Tuple of (new_pred_tracks, new_pred_vis_scores, new_points_3d, new_points_rgb)
+    """
+    from .track_prediction import sample_points_at_track_locations
+
+    print(f"[process_key_frame] Step 2: Sampling 3D points at track locations")
+    if gen_3d is not None and hasattr(gen_3d, 'points_3d'):
+        points_3d_map = gen_3d.points_3d
+        depth_conf = gen_3d.depth_conf if hasattr(gen_3d, 'depth_conf') else None
+        new_pred_tracks, new_pred_vis_scores, _, new_points_3d, new_points_rgb = sample_points_at_track_locations(
+            new_pred_tracks, new_pred_vis_scores, points_3d_map, depth_conf,
+            image_masks, new_points_rgb, frame_idx, image_shape
+        )
+    else:
+        new_points_3d = None
+    return new_pred_tracks, new_pred_vis_scores, new_points_3d, new_points_rgb
+
+
+def _estimate_poses(depth_priors, extrinsics, intrinsics, new_pred_tracks, new_pred_vis_scores,
+                    new_points_3d, frame_idx, args):
+    """Step 3: Estimate camera poses from the new tracks.
+
+    Returns:
+        Tuple of (new_extrinsics, new_track_mask, new_points_3d)
+    """
+    from .pose_estimation import estimate_extrinsic
+
+    print(f"[process_key_frame] Step 3: Estimating poses from new tracks")
+    new_track_mask = new_pred_vis_scores > args.vis_thresh
+
+    # Use existing extrinsics as initialization
+    new_extrinsics = extrinsics.copy()
+    intrinsic_single = intrinsics[0] if intrinsics.ndim == 3 else intrinsics
+
+    # Convert depth to numpy
+    depth_prior_np = depth_priors.cpu().numpy() if torch.is_tensor(depth_priors) else depth_priors
+
+    # Estimate extrinsics
+    new_extrinsics = estimate_extrinsic(
+        depth_prior_np, new_extrinsics, intrinsic_single, new_pred_tracks, new_track_mask,
+        ref_index=frame_idx,
+        ransac_reproj_threshold=args.max_reproj_error
+    )
+
+    # Unproject depth to get 3D points if not available
+    if new_points_3d is None:
+        from vggt.utils.geometry import unproject_depth_map_to_point_map
+        new_points_3d_map = unproject_depth_map_to_point_map(
+            depth_prior_np[..., None], new_extrinsics, intrinsics
+        )
+        # Sample 3D points at track locations
+        query_points = new_pred_tracks[frame_idx]
+        H, W = depth_prior_np.shape[-2:]
+        scale = new_points_3d_map.shape[-2] / H if new_points_3d_map.shape[-2] != H else 1.0
+        query_points_scaled = np.round(query_points * scale).astype(np.int64)
+        query_points_scaled[:, 0] = np.clip(query_points_scaled[:, 0], 0, new_points_3d_map.shape[-2] - 1)
+        query_points_scaled[:, 1] = np.clip(query_points_scaled[:, 1], 0, new_points_3d_map.shape[-3] - 1)
+        new_points_3d = new_points_3d_map[frame_idx][query_points_scaled[:, 1], query_points_scaled[:, 0]]
+
+    return new_extrinsics, new_track_mask, new_points_3d
+
+
+def _filter_and_verify_tracks(new_points_3d, new_extrinsics, intrinsics, new_pred_tracks,
+                               new_track_mask, new_points_rgb, frame_idx, args):
+    """Step 4: Filter and verify the new tracks by geometry and inlier counts.
+
+    Returns:
+        Tuple of (new_track_mask, new_points_3d, new_pred_tracks, new_points_rgb)
+    """
+    from .pose_estimation import verify_tracks_by_geometry
+    from .track_prediction import prep_valid_correspondences
+
+    print(f"[process_key_frame] Step 4: Filtering and verifying new tracks")
+
+    # Verify by reprojection error
+    new_track_mask = verify_tracks_by_geometry(
+        new_points_3d, new_extrinsics, intrinsics, new_pred_tracks,
+        ref_index=frame_idx, masks=new_track_mask, max_reproj_error=args.max_reproj_error,
+    )
+
+    # Filter by per-frame and per-track inlier counts
+    new_track_mask, new_points_3d, keep_pts = prep_valid_correspondences(
+        new_points_3d, new_track_mask, args.min_inlier_per_frame, args.min_inlier_per_track
+    )
+    new_pred_tracks = new_pred_tracks[:, keep_pts]
+    if new_points_rgb is not None:
+        new_points_rgb = new_points_rgb[keep_pts]
+
+    print(f"[process_key_frame] After filtering: {new_pred_tracks.shape[1]} tracks remain")
+    return new_track_mask, new_points_3d, new_pred_tracks, new_points_rgb
+
+
+def _merge_tracks(image_info, new_pred_tracks, new_track_mask, new_points_3d, new_points_rgb, frame_idx, args):
+    """Step 5: Merge the new tracks with existing tracks.
+
+    Updates image_info in-place with merged track data.
+    """
+    from .track_prediction import remove_duplicate_tracks
+
+    print(f"[process_key_frame] Step 5: Merging new tracks with existing tracks")
+
+    existing_tracks = image_info.get("pred_tracks")
+    existing_track_mask = image_info.get("track_mask")
+    existing_points_3d = image_info.get("points_3d")
+    existing_points_rgb = image_info.get("points_rgb")
+
+    if existing_tracks is not None and new_pred_tracks.shape[1] > 0:
+        # Remove tracks with similar positions to existing tracks
+        dist_thresh = getattr(args, 'duplicate_track_thresh', 3.0)
+        new_pred_tracks, new_track_mask, new_points_3d, new_points_rgb = remove_duplicate_tracks(
+            existing_tracks, new_pred_tracks, new_track_mask, new_points_3d, new_points_rgb,
+            ref_frame_idx=frame_idx, dist_thresh=dist_thresh, existing_track_mask=existing_track_mask,
+        )
+
+        if new_pred_tracks.shape[1] > 0:
+            # Concatenate existing and new data
+            image_info["pred_tracks"] = np.concatenate([existing_tracks, new_pred_tracks], axis=1)
+            image_info["track_mask"] = np.concatenate([existing_track_mask, new_track_mask], axis=1)
+            image_info["points_3d"] = np.concatenate([existing_points_3d, new_points_3d], axis=0)
+            if existing_points_rgb is not None and new_points_rgb is not None:
+                image_info["points_rgb"] = np.concatenate([existing_points_rgb, new_points_rgb], axis=0)
+
+            print(f"[process_key_frame] Merged: {existing_tracks.shape[1]} + {new_pred_tracks.shape[1]} = {image_info['pred_tracks'].shape[1]} tracks")
+
+    elif new_pred_tracks.shape[1] > 0:
+        # No existing tracks, use new tracks directly
+        image_info["pred_tracks"] = new_pred_tracks
+        image_info["track_mask"] = new_track_mask
+        image_info["points_3d"] = new_points_3d
+        image_info["points_rgb"] = new_points_rgb
+
+
+def _propagate_uncertainties(image_info, args):
+    """Step 6: Propagate uncertainties using all keyframes.
+
+    Updates image_info["uncertainties"] in-place.
+    """
+    from .optimization import propagate_uncertainties
+
+    print(f"[process_key_frame] Step 6: Propagating uncertainties")
+    keyframe_indices = np.where(image_info["keyframe"])[0]
+    print(f"[process_key_frame] Current keyframes: {keyframe_indices.tolist()}")
+
+    uncertainties = propagate_uncertainties(
+        image_info["points_3d"],
+        image_info["extrinsics"],
+        image_info["intrinsics"],
+        image_info["pred_tracks"],
+        image_info["depth_priors"],
+        image_info["track_mask"],
+        rot_thresh=args.kf_rot_thresh,
+        trans_thresh=args.kf_trans_thresh,
+        depth_thresh=args.kf_depth_thresh,
+        track_inlier_thresh=args.kf_inlier_thresh,
+        min_track_number=getattr(args, 'min_track_number', 3),
+        keyframe_indices=keyframe_indices,
+    )
+    image_info["uncertainties"] = uncertainties
+
+
+def _run_bundle_adjustment(image_info, args):
+    """Step 7 (optional): Run bundle adjustment on all keyframes."""
+    from .optimization import bundle_adjust_keyframes
+
+    keyframe_indices = np.where(image_info["keyframe"])[0]
+    if len(keyframe_indices) >= args.min_track_number and getattr(args, 'run_ba_on_keyframe', False):
+        print(f"[process_key_frame] Step 7: Running bundle adjustment on {len(keyframe_indices)} keyframes")
+        image_info = bundle_adjust_keyframes(
+            image_info, ref_frame_idx=args.cond_index, iters=30, lr=1e-3,
+        )
+    return image_info
+
+
+def process_key_frame(image_info, gen_3d, frame_idx, args):
+    """Process frame designated as keyframe with multi-step workflow.
+
+    Pipeline steps:
+        1. Predict new tracks using the keyframe as query frame
+        2. Sample 3D points at track locations
+        3. Estimate camera poses from the new tracks
+        4. Filter and verify the new tracks
+        5. Merge the new tracks with existing tracks
+        6. Propagate uncertainties using all keyframes
+        7. (Optional) Run bundle adjustment on keyframes
 
     Args:
         image_info: Dictionary containing reconstruction data
-        frame_idx: Frame index to process
+        gen_3d: Generated 3D model object (contains depth/point data)
+        frame_idx: Frame index to process as keyframe
         args: Arguments with configuration
 
     Returns:
-        Updated image_info
+        Updated image_info with new tracks merged and uncertainties updated
     """
-    # Import here to avoid circular dependency
-    from .optimization import bundle_adjust_keyframes
-
     print(f"[process_key_frame] Processing keyframe at frame {frame_idx}")
     image_info["keyframe"][frame_idx] = True
 
-    # Run bundle adjustment on all keyframes
-    image_info = bundle_adjust_keyframes(
-        image_info,
-        ref_frame_idx=args.cond_index,
-        iters=30,
-        lr=1e-3,
-    )
+    # Validate required data
+    images = image_info.get("images")
+    depth_priors = image_info.get("depth_priors")
+    if images is None or depth_priors is None:
+        print(f"[process_key_frame] Missing images or depth_priors, skipping")
+        return image_info
 
+    # Setup
+    dtype = getattr(args, 'dtype', torch.float16)
+    original_cond_index = args.cond_index
+    args.cond_index = frame_idx
+
+    try:
+        # Step 1: Predict new tracks
+        result = _predict_new_tracks(images, image_info.get("image_masks"), frame_idx, args, dtype)
+        if result is None:
+            return image_info
+        new_pred_tracks, new_pred_vis_scores, new_points_rgb = result
+
+        # Step 2: Sample 3D points at track locations
+        new_pred_tracks, new_pred_vis_scores, new_points_3d, new_points_rgb = _sample_3d_points(
+            gen_3d, new_pred_tracks, new_pred_vis_scores, new_points_rgb,
+            image_info.get("image_masks"), frame_idx, images.shape
+        )
+
+        # Step 3: Estimate poses from new tracks
+        new_extrinsics, new_track_mask, new_points_3d = _estimate_poses(
+            depth_priors, image_info["extrinsics"], image_info["intrinsics"],
+            new_pred_tracks, new_pred_vis_scores, new_points_3d, frame_idx, args
+        )
+
+        # Step 4: Filter and verify tracks
+        new_track_mask, new_points_3d, new_pred_tracks, new_points_rgb = _filter_and_verify_tracks(
+            new_points_3d, new_extrinsics, image_info["intrinsics"],
+            new_pred_tracks, new_track_mask, new_points_rgb, frame_idx, args
+        )
+
+        # Step 5: Merge new tracks with existing tracks
+        _merge_tracks(image_info, new_pred_tracks, new_track_mask, new_points_3d, new_points_rgb, frame_idx, args)
+
+        # Step 6: Propagate uncertainties
+        _propagate_uncertainties(image_info, args)
+
+        # Step 7: Optional bundle adjustment
+        image_info = _run_bundle_adjustment(image_info, args)
+
+    finally:
+        # Restore original query index
+        args.cond_index = original_cond_index
+
+    print(f"[process_key_frame] Keyframe {frame_idx} processing complete")
     return image_info
 
 
@@ -251,7 +496,7 @@ def register_remaining_frames(image_info, gen_3d, args):
             depth_thresh=args.kf_depth_thresh,
             frame_inliner_thresh=args.kf_inlier_thresh
         ):
-            image_info = process_key_frame(image_info, next_frame_idx, args)
+            image_info = process_key_frame(image_info, gen_3d, next_frame_idx, args)
 
         save_results(image_info, gen_3d, out_dir=f"{args.output_dir}/results/{next_frame_idx:04d}/")
 

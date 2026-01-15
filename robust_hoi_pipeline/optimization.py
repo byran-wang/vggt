@@ -31,6 +31,7 @@ def propagate_uncertainties(
     depth_thresh=1000,
     track_inlier_thresh=50,
     min_track_number=3,
+    keyframe_indices=None,
 ):
     """Propagate uncertainties for extrinsics, 3D points, and depth priors.
 
@@ -42,7 +43,8 @@ def propagate_uncertainties(
     - min_track_number: minimum keyframe observations for a 3D point; points with
       fewer observations get high uncertainty
 
-    The function first filters valid frames (enough track inliers + valid depth),
+    If keyframe_indices is provided, those frames are used directly as keyframes.
+    Otherwise, the function first filters valid frames (enough track inliers + valid depth),
     then selects keyframes from valid frames based on rotation/translation thresholds.
     Only keyframes are used for depth uncertainty computation.
 
@@ -58,6 +60,8 @@ def propagate_uncertainties(
         depth_thresh: Minimum valid depth pixel count
         track_inlier_thresh: Minimum track inlier count
         min_track_number: Minimum keyframe observations per point
+        keyframe_indices: Optional list/array of keyframe indices. If None, keyframes
+                          are computed from the data using threshold criteria.
 
     Returns:
         Dictionary containing uncertainties for extrinsics, points3d, depth_prior, and keyframes list
@@ -75,53 +79,59 @@ def propagate_uncertainties(
     intr_t = torch.from_numpy(intrinsic).to(device=device, dtype=dtype)
     extr_t = torch.from_numpy(extrinsic[:, :3, :]).to(device=device, dtype=dtype)
 
-    # Step 1: Identify valid frames (enough track inliers + valid depth)
-    track_inliers = mask_t.sum(dim=-1).cpu().numpy()  # (B,)
-    valid_depth_counts = np.zeros(B, dtype=np.int64)
-    if torch.is_tensor(depth_prior):
+    # Use provided keyframe_indices or compute from data
+    if keyframe_indices is not None:
+        # Use provided keyframe indices directly
+        keyframes = list(keyframe_indices) if not isinstance(keyframe_indices, list) else keyframe_indices
+        print(f"[propagate_uncertainties] Using provided keyframes: {len(keyframes)} {keyframes}")
+    else:
+        # Step 1: Identify valid frames (enough track inliers + valid depth)
+        track_inliers = mask_t.sum(dim=-1).cpu().numpy()  # (B,)
+        valid_depth_counts = np.zeros(B, dtype=np.int64)
+        if torch.is_tensor(depth_prior):
+            for i in range(B):
+                valid_depth_counts[i] = int((depth_prior[i] > 0).sum().item())
+
+        valid_frames = []
         for i in range(B):
-            valid_depth_counts[i] = int((depth_prior[i] > 0).sum().item())
+            has_enough_inliers = track_inliers[i] >= track_inlier_thresh
+            has_enough_depth = valid_depth_counts[i] >= depth_thresh
+            if has_enough_inliers and has_enough_depth:
+                valid_frames.append(i)
 
-    valid_frames = []
-    for i in range(B):
-        has_enough_inliers = track_inliers[i] >= track_inlier_thresh
-        has_enough_depth = valid_depth_counts[i] >= depth_thresh
-        if has_enough_inliers and has_enough_depth:
-            valid_frames.append(i)
+        # Step 2: From valid frames, select keyframes based on rotation/translation thresholds
+        keyframes = []
+        for frame_idx in valid_frames:
+            if len(keyframes) == 0:
+                # First valid frame is always a keyframe
+                keyframes.append(frame_idx)
+                continue
 
-    # Step 2: From valid frames, select keyframes based on rotation/translation thresholds
-    keyframes = []
-    for frame_idx in valid_frames:
-        if len(keyframes) == 0:
-            # First valid frame is always a keyframe
-            keyframes.append(frame_idx)
-            continue
+            # Check rotation and translation delta with all existing keyframes
+            T_curr = extrinsic[frame_idx]
+            R_curr, t_curr = T_curr[:3, :3], T_curr[:3, 3]
 
-        # Check rotation and translation delta with all existing keyframes
-        T_curr = extrinsic[frame_idx]
-        R_curr, t_curr = T_curr[:3, :3], T_curr[:3, 3]
+            is_keyframe = True
+            for kf_idx in keyframes:
+                T_kf = extrinsic[kf_idx]
+                R_kf, t_kf = T_kf[:3, :3], T_kf[:3, 3]
 
-        is_keyframe = True
-        for kf_idx in keyframes:
-            T_kf = extrinsic[kf_idx]
-            R_kf, t_kf = T_kf[:3, :3], T_kf[:3, 3]
+                # Compute rotation delta (degrees)
+                R_delta = R_curr @ R_kf.T
+                angle = np.rad2deg(np.arccos(np.clip((np.trace(R_delta) - 1) / 2, -1.0, 1.0)))
 
-            # Compute rotation delta (degrees)
-            R_delta = R_curr @ R_kf.T
-            angle = np.rad2deg(np.arccos(np.clip((np.trace(R_delta) - 1) / 2, -1.0, 1.0)))
+                # Compute translation delta
+                trans = np.linalg.norm(t_curr - t_kf)
 
-            # Compute translation delta
-            trans = np.linalg.norm(t_curr - t_kf)
+                # Reject if too close to any existing keyframe
+                if angle < rot_thresh and trans < trans_thresh:
+                    is_keyframe = False
+                    break
 
-            # Reject if too close to any existing keyframe
-            if angle < rot_thresh and trans < trans_thresh:
-                is_keyframe = False
-                break
+            if is_keyframe:
+                keyframes.append(frame_idx)
 
-        if is_keyframe:
-            keyframes.append(frame_idx)
-
-    print(f"[propagate_uncertainties] Valid frames: {len(valid_frames)}/{B}, Keyframes: {len(keyframes)} {keyframes}")
+        print(f"[propagate_uncertainties] Valid frames: {len(valid_frames)}/{B}, Keyframes: {len(keyframes)} {keyframes}")
 
     # Create keyframe mask: (B, P) mask that is only True for keyframe indices
     kf_frame_mask = torch.zeros(B, device=device, dtype=torch.bool)
@@ -537,7 +547,8 @@ def register_new_frame(image_info, gen_3d, frame_idx, args, out_dir, iters=100, 
 
 def propagate_uncertainty_and_build_image_info(images, image_path_list, base_image_path_list, original_coords,
                                                image_masks, depth_prior, intrinsic, extrinsic,
-                                               pred_tracks, track_mask, points_3d, points_rgb, args):
+                                               pred_tracks, track_mask, points_3d, points_rgb, args,
+                                               keyframe_indices=None):
     """Build unified image_info dictionary with uncertainty propagation.
 
     Args:
@@ -554,6 +565,8 @@ def propagate_uncertainty_and_build_image_info(images, image_path_list, base_ima
         points_3d: 3D point coordinates
         points_rgb: Point RGB colors
         args: Arguments with threshold parameters
+        keyframe_indices: Optional list/array of keyframe indices. If None, keyframes
+                          are computed from the data using threshold criteria.
 
     Returns:
         image_info dictionary with all reconstruction data and uncertainties
@@ -570,6 +583,7 @@ def propagate_uncertainty_and_build_image_info(images, image_path_list, base_ima
         depth_thresh=args.kf_depth_thresh,
         track_inlier_thresh=args.kf_inlier_thresh,
         min_track_number=args.min_track_number,
+        keyframe_indices=keyframe_indices,
     )
 
     image_info = {
