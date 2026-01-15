@@ -19,6 +19,12 @@ from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap
 from .geometry_utils import axis_angle_to_matrix
 
 
+# Module-level constants for loss weights (configurable)
+DEFAULT_RAY_WEIGHT = 10
+DEFAULT_DEPTH_WEIGHT = 1000
+MIN_VALID_OBSERVATIONS_THRESHOLD = 1e-6
+
+
 def propagate_uncertainties(
     points_3d,
     extrinsic,
@@ -261,15 +267,45 @@ def propagate_uncertainties(
 def _extract_keyframe_data(image_info, keyframe_indices, ref_frame_idx):
     """Extract keyframe-specific data from image_info.
 
+    Filters out 3D points with infinite uncertainty.
+
     Returns:
-        Dictionary with keyframe data and reference index within keyframe subset
+        Dictionary with keyframe data, reference index, and valid point indices
     """
+    points_3d = image_info["points_3d"]
+    pred_tracks = image_info["pred_tracks"]
+    track_mask = image_info["track_mask"]
+
+    # Get point uncertainties and filter out inf values
+    uncertainties = image_info.get("uncertainties", {})
+    pts_unc = uncertainties.get("points3d", None)
+
+    if pts_unc is not None:
+        # Find valid points (finite uncertainty)
+        valid_pts_mask = np.isfinite(pts_unc)
+        valid_pts_indices = np.where(valid_pts_mask)[0]
+
+        if len(valid_pts_indices) < len(pts_unc):
+            num_filtered = len(pts_unc) - len(valid_pts_indices)
+            print(f"[_extract_keyframe_data] Filtered {num_filtered} points with inf uncertainty")
+
+        # Filter points and tracks
+        points_3d = points_3d[valid_pts_indices]
+        pred_tracks = pred_tracks[:, valid_pts_indices]
+        track_mask = track_mask[:, valid_pts_indices]
+        pts_unc = pts_unc[valid_pts_indices]
+    else:
+        valid_pts_indices = np.arange(len(points_3d))
+        pts_unc = None
+
     kf_data = {
-        "tracks": image_info["pred_tracks"][keyframe_indices],      # [K, N, 2]
-        "mask": image_info["track_mask"][keyframe_indices],         # [K, N]
+        "tracks": pred_tracks[keyframe_indices],        # [K, N, 2]
+        "mask": track_mask[keyframe_indices],           # [K, N]
         "extrinsics": image_info["extrinsics"][keyframe_indices],   # [K, 4, 4]
         "intrinsics": image_info["intrinsics"][keyframe_indices],   # [K, 3, 3]
-        "points_3d": image_info["points_3d"],                       # [P, 3]
+        "points_3d": points_3d,                         # [P_valid, 3]
+        "points_unc": pts_unc,                          # [P_valid] or None
+        "valid_pts_indices": valid_pts_indices,         # indices into original points
     }
 
     # Extract depth priors if available
@@ -290,7 +326,7 @@ def _init_optimization_tensors(kf_data, device, dtype):
     """Initialize tensors for optimization.
 
     Returns:
-        Dictionary with initialized tensors and optimizer
+        Dictionary with initialized tensors including uncertainty weights
     """
     K = len(kf_data["extrinsics"])
 
@@ -321,6 +357,21 @@ def _init_optimization_tensors(kf_data, device, dtype):
             kf_depth = torch.from_numpy(kf_depth)
         kf_depth = kf_depth.to(device=device, dtype=dtype)
 
+    # Prepare uncertainty weights (inverse of uncertainty)
+    # Lower uncertainty = higher weight
+    pts_unc = kf_data.get("points_unc")
+    if pts_unc is not None:
+        # Compute weights as inverse of uncertainty, with clamping to avoid division issues
+        # w = 1 / (unc + eps), normalized so that mean weight = 1
+        unc_t = torch.from_numpy(pts_unc).to(device=device, dtype=dtype)
+        unc_t = unc_t.clamp(min=1e-6)  # avoid division by zero
+        weights_t = 1.0 / unc_t
+        weights_t = weights_t / weights_t.mean()  # normalize to mean=1
+        print(f"[_init_optimization_tensors] Using uncertainty weights: min={weights_t.min().item():.3f}, "
+              f"max={weights_t.max().item():.3f}, mean={weights_t.mean().item():.3f}")
+    else:
+        weights_t = None
+
     return {
         "points3d": points3d_t,
         "tracks": tracks_t,
@@ -330,6 +381,7 @@ def _init_optimization_tensors(kf_data, device, dtype):
         "rvecs": rvecs_t,
         "tvecs": tvecs_t,
         "depth_priors": kf_depth,
+        "point_weights": weights_t,  # [P] or None
     }
 
 
@@ -358,20 +410,50 @@ def _project_points(points3d_t, rvecs_t, tvecs_t, intr_t, device, dtype):
     return proj, cam_pts
 
 
-def _compute_reprojection_loss(proj, tracks_t, mask_t):
-    """Compute reprojection loss between projected and observed 2D points."""
-    rep_raw = proj - tracks_t
-    valid = mask_t.unsqueeze(-1).to(rep_raw.dtype)
+def _compute_reprojection_loss(proj, tracks_t, mask_t, point_weights=None):
+    """Compute reprojection loss between projected and observed 2D points.
+
+    Args:
+        proj: Projected 2D points [K, P, 2]
+        tracks_t: Observed 2D tracks [K, P, 2]
+        mask_t: Visibility mask [K, P]
+        point_weights: Per-point uncertainty weights [P] (higher = more confident)
+
+    Returns:
+        Weighted reprojection loss
+    """
+    rep_raw = proj - tracks_t  # K, P, 2
+    valid = mask_t.unsqueeze(-1).to(rep_raw.dtype)  # K, P, 1
+
+    if point_weights is not None:
+        # Apply per-point weights: [P] -> [1, P, 1]
+        weights = point_weights.unsqueeze(0).unsqueeze(-1)  # 1, P, 1
+        weighted_valid = valid * weights
+    else:
+        weighted_valid = valid
 
     rep_loss = torch.nn.functional.smooth_l1_loss(
-        rep_raw * valid, torch.zeros_like(rep_raw), reduction="sum"
-    ) / (valid.sum() * rep_raw.shape[-1] + 1e-8)
+        rep_raw * weighted_valid, torch.zeros_like(rep_raw), reduction="sum"
+    ) / (weighted_valid.sum() * rep_raw.shape[-1] + 1e-8)
 
     return rep_loss
 
 
-def _compute_ray_loss(cam_pts, tracks_t, mask_t, inv_intr_t, device, dtype):
-    """Compute point-to-ray consistency loss."""
+def _compute_ray_loss(cam_pts, tracks_t, mask_t, inv_intr_t, device, dtype, point_weights=None):
+    """Compute point-to-ray consistency loss.
+
+    Args:
+        cam_pts: Points in camera coordinates [K, 3, P]
+        tracks_t: Observed 2D tracks [K, P, 2]
+        mask_t: Visibility mask [K, P]
+        inv_intr_t: Inverse intrinsic matrices [K, 3, 3]
+        device: Compute device
+        dtype: Data type
+        point_weights: Per-point uncertainty weights [P]
+
+    Returns:
+        Weighted ray consistency loss
+    """
     K, _, P = cam_pts.shape
 
     uv1 = torch.cat([tracks_t, torch.ones((K, P, 1), device=device, dtype=dtype)], dim=-1)
@@ -380,17 +462,35 @@ def _compute_ray_loss(cam_pts, tracks_t, mask_t, inv_intr_t, device, dtype):
 
     cross = torch.cross(cam_pts, rays, dim=1)
     ray_raw = torch.linalg.norm(cross, dim=1)  # K,P
-    valid = mask_t.to(ray_raw.dtype)
+    valid = mask_t.to(ray_raw.dtype)  # K,P
+
+    if point_weights is not None:
+        # Apply per-point weights: [P] -> [1, P]
+        weights = point_weights.unsqueeze(0)  # 1, P
+        weighted_valid = valid * weights
+    else:
+        weighted_valid = valid
 
     ray_loss = torch.nn.functional.smooth_l1_loss(
-        ray_raw * valid, torch.zeros_like(ray_raw), reduction="sum"
-    ) / (valid.sum() + 1e-8)
+        ray_raw * weighted_valid, torch.zeros_like(ray_raw), reduction="sum"
+    ) / (weighted_valid.sum() + 1e-8)
 
     return ray_loss
 
 
-def _compute_depth_loss(cam_pts, tracks_t, mask_t, kf_depth_priors):
-    """Compute depth consistency loss against depth priors."""
+def _compute_depth_loss(cam_pts, tracks_t, mask_t, kf_depth_priors, point_weights=None):
+    """Compute depth consistency loss against depth priors.
+
+    Args:
+        cam_pts: Points in camera coordinates [K, 3, P]
+        tracks_t: Observed 2D tracks [K, P, 2]
+        mask_t: Visibility mask [K, P]
+        kf_depth_priors: Depth prior maps [K, H, W]
+        point_weights: Per-point uncertainty weights [P]
+
+    Returns:
+        Weighted depth consistency loss
+    """
     if kf_depth_priors is None:
         return torch.zeros((), device=cam_pts.device, dtype=cam_pts.dtype)
 
@@ -414,15 +514,33 @@ def _compute_depth_loss(cam_pts, tracks_t, mask_t, kf_depth_priors):
     depth_raw = z_pred - depth_prior_sampled
     valid = valid_depth_mask.to(depth_raw.dtype)
 
+    if point_weights is not None:
+        weights = point_weights.unsqueeze(0)  # 1, P
+        weighted_valid = valid * weights
+    else:
+        weighted_valid = valid
+
     depth_loss = torch.nn.functional.smooth_l1_loss(
-        depth_raw * valid, torch.zeros_like(depth_raw), reduction="sum"
-    ) / (valid.sum() + 1e-8)
+        depth_raw * weighted_valid, torch.zeros_like(depth_raw), reduction="sum"
+    ) / (weighted_valid.sum() + 1e-8)
 
     return depth_loss
 
 
-def _run_ba_optimization(tensors, kf_ref_idx, iters, lr, rep_loss_thresh, device, dtype):
+def _run_ba_optimization(tensors, kf_ref_idx, iters, lr, rep_loss_thresh, depth_loss_thresh, device, dtype):
     """Run the bundle adjustment optimization loop.
+
+    Uses point uncertainty weights to give higher importance to more confident points.
+
+    Args:
+        tensors: Dictionary containing optimization tensors
+        kf_ref_idx: Reference keyframe index (pose is fixed)
+        iters: Number of optimization iterations
+        lr: Learning rate
+        rep_loss_thresh: Early-stop threshold for reprojection loss
+        depth_loss_thresh: Early-stop threshold for depth loss
+        device: Compute device
+        dtype: Data type
 
     Returns:
         Tuple of (optimized_rvecs, optimized_tvecs, optimized_points3d, final_proj, final_cam_pts)
@@ -433,6 +551,9 @@ def _run_ba_optimization(tensors, kf_ref_idx, iters, lr, rep_loss_thresh, device
     RAY_WEIGHT = 10
     DEPTH_WEIGHT = 1000
 
+    # Get point uncertainty weights (may be None)
+    point_weights = tensors.get("point_weights")
+
     for it in range(iters):
         optim.zero_grad(set_to_none=True)
 
@@ -442,14 +563,16 @@ def _run_ba_optimization(tensors, kf_ref_idx, iters, lr, rep_loss_thresh, device
             tensors["intrinsics"], device, dtype
         )
 
-        # Compute losses
-        rep_loss = _compute_reprojection_loss(proj, tensors["tracks"], tensors["mask"])
+        # Compute losses with uncertainty weights
+        rep_loss = _compute_reprojection_loss(
+            proj, tensors["tracks"], tensors["mask"], point_weights
+        )
         ray_loss = _compute_ray_loss(
             cam_pts, tensors["tracks"], tensors["mask"],
-            tensors["inv_intrinsics"], device, dtype
+            tensors["inv_intrinsics"], device, dtype, point_weights
         )
         depth_loss = _compute_depth_loss(
-            cam_pts, tensors["tracks"], tensors["mask"], tensors["depth_priors"]
+            cam_pts, tensors["tracks"], tensors["mask"], tensors["depth_priors"], point_weights
         )
 
         # Weighted total loss
@@ -457,11 +580,16 @@ def _run_ba_optimization(tensors, kf_ref_idx, iters, lr, rep_loss_thresh, device
         total_loss.backward()
 
         print(f"[bundle_adjust_keyframes] Iter {it}: rep={rep_loss.item():.4f}, "
-              f"ray={ray_loss.item():.4f}, depth={depth_loss.item():.4f}")
+              f"ray={ray_loss.item() * RAY_WEIGHT:.4f}, depth={depth_loss.item() * DEPTH_WEIGHT:.4f}, total={total_loss.item():.4f}")
 
-        # Early stopping
-        if rep_loss_thresh is not None and rep_loss.item() < rep_loss_thresh:
-            print(f"[bundle_adjust_keyframes] Early stop at iter {it}: rep_loss < {rep_loss_thresh}")
+        # Early stopping: check both reprojection and depth loss thresholds
+        rep_converged = rep_loss_thresh is None or rep_loss.item() < rep_loss_thresh
+        depth_converged = depth_loss_thresh is None or depth_loss.item() < depth_loss_thresh
+
+        if rep_converged and depth_converged:
+            print(f"[bundle_adjust_keyframes] Early stop at iter {it}: "
+                  f"rep_loss={rep_loss.item():.4f} < {rep_loss_thresh}, "
+                  f"depth_loss={depth_loss.item():.4f} < {depth_loss_thresh}")
             break
 
         # Freeze reference pose gradients
@@ -476,8 +604,25 @@ def _run_ba_optimization(tensors, kf_ref_idx, iters, lr, rep_loss_thresh, device
 
 
 def _update_image_info(image_info, keyframe_indices, rvecs_t, tvecs_t, points3d_t,
-                       proj, tracks_t, mask_t, device, dtype):
-    """Extract optimized values and update image_info."""
+                       proj, tracks_t, mask_t, valid_pts_indices, device, dtype):
+    """Extract optimized values and update image_info.
+
+    Args:
+        image_info: Original image_info dictionary
+        keyframe_indices: Indices of keyframes
+        rvecs_t: Optimized rotation vectors
+        tvecs_t: Optimized translation vectors
+        points3d_t: Optimized 3D points (only valid points)
+        proj: Final projected 2D points
+        tracks_t: Track observations
+        mask_t: Visibility mask
+        valid_pts_indices: Indices of valid points in original points_3d array
+        device: Compute device
+        dtype: Data type
+
+    Returns:
+        Updated image_info
+    """
     K = len(keyframe_indices)
 
     with torch.no_grad():
@@ -503,13 +648,22 @@ def _update_image_info(image_info, keyframe_indices, rvecs_t, tvecs_t, points3d_
         else:
             image_info["extrinsics"][kf_idx] = optimized_extrinsics[i, :3, :]
 
-    image_info["points_3d"] = optimized_points_3d
+    # Update only the valid points in the original array
+    # (points with inf uncertainty were not optimized)
+    if len(valid_pts_indices) == len(image_info["points_3d"]):
+        # All points were valid, just replace
+        image_info["points_3d"] = optimized_points_3d
+    else:
+        # Only update the valid points
+        image_info["points_3d"][valid_pts_indices] = optimized_points_3d
+        print(f"[_update_image_info] Updated {len(valid_pts_indices)}/{len(image_info['points_3d'])} points")
 
     print(f"[bundle_adjust_keyframes] Complete. Final mean reproj error: {final_rep_err:.4f}px")
     return image_info
 
 
-def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3, rep_loss_thresh=0.3):
+def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3,
+                            rep_loss_thresh=0.2, depth_loss_thresh=0.001):
     """Perform bundle adjustment on keyframes to jointly optimize 3D points and camera poses.
 
     This function optimizes the merged points_3d and extrinsics for all keyframes using:
@@ -517,50 +671,73 @@ def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3, rep_lo
     - Point-to-ray loss: ensure 3D points lie on viewing rays
     - Depth consistency loss: match predicted depth with depth priors
 
+    Points with infinite uncertainty are excluded from optimization.
+    Point uncertainties are used as inverse weights (lower uncertainty = higher weight).
+
     Args:
         image_info: Dictionary containing keyframe, points_3d, pred_tracks, track_mask,
-                   extrinsics, intrinsics, depth_priors
+                   extrinsics, intrinsics, depth_priors, uncertainties
         ref_frame_idx: Reference frame index (pose is fixed during optimization)
         iters: Number of optimization iterations
         lr: Learning rate for optimizer
         rep_loss_thresh: Early-stop threshold for reprojection loss
+        depth_loss_thresh: Early-stop threshold for depth loss
 
     Returns:
         Updated image_info with optimized points_3d and extrinsics
     """
+    # Validate required keys in image_info
+    required_keys = ["keyframe", "points_3d", "pred_tracks", "track_mask",
+                    "extrinsics", "intrinsics", "uncertainties"]
+    missing_keys = [key for key in required_keys if key not in image_info]
+    if missing_keys:
+        raise ValueError(f"[bundle_adjust_keyframes] Missing required keys in image_info: {missing_keys}")
+
     # Get keyframe indices
     keyframe_indices = np.where(image_info["keyframe"])[0]
     if len(keyframe_indices) < 2:
-        print("[bundle_adjust_keyframes] Less than 2 keyframes, skipping.")
+        print(f"[bundle_adjust_keyframes] Less than 2 keyframes ({len(keyframe_indices)}), skipping.")
+        image_info["optimized"] = False
         return image_info
 
     print(f"[bundle_adjust_keyframes] Optimizing {len(keyframe_indices)} keyframes, "
           f"{image_info['points_3d'].shape[0]} points")
 
-    # Setup device
+    # Setup device with proper handling for None depth_priors
     depth_priors = image_info.get("depth_priors")
-    device = depth_priors.device if torch.is_tensor(depth_priors) else (
-        "cuda" if torch.cuda.is_available() else "cpu"
-    )
+    if depth_priors is not None and torch.is_tensor(depth_priors):
+        device = depth_priors.device
+    elif torch.cuda.is_available():
+        device = "cuda"
+    else:
+        device = "cpu"
     dtype = torch.float32
 
-    # Step 1: Extract keyframe data
+    # Step 1: Extract keyframe data (filters out points with inf uncertainty)
     kf_data = _extract_keyframe_data(image_info, keyframe_indices, ref_frame_idx)
 
-    # Step 2: Initialize optimization tensors
+    # Check if we have enough valid points
+    if kf_data["points_3d"].shape[0] < 10:
+        print(f"[bundle_adjust_keyframes] Only {kf_data['points_3d'].shape[0]} valid points, skipping.")
+        image_info["optimized"] = False
+        return image_info
+
+    # Step 2: Initialize optimization tensors (includes uncertainty weights)
     tensors = _init_optimization_tensors(kf_data, device, dtype)
 
-    # Step 3: Run optimization
+    # Step 3: Run optimization with uncertainty-weighted losses
     rvecs_t, tvecs_t, points3d_t, proj, cam_pts = _run_ba_optimization(
-        tensors, kf_data["ref_idx"], iters, lr, rep_loss_thresh, device, dtype
+        tensors, kf_data["ref_idx"], iters, lr, rep_loss_thresh, depth_loss_thresh, device, dtype
     )
 
     # Step 4: Update image_info with optimized values
     image_info = _update_image_info(
         image_info, keyframe_indices, rvecs_t, tvecs_t, points3d_t,
-        proj, tensors["tracks"], tensors["mask"], device, dtype
+        proj, tensors["tracks"], tensors["mask"], kf_data["valid_pts_indices"], device, dtype
     )
 
+    # Mark as successfully optimized
+    image_info["optimized"] = True
     return image_info
 
 

@@ -60,7 +60,7 @@ def parse_args():
     parser.add_argument("--kf_depth_thresh", type=float, default=500, help="Keyframe depth change threshold (units)")
     parser.add_argument("--kf_inlier_thresh", type=int, default=10, help="Keyframe inlier count threshold")
     parser.add_argument("--min_track_number", type=int, default=5, help="Minimum track number for 3D point uncertainty; points with fewer tracks get high uncertainty")
-    parser.add_argument("--run_ba_on_keyframe", type=int, default=0, help="Run bundle adjustment on keyframes")
+    parser.add_argument("--run_ba_on_keyframe", type=int, default=1, help="Run bundle adjustment on keyframes")
 
     return parser.parse_args()
 
