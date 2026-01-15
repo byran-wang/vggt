@@ -57,7 +57,7 @@ def get_points_uncertainty_colors(points_3d, uncertainties, scale=0.4):
     return uncertainty_colors
 
 
-def save_point_cloud_with_conf(points_3d, points_rgb, uncertainties, ply_path):
+def save_point_cloud_with_conf(points_3d, points_rgb, uncertainties, ply_path, args):
     """Save point cloud with uncertainty-based colors.
 
     Args:
@@ -66,7 +66,7 @@ def save_point_cloud_with_conf(points_3d, points_rgb, uncertainties, ply_path):
         uncertainties: Uncertainty values for coloring
         ply_path: Output PLY file path
     """
-    conf_colors = get_points_uncertainty_colors(points_3d, uncertainties)
+    conf_colors = get_points_uncertainty_colors(points_3d, uncertainties, scale=1/args.unc_thresh)
     trimesh.PointCloud(points_3d, colors=conf_colors).export(ply_path)
 
 
@@ -171,7 +171,7 @@ def eval_reprojection(image_info, frame_idx, intr_np, pts_np, tracks_np, mask_np
     return vis_path
 
 
-def save_results(image_info, gen_3d, out_dir):
+def save_results(image_info, gen_3d, out_dir, args):
     """Persist key reconstruction artifacts for later reuse/inspection.
 
     Args:
@@ -193,7 +193,8 @@ def save_results(image_info, gen_3d, out_dir):
 
     points_conf_color = get_points_uncertainty_colors(
         points_3d=image_info.get("points_3d"),
-        uncertainties=image_info.get("uncertainties")['points3d']
+        uncertainties=image_info.get("uncertainties")['points3d'],
+        scale=1/args.unc_thresh
     )
 
     payload = {
@@ -225,7 +226,8 @@ def save_results(image_info, gen_3d, out_dir):
         image_info.get("points_3d"),
         image_info.get("points_rgb"),
         image_info.get("uncertainties")['points3d'],
-        Path(out_dir) / "points.ply"
+        Path(out_dir) / "points.ply",
+        args=args
     )
 
     # Save valid BA points as separate PLY (green color for valid points)
