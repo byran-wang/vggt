@@ -322,7 +322,7 @@ def _extract_keyframe_data(image_info, keyframe_indices, ref_frame_idx):
     return kf_data
 
 
-def _init_optimization_tensors(kf_data, device, dtype):
+def _init_optimization_tensors(kf_data, device, dtype, unc_thresh = 2.0):
     """Initialize tensors for optimization.
 
     Returns:
@@ -359,16 +359,31 @@ def _init_optimization_tensors(kf_data, device, dtype):
 
     # Prepare uncertainty weights (inverse of uncertainty)
     # Lower uncertainty = higher weight
+    # Points with uncertainty > threshold get zero weight (excluded from optimization)
     pts_unc = kf_data.get("points_unc")
     if pts_unc is not None:
-        # Compute weights as inverse of uncertainty, with clamping to avoid division issues
-        # w = 1 / (unc + eps), normalized so that mean weight = 1
         unc_t = torch.from_numpy(pts_unc).to(device=device, dtype=dtype)
-        unc_t = unc_t.clamp(min=1e-6)  # avoid division by zero
-        weights_t = 1.0 / unc_t
-        weights_t = weights_t / weights_t.mean()  # normalize to mean=1
+
+        # Create mask for valid (low uncertainty) points
+        valid_unc_mask = unc_t <= unc_thresh
+        num_excluded = (~valid_unc_mask).sum().item()
+
+        if num_excluded > 0:
+            print(f"[_init_optimization_tensors] Excluding {num_excluded} points with uncertainty > {unc_thresh}")
+
+        # Compute weights only for valid points
+        unc_t_clamped = unc_t.clamp(min=1e-6)  # avoid division by zero
+        weights_t = 1.0 / unc_t_clamped
+        weights_t[~valid_unc_mask] = 0.0  # zero weight for high uncertainty points
+
+        # Normalize by mean of non-zero weights
+        valid_weights = weights_t[valid_unc_mask]
+        if valid_weights.numel() > 0:
+            weights_t = weights_t / valid_weights.mean()  # normalize valid weights to mean=1
+
         print(f"[_init_optimization_tensors] Using uncertainty weights: min={weights_t.min().item():.3f}, "
-              f"max={weights_t.max().item():.3f}, mean={weights_t.mean().item():.3f}")
+              f"max={weights_t.max().item():.3f}, mean={weights_t[valid_unc_mask].mean().item():.3f} "
+              f"(valid: {valid_unc_mask.sum().item()}/{len(unc_t)})")
     else:
         weights_t = None
 
@@ -697,7 +712,6 @@ def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3,
     keyframe_indices = np.where(image_info["keyframe"])[0]
     if len(keyframe_indices) < 2:
         print(f"[bundle_adjust_keyframes] Less than 2 keyframes ({len(keyframe_indices)}), skipping.")
-        image_info["optimized"] = False
         return image_info
 
     print(f"[bundle_adjust_keyframes] Optimizing {len(keyframe_indices)} keyframes, "
@@ -719,7 +733,6 @@ def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3,
     # Check if we have enough valid points
     if kf_data["points_3d"].shape[0] < 10:
         print(f"[bundle_adjust_keyframes] Only {kf_data['points_3d'].shape[0]} valid points, skipping.")
-        image_info["optimized"] = False
         return image_info
 
     # Step 2: Initialize optimization tensors (includes uncertainty weights)
@@ -736,8 +749,6 @@ def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3,
         proj, tensors["tracks"], tensors["mask"], kf_data["valid_pts_indices"], device, dtype
     )
 
-    # Mark as successfully optimized
-    image_info["optimized"] = True
     return image_info
 
 
