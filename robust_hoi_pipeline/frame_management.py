@@ -363,6 +363,208 @@ def _run_bundle_adjustment(image_info, args):
     return image_info
 
 
+def _refine_keyframe_pose_3d(image_info, frame_idx, args):
+    """Step 8: Refine keyframe pose using 3D-3D correspondences with RANSAC.
+
+    Computes rigid transformation between optimized 3D points and depth-derived 3D points
+    using RANSAC to filter outliers.
+
+    Args:
+        image_info: Dictionary containing reconstruction data with ba_valid_points_mask
+        frame_idx: Keyframe index to refine
+        args: Arguments with configuration
+
+    Returns:
+        Updated image_info with refined keyframe extrinsic
+    """
+    # Get valid points mask from BA
+    ba_valid_mask = image_info.get("ba_valid_points_mask")
+    if ba_valid_mask is None:
+        print(f"[_refine_keyframe_pose_3d] No BA valid points mask available, skipping refinement")
+        return image_info
+
+    ba_valid_mask = np.asarray(ba_valid_mask).astype(bool)
+    if not np.any(ba_valid_mask):
+        print(f"[_refine_keyframe_pose_3d] No valid points after BA filtering, skipping refinement")
+        return image_info
+
+    # Get required data
+    points_3d = image_info.get("points_3d")
+    pred_tracks = image_info.get("pred_tracks")
+    track_mask = image_info.get("track_mask")
+    extrinsics = image_info.get("extrinsics")
+    intrinsics = image_info.get("intrinsics")
+    depth_priors = image_info.get("depth_priors")
+
+    if points_3d is None or pred_tracks is None or track_mask is None or depth_priors is None:
+        print(f"[_refine_keyframe_pose_3d] Missing required data, skipping refinement")
+        return image_info
+
+    # Get intrinsic and depth for this frame
+    intrinsic = intrinsics[frame_idx] if intrinsics.ndim == 3 else intrinsics
+    depth_map = depth_priors[frame_idx]
+    if torch.is_tensor(depth_map):
+        depth_map = depth_map.cpu().numpy()
+
+    # Filter points: must be valid in BA AND visible in this frame
+    frame_track_mask = np.asarray(track_mask[frame_idx]).astype(bool)
+    valid_mask = ba_valid_mask & frame_track_mask
+
+    num_valid = np.sum(valid_mask)
+    if num_valid < 10:
+        print(f"[_refine_keyframe_pose_3d] Insufficient valid points ({num_valid} < 10), skipping")
+        return image_info
+
+    print(f"[_refine_keyframe_pose_3d] Step 8: Refining keyframe {frame_idx} pose with {num_valid} valid 3D correspondences")
+
+    # Get optimized 3D points (world coordinates)
+    world_points = points_3d[valid_mask].astype(np.float64)
+
+    # Get 2D track locations and sample depth
+    track_2d = pred_tracks[frame_idx][valid_mask].astype(np.float64)
+    H, W = depth_map.shape[:2]
+
+    # Sample depth at track locations
+    u = np.round(track_2d[:, 0]).astype(np.int32)
+    v = np.round(track_2d[:, 1]).astype(np.int32)
+    u = np.clip(u, 0, W - 1)
+    v = np.clip(v, 0, H - 1)
+    sampled_depth = depth_map[v, u]
+
+    # Filter out invalid depth
+    valid_depth = sampled_depth > 0
+    if np.sum(valid_depth) < 10:
+        print(f"[_refine_keyframe_pose_3d] Insufficient valid depth samples ({np.sum(valid_depth)} < 10), skipping")
+        return image_info
+
+    world_points = world_points[valid_depth]
+    track_2d = track_2d[valid_depth]
+    sampled_depth = sampled_depth[valid_depth]
+
+    # Unproject to camera coordinates using depth
+    fx, fy = intrinsic[0, 0], intrinsic[1, 1]
+    cx, cy = intrinsic[0, 2], intrinsic[1, 2]
+    x_cam = (track_2d[:, 0] - cx) * sampled_depth / fx
+    y_cam = (track_2d[:, 1] - cy) * sampled_depth / fy
+    z_cam = sampled_depth
+    cam_points = np.stack([x_cam, y_cam, z_cam], axis=1)
+
+    # RANSAC parameters
+    ransac_iters = getattr(args, 'pose_ransac_iters', 1000)
+    ransac_thresh = getattr(args, 'pose_ransac_thresh', 0.02)  # 2cm threshold in 3D
+    min_inliers = max(6, int(len(world_points) * 0.3))
+
+    best_R, best_t = None, None
+    best_inlier_count = 0
+    best_inliers = None
+
+    N = len(world_points)
+    for _ in range(ransac_iters):
+        # Sample 3 points for minimal solution
+        indices = np.random.choice(N, 3, replace=False)
+        src = world_points[indices]  # world points
+        dst = cam_points[indices]    # camera points
+
+        # Compute rigid transformation: cam = R @ world + t
+        R, t = _compute_rigid_transform(src, dst)
+        if R is None:
+            continue
+
+        # Apply transformation to all points
+        transformed = (R @ world_points.T).T + t
+
+        # Count inliers
+        errors = np.linalg.norm(transformed - cam_points, axis=1)
+        inliers = errors < ransac_thresh
+        inlier_count = np.sum(inliers)
+
+        if inlier_count > best_inlier_count:
+            best_inlier_count = inlier_count
+            best_inliers = inliers
+            best_R, best_t = R, t
+
+    if best_inlier_count < min_inliers:
+        print(f"[_refine_keyframe_pose_3d] RANSAC failed: only {best_inlier_count} inliers (need {min_inliers}), keeping original pose")
+        return image_info
+
+    # Refine with all inliers
+    src_inliers = world_points[best_inliers]
+    dst_inliers = cam_points[best_inliers]
+    R_refined, t_refined = _compute_rigid_transform(src_inliers, dst_inliers)
+
+    if R_refined is None:
+        R_refined, t_refined = best_R, best_t
+
+    # Build extrinsic matrix (camera from world)
+    # The transformation is: P_cam = R @ P_world + t
+    # So extrinsic is [R | t]
+    R_init = extrinsics[frame_idx, :3, :3].copy()
+    t_init = extrinsics[frame_idx, :3, 3].copy()
+
+    extrinsics[frame_idx, :3, :3] = R_refined.astype(np.float32)
+    extrinsics[frame_idx, :3, 3] = t_refined.astype(np.float32)
+
+    # Compute and report improvement
+    R_delta = R_refined @ R_init.T
+    angle_change = np.rad2deg(np.arccos(np.clip((np.trace(R_delta) - 1) / 2, -1.0, 1.0)))
+    trans_change = np.linalg.norm(t_refined - t_init)
+
+    # Compute final alignment error
+    final_transformed = (R_refined @ world_points.T).T + t_refined
+    final_errors = np.linalg.norm(final_transformed - cam_points, axis=1)
+    mean_error = np.mean(final_errors[best_inliers])
+
+    print(f"[_refine_keyframe_pose_3d] Refined pose: {best_inlier_count}/{N} inliers, "
+          f"mean 3D error: {mean_error:.4f}m, rotation change: {angle_change:.3f}°, "
+          f"translation change: {trans_change:.4f}m")
+
+    return image_info
+
+
+def _compute_rigid_transform(src, dst):
+    """Compute rigid transformation (R, t) such that dst = R @ src + t.
+
+    Uses SVD-based Procrustes analysis.
+
+    Args:
+        src: Source points [N, 3]
+        dst: Destination points [N, 3]
+
+    Returns:
+        Tuple of (R, t) or (None, None) if computation fails
+    """
+    if len(src) < 3:
+        return None, None
+
+    # Center the points
+    src_mean = np.mean(src, axis=0)
+    dst_mean = np.mean(dst, axis=0)
+    src_centered = src - src_mean
+    dst_centered = dst - dst_mean
+
+    # Compute covariance matrix
+    H = src_centered.T @ dst_centered
+
+    # SVD
+    try:
+        U, S, Vt = np.linalg.svd(H)
+    except np.linalg.LinAlgError:
+        return None, None
+
+    # Compute rotation
+    R = Vt.T @ U.T
+
+    # Handle reflection case
+    if np.linalg.det(R) < 0:
+        Vt[-1, :] *= -1
+        R = Vt.T @ U.T
+
+    # Compute translation
+    t = dst_mean - R @ src_mean
+
+    return R, t
+
+
 def process_key_frame(image_info, gen_3d, frame_idx, args):
     """Process frame designated as keyframe with multi-step workflow.
 
@@ -374,6 +576,7 @@ def process_key_frame(image_info, gen_3d, frame_idx, args):
         5. Merge the new tracks with existing tracks
         6. Propagate uncertainties using all keyframes
         7. (Optional) Run bundle adjustment on keyframes
+        8. Refine keyframe pose using 3D-3D correspondences with valid (low-uncertainty) points
 
     Args:
         image_info: Dictionary containing reconstruction data
@@ -432,6 +635,9 @@ def process_key_frame(image_info, gen_3d, frame_idx, args):
 
         # Step 7: Optional bundle adjustment
         image_info = _run_bundle_adjustment(image_info, args)
+
+        # Step 8: Refine keyframe pose using 3D-3D correspondences with valid points
+        image_info = _refine_keyframe_pose_3d(image_info, frame_idx, args)
 
     finally:
         # Restore original query index
