@@ -258,11 +258,264 @@ def propagate_uncertainties(
     return uncertainties
 
 
+def _extract_keyframe_data(image_info, keyframe_indices, ref_frame_idx):
+    """Extract keyframe-specific data from image_info.
+
+    Returns:
+        Dictionary with keyframe data and reference index within keyframe subset
+    """
+    kf_data = {
+        "tracks": image_info["pred_tracks"][keyframe_indices],      # [K, N, 2]
+        "mask": image_info["track_mask"][keyframe_indices],         # [K, N]
+        "extrinsics": image_info["extrinsics"][keyframe_indices],   # [K, 4, 4]
+        "intrinsics": image_info["intrinsics"][keyframe_indices],   # [K, 3, 3]
+        "points_3d": image_info["points_3d"],                       # [P, 3]
+    }
+
+    # Extract depth priors if available
+    depth_priors = image_info.get("depth_priors")
+    if depth_priors is not None:
+        kf_data["depth_priors"] = depth_priors[keyframe_indices]
+    else:
+        kf_data["depth_priors"] = None
+
+    # Find reference index within keyframe subset
+    kf_ref_idx = np.where(keyframe_indices == ref_frame_idx)[0]
+    kf_data["ref_idx"] = kf_ref_idx[0] if len(kf_ref_idx) > 0 else 0
+
+    return kf_data
+
+
+def _init_optimization_tensors(kf_data, device, dtype):
+    """Initialize tensors for optimization.
+
+    Returns:
+        Dictionary with initialized tensors and optimizer
+    """
+    K = len(kf_data["extrinsics"])
+
+    # Convert to tensors
+    points3d_t = torch.from_numpy(kf_data["points_3d"]).to(device=device, dtype=dtype)
+    points3d_t.requires_grad_(True)
+
+    tracks_t = torch.from_numpy(kf_data["tracks"]).to(device=device, dtype=dtype)
+    mask_t = torch.from_numpy(kf_data["mask"]).to(device=device)
+    intr_t = torch.from_numpy(kf_data["intrinsics"]).to(device=device, dtype=dtype)
+
+    # Convert extrinsics to rotation vectors (Rodrigues) and translation vectors
+    rvecs, tvecs = [], []
+    for i in range(K):
+        rvec, _ = cv2.Rodrigues(kf_data["extrinsics"][i, :3, :3])
+        rvecs.append(rvec.reshape(-1))
+        tvecs.append(kf_data["extrinsics"][i, :3, 3])
+
+    rvecs_t = torch.from_numpy(np.stack(rvecs)).to(device=device, dtype=dtype)
+    tvecs_t = torch.from_numpy(np.stack(tvecs)).to(device=device, dtype=dtype)
+    rvecs_t.requires_grad_(True)
+    tvecs_t.requires_grad_(True)
+
+    # Prepare depth priors
+    kf_depth = kf_data["depth_priors"]
+    if kf_depth is not None:
+        if not torch.is_tensor(kf_depth):
+            kf_depth = torch.from_numpy(kf_depth)
+        kf_depth = kf_depth.to(device=device, dtype=dtype)
+
+    return {
+        "points3d": points3d_t,
+        "tracks": tracks_t,
+        "mask": mask_t,
+        "intrinsics": intr_t,
+        "inv_intrinsics": torch.inverse(intr_t),
+        "rvecs": rvecs_t,
+        "tvecs": tvecs_t,
+        "depth_priors": kf_depth,
+    }
+
+
+def _project_points(points3d_t, rvecs_t, tvecs_t, intr_t, device, dtype):
+    """Project 3D points to 2D using current pose estimates.
+
+    Returns:
+        Tuple of (projected_2d, camera_points_3d)
+    """
+    K = rvecs_t.shape[0]
+    P = points3d_t.shape[0]
+
+    R = axis_angle_to_matrix(rvecs_t)
+    extr_mat = torch.cat([R, tvecs_t.unsqueeze(-1)], dim=-1)  # K,3,4
+
+    ones = torch.ones((K, P, 1), device=device, dtype=dtype)
+    pts_h = torch.cat([points3d_t.unsqueeze(0).expand(K, -1, -1), ones], dim=-1)  # K,P,4
+    cam_pts = torch.bmm(extr_mat, pts_h.transpose(1, 2))  # K,3,P
+
+    z = cam_pts[:, 2:3, :]
+    uv = cam_pts[:, :2, :] / (z + 1e-6)
+    ones2 = torch.ones((K, 1, P), device=device, dtype=dtype)
+    uv_h = torch.cat([uv, ones2], dim=1)
+    proj = torch.bmm(intr_t, uv_h)[:, :2, :].transpose(1, 2)  # K,P,2
+
+    return proj, cam_pts
+
+
+def _compute_reprojection_loss(proj, tracks_t, mask_t):
+    """Compute reprojection loss between projected and observed 2D points."""
+    rep_raw = proj - tracks_t
+    valid = mask_t.unsqueeze(-1).to(rep_raw.dtype)
+
+    rep_loss = torch.nn.functional.smooth_l1_loss(
+        rep_raw * valid, torch.zeros_like(rep_raw), reduction="sum"
+    ) / (valid.sum() * rep_raw.shape[-1] + 1e-8)
+
+    return rep_loss
+
+
+def _compute_ray_loss(cam_pts, tracks_t, mask_t, inv_intr_t, device, dtype):
+    """Compute point-to-ray consistency loss."""
+    K, _, P = cam_pts.shape
+
+    uv1 = torch.cat([tracks_t, torch.ones((K, P, 1), device=device, dtype=dtype)], dim=-1)
+    rays = torch.bmm(inv_intr_t, uv1.transpose(1, 2))  # K,3,P
+    rays = torch.nn.functional.normalize(rays, dim=1, eps=1e-6)
+
+    cross = torch.cross(cam_pts, rays, dim=1)
+    ray_raw = torch.linalg.norm(cross, dim=1)  # K,P
+    valid = mask_t.to(ray_raw.dtype)
+
+    ray_loss = torch.nn.functional.smooth_l1_loss(
+        ray_raw * valid, torch.zeros_like(ray_raw), reduction="sum"
+    ) / (valid.sum() + 1e-8)
+
+    return ray_loss
+
+
+def _compute_depth_loss(cam_pts, tracks_t, mask_t, kf_depth_priors):
+    """Compute depth consistency loss against depth priors."""
+    if kf_depth_priors is None:
+        return torch.zeros((), device=cam_pts.device, dtype=cam_pts.dtype)
+
+    z_pred = cam_pts[:, 2, :]  # K, P
+    H, W = kf_depth_priors.shape[-2:]
+
+    # Sample depth priors at track locations
+    grid_x = 2.0 * tracks_t[..., 0] / (W - 1) - 1.0
+    grid_y = 2.0 * tracks_t[..., 1] / (H - 1) - 1.0
+    grid = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(2)
+
+    depth_prior_sampled = torch.nn.functional.grid_sample(
+        kf_depth_priors.unsqueeze(1), grid,
+        mode='bilinear', padding_mode='zeros', align_corners=True
+    ).squeeze(1).squeeze(-1)
+
+    valid_depth_mask = (depth_prior_sampled > 0) & mask_t
+    if not valid_depth_mask.any():
+        return torch.zeros((), device=cam_pts.device, dtype=cam_pts.dtype)
+
+    depth_raw = z_pred - depth_prior_sampled
+    valid = valid_depth_mask.to(depth_raw.dtype)
+
+    depth_loss = torch.nn.functional.smooth_l1_loss(
+        depth_raw * valid, torch.zeros_like(depth_raw), reduction="sum"
+    ) / (valid.sum() + 1e-8)
+
+    return depth_loss
+
+
+def _run_ba_optimization(tensors, kf_ref_idx, iters, lr, rep_loss_thresh, device, dtype):
+    """Run the bundle adjustment optimization loop.
+
+    Returns:
+        Tuple of (optimized_rvecs, optimized_tvecs, optimized_points3d, final_proj, final_cam_pts)
+    """
+    optim = torch.optim.Adam([tensors["rvecs"], tensors["tvecs"], tensors["points3d"]], lr=lr)
+
+    # Loss weights
+    RAY_WEIGHT = 10
+    DEPTH_WEIGHT = 1000
+
+    for it in range(iters):
+        optim.zero_grad(set_to_none=True)
+
+        # Forward pass: project points
+        proj, cam_pts = _project_points(
+            tensors["points3d"], tensors["rvecs"], tensors["tvecs"],
+            tensors["intrinsics"], device, dtype
+        )
+
+        # Compute losses
+        rep_loss = _compute_reprojection_loss(proj, tensors["tracks"], tensors["mask"])
+        ray_loss = _compute_ray_loss(
+            cam_pts, tensors["tracks"], tensors["mask"],
+            tensors["inv_intrinsics"], device, dtype
+        )
+        depth_loss = _compute_depth_loss(
+            cam_pts, tensors["tracks"], tensors["mask"], tensors["depth_priors"]
+        )
+
+        # Weighted total loss
+        total_loss = rep_loss + RAY_WEIGHT * ray_loss + DEPTH_WEIGHT * depth_loss
+        total_loss.backward()
+
+        print(f"[bundle_adjust_keyframes] Iter {it}: rep={rep_loss.item():.4f}, "
+              f"ray={ray_loss.item():.4f}, depth={depth_loss.item():.4f}")
+
+        # Early stopping
+        if rep_loss_thresh is not None and rep_loss.item() < rep_loss_thresh:
+            print(f"[bundle_adjust_keyframes] Early stop at iter {it}: rep_loss < {rep_loss_thresh}")
+            break
+
+        # Freeze reference pose gradients
+        if tensors["rvecs"].grad is not None:
+            tensors["rvecs"].grad[kf_ref_idx].zero_()
+        if tensors["tvecs"].grad is not None:
+            tensors["tvecs"].grad[kf_ref_idx].zero_()
+
+        optim.step()
+
+    return tensors["rvecs"], tensors["tvecs"], tensors["points3d"], proj, cam_pts
+
+
+def _update_image_info(image_info, keyframe_indices, rvecs_t, tvecs_t, points3d_t,
+                       proj, tracks_t, mask_t, device, dtype):
+    """Extract optimized values and update image_info."""
+    K = len(keyframe_indices)
+
+    with torch.no_grad():
+        # Build optimized extrinsics
+        R_final = axis_angle_to_matrix(rvecs_t)
+        extr_final = torch.zeros((K, 4, 4), device=device, dtype=dtype)
+        extr_final[:, :3, :3] = R_final
+        extr_final[:, :3, 3] = tvecs_t
+        extr_final[:, 3, 3] = 1.0
+
+        optimized_extrinsics = extr_final.cpu().numpy()
+        optimized_points_3d = points3d_t.cpu().numpy()
+
+        # Compute final reprojection error
+        rep_err = (proj - tracks_t) * mask_t.unsqueeze(-1)
+        final_rep_err = torch.linalg.norm(rep_err, dim=-1).mean().item()
+
+    # Update extrinsics for keyframes
+    extr_shape = image_info["extrinsics"].shape[-2:]
+    for i, kf_idx in enumerate(keyframe_indices):
+        if extr_shape == (4, 4):
+            image_info["extrinsics"][kf_idx] = optimized_extrinsics[i]
+        else:
+            image_info["extrinsics"][kf_idx] = optimized_extrinsics[i, :3, :]
+
+    image_info["points_3d"] = optimized_points_3d
+
+    print(f"[bundle_adjust_keyframes] Complete. Final mean reproj error: {final_rep_err:.4f}px")
+    return image_info
+
+
 def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3, rep_loss_thresh=0.3):
     """Perform bundle adjustment on keyframes to jointly optimize 3D points and camera poses.
 
-    This function optimizes the merged points_3d and extrinsics for all keyframes using
-    reprojection and point-to-ray losses, similar to traditional bundle adjustment.
+    This function optimizes the merged points_3d and extrinsics for all keyframes using:
+    - Reprojection loss: minimize 2D reprojection error
+    - Point-to-ray loss: ensure 3D points lie on viewing rays
+    - Depth consistency loss: match predicted depth with depth priors
 
     Args:
         image_info: Dictionary containing keyframe, points_3d, pred_tracks, track_mask,
@@ -275,181 +528,38 @@ def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3, rep_lo
     Returns:
         Updated image_info with optimized points_3d and extrinsics
     """
-    keyframe_mask = image_info["keyframe"]
-    keyframe_indices = np.where(keyframe_mask)[0]
-
+    # Get keyframe indices
+    keyframe_indices = np.where(image_info["keyframe"])[0]
     if len(keyframe_indices) < 2:
-        print("[bundle_adjust_keyframes] Less than 2 keyframes, skipping bundle adjustment.")
+        print("[bundle_adjust_keyframes] Less than 2 keyframes, skipping.")
         return image_info
 
-    points_3d = image_info["points_3d"]
-    pred_tracks = image_info["pred_tracks"]
-    track_mask = image_info["track_mask"]
-    extrinsics = image_info["extrinsics"]
-    intrinsics = image_info["intrinsics"]
-    depth_priors = image_info["depth_priors"]
-
-    # Extract keyframe-only data
-    kf_tracks = pred_tracks[keyframe_indices]  # [K, N, 2]
-    kf_mask = track_mask[keyframe_indices]  # [K, N]
-    kf_extrinsics = extrinsics[keyframe_indices]  # [K, 4, 4]
-    kf_intrinsics = intrinsics[keyframe_indices]  # [K, 3, 3]
-
-    # Find the reference index within the keyframe subset
-    kf_ref_idx = np.where(keyframe_indices == ref_frame_idx)[0]
-    if len(kf_ref_idx) == 0:
-        # Reference frame is not a keyframe, use first keyframe as reference
-        kf_ref_idx = 0
-    else:
-        kf_ref_idx = kf_ref_idx[0]
-
     print(f"[bundle_adjust_keyframes] Optimizing {len(keyframe_indices)} keyframes, "
-          f"{points_3d.shape[0]} points, ref_idx={kf_ref_idx}")
+          f"{image_info['points_3d'].shape[0]} points")
 
-    # Run optimization
-    device = depth_priors.device if torch.is_tensor(depth_priors) else "cuda" if torch.cuda.is_available() else "cpu"
+    # Setup device
+    depth_priors = image_info.get("depth_priors")
+    device = depth_priors.device if torch.is_tensor(depth_priors) else (
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
     dtype = torch.float32
 
-    K = len(keyframe_indices)
-    P = points_3d.shape[0]
+    # Step 1: Extract keyframe data
+    kf_data = _extract_keyframe_data(image_info, keyframe_indices, ref_frame_idx)
 
-    points3d_t = torch.from_numpy(points_3d).to(device=device, dtype=dtype)
-    points3d_t.requires_grad_(True)
-    tracks_t = torch.from_numpy(kf_tracks).to(device=device, dtype=dtype)
-    mask_t = torch.from_numpy(kf_mask).to(device=device)
+    # Step 2: Initialize optimization tensors
+    tensors = _init_optimization_tensors(kf_data, device, dtype)
 
-    intr_t = torch.from_numpy(kf_intrinsics).to(device=device, dtype=dtype)
+    # Step 3: Run optimization
+    rvecs_t, tvecs_t, points3d_t, proj, cam_pts = _run_ba_optimization(
+        tensors, kf_data["ref_idx"], iters, lr, rep_loss_thresh, device, dtype
+    )
 
-    # Convert extrinsics to rotation vectors and translation vectors
-    rvecs = []
-    tvecs = []
-    for i in range(K):
-        rvec, _ = cv2.Rodrigues(kf_extrinsics[i, :3, :3])
-        rvecs.append(rvec.reshape(-1))
-        tvecs.append(kf_extrinsics[i, :3, 3])
-    rvecs_t = torch.from_numpy(np.stack(rvecs)).to(device=device, dtype=dtype)
-    tvecs_t = torch.from_numpy(np.stack(tvecs)).to(device=device, dtype=dtype)
-    rvecs_t.requires_grad_(True)
-    tvecs_t.requires_grad_(True)
-
-    optim = torch.optim.Adam([rvecs_t, tvecs_t, points3d_t], lr=lr)
-    inv_intr_t = torch.inverse(intr_t)
-
-    # Prepare depth priors for keyframes
-    kf_depth_priors = depth_priors[keyframe_indices] if depth_priors is not None else None
-    if kf_depth_priors is not None:
-        if not torch.is_tensor(kf_depth_priors):
-            kf_depth_priors = torch.from_numpy(kf_depth_priors)
-        kf_depth_priors = kf_depth_priors.to(device=device, dtype=dtype)
-
-    for it in range(iters):
-        optim.zero_grad(set_to_none=True)
-        R = axis_angle_to_matrix(rvecs_t)
-        extr_mat = torch.cat([R, tvecs_t.unsqueeze(-1)], dim=-1)  # K,3,4
-        ones = torch.ones((K, P, 1), device=device, dtype=dtype)
-        pts_h = torch.cat([points3d_t.unsqueeze(0).expand(K, -1, -1), ones], dim=-1)  # K,P,4
-        cam_pts = torch.bmm(extr_mat, pts_h.transpose(1, 2))  # K,3,P
-
-        z = cam_pts[:, 2:3, :]
-        uv = cam_pts[:, :2, :] / (z + 1e-6)
-        ones2 = torch.ones((K, 1, P), device=device, dtype=dtype)
-        uv_h = torch.cat([uv, ones2], dim=1)
-        proj = torch.bmm(intr_t, uv_h)[:, :2, :].transpose(1, 2)  # K,P,2
-
-        rep_raw = proj - tracks_t                          # K,P,2
-        valid = mask_t.unsqueeze(-1).to(rep_raw.dtype)     # K,P,1
-
-        rep_loss = torch.nn.functional.smooth_l1_loss(
-            rep_raw * valid,
-            torch.zeros_like(rep_raw),
-            reduction="sum"
-        ) / (valid.sum() * rep_raw.shape[-1] + 1e-8)
-
-        # Point-to-ray consistency loss
-        uv1 = torch.cat([tracks_t, torch.ones((K, P, 1), device=device, dtype=dtype)], dim=-1)  # K,P,3
-        rays = torch.bmm(inv_intr_t, uv1.transpose(1, 2))  # K,3,P
-        rays = torch.nn.functional.normalize(rays, dim=1, eps=1e-6)
-        cross = torch.cross(cam_pts, rays, dim=1)
-        ray_raw = torch.linalg.norm(cross, dim=1)          # K,P
-        valid = mask_t.to(ray_raw.dtype)                   # K,P
-
-        ray_loss = torch.nn.functional.smooth_l1_loss(
-            ray_raw * valid,
-            torch.zeros_like(ray_raw),
-            reduction="sum"
-        ) / (valid.sum() + 1e-8)
-
-        # Depth consistency loss
-        depth_loss = torch.zeros((), device=device, dtype=dtype)
-        if kf_depth_priors is not None:
-            z_pred = cam_pts[:, 2, :]  # K, P
-            H, W = kf_depth_priors.shape[-2:]
-            grid_x = 2.0 * tracks_t[..., 0] / (W - 1) - 1.0
-            grid_y = 2.0 * tracks_t[..., 1] / (H - 1) - 1.0
-            grid = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(2)
-
-            depth_prior_sampled = torch.nn.functional.grid_sample(
-                kf_depth_priors.unsqueeze(1),
-                grid,
-                mode='bilinear',
-                padding_mode='zeros',
-                align_corners=True
-            ).squeeze(1).squeeze(-1)
-
-            valid_depth_mask = (depth_prior_sampled > 0) & mask_t
-            if valid_depth_mask.any():
-                depth_raw = z_pred - depth_prior_sampled
-                valid = valid_depth_mask.to(depth_raw.dtype)
-                depth_loss = torch.nn.functional.smooth_l1_loss(
-                    depth_raw * valid,
-                    torch.zeros_like(depth_raw),
-                    reduction="sum"
-                ) / (valid.sum() + 1e-8)
-
-        ray_loss *= 10
-        depth_loss *= 1000
-        loss = rep_loss + ray_loss + depth_loss
-        loss.backward()
-        print(f"[bundle_adjust_keyframes] Iter {it}: rep_loss={rep_loss.item():.4f}, "
-              f"ray_loss={ray_loss.item():.4f}, depth_loss={depth_loss.item():.4f}")
-
-        if rep_loss_thresh is not None and rep_loss.item() < rep_loss_thresh:
-            print(f"[bundle_adjust_keyframes] Early stop at iter {it}: rep_loss {rep_loss.item():.6f} < {rep_loss_thresh}")
-            break
-
-        # Freeze reference pose update
-        if rvecs_t.grad is not None:
-            rvecs_t.grad[kf_ref_idx].zero_()
-        if tvecs_t.grad is not None:
-            tvecs_t.grad[kf_ref_idx].zero_()
-        optim.step()
-
-    # Extract optimized values
-    with torch.no_grad():
-        R_final = axis_angle_to_matrix(rvecs_t)
-        extr_final = torch.zeros((K, 4, 4), device=device, dtype=dtype)
-        extr_final[:, :3, :3] = R_final
-        extr_final[:, :3, 3] = tvecs_t
-        extr_final[:, 3, 3] = 1.0
-
-        optimized_extrinsics = extr_final.cpu().numpy()
-        optimized_points_3d = points3d_t.cpu().numpy()
-
-    # Update image_info with optimized values
-    extr_shape = image_info["extrinsics"].shape[-2:]
-    for i, kf_idx in enumerate(keyframe_indices):
-        if extr_shape == (4, 4):
-            image_info["extrinsics"][kf_idx] = optimized_extrinsics[i]
-        else:
-            image_info["extrinsics"][kf_idx] = optimized_extrinsics[i, :3, :]
-
-    image_info["points_3d"] = optimized_points_3d
-
-    # Compute final reprojection error
-    with torch.no_grad():
-        rep_err = (proj - tracks_t) * mask_t.unsqueeze(-1)
-        final_rep_err = torch.linalg.norm(rep_err, dim=-1).mean().item()
-    print(f"[bundle_adjust_keyframes] Optimization complete. Final mean reproj error: {final_rep_err:.4f}px")
+    # Step 4: Update image_info with optimized values
+    image_info = _update_image_info(
+        image_info, keyframe_indices, rvecs_t, tvecs_t, points3d_t,
+        proj, tensors["tracks"], tensors["mask"], device, dtype
+    )
 
     return image_info
 
