@@ -24,12 +24,12 @@ sys.path.append("third_party/utils_simba")
 from utils_simba.depth import save_depth
 
 
-def get_points_uncertainty_colors(points_3d, uncertainties):
+def get_points_uncertainty_colors(points_3d, uncertainties, scale=0.4):
     """Map uncertainty values to RGB colors for visualization.
 
     Args:
         points_3d: 3D point coordinates
-        uncertainties: Uncertainty values for each point
+        uncertainties: Uncertainty values for each point (expected in [0, 1] range)
 
     Returns:
         RGB colors array where green=low uncertainty, red=high uncertainty
@@ -39,15 +39,17 @@ def get_points_uncertainty_colors(points_3d, uncertainties):
     finite_mask = np.isfinite(uncertainty)
     if finite_mask.any():
         finite_uncertainty = uncertainty[finite_mask]
-        uncertainty_norm = finite_uncertainty / (finite_uncertainty.max() + 1e-8)
+        finite_uncertainty *= scale # scale to [0, scale] for better color contrast
+        # Use absolute uncertainty values clamped to [0, 1] instead of normalizing
+        uncertainty_clamped = np.clip(finite_uncertainty, 0.0, 1.0)
         finite_colors = np.stack(
             [
-                uncertainty_norm * 255.0,  # red channel high -> low confidence
-                (1.0 - uncertainty_norm) * 255.0,          # green channel high -> high confidence
-                np.zeros_like(uncertainty_norm),
+                uncertainty_clamped * 255.0,  # red channel high -> low confidence
+                (1.0 - uncertainty_clamped) * 255.0,  # green channel high -> high confidence
+                np.zeros_like(uncertainty_clamped),
             ],
             axis=-1,
-        ).clip(0, 255).astype(np.uint8)
+        ).astype(np.uint8)
         uncertainty_colors[finite_mask] = finite_colors
     # Non-finite uncertainties (e.g., np.inf) remain black.
     if len(uncertainty_colors) != len(points_3d):
