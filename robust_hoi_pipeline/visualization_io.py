@@ -209,6 +209,12 @@ def save_results(image_info, gen_3d, out_dir):
         "invalid": _to_cpu_numpy(image_info.get("invalid")),
         "keyframe": _to_cpu_numpy(image_info.get("keyframe")),
         "aligned_pose": gen_3d.get_aligned_pose() if hasattr(gen_3d, "get_aligned_pose") else None,
+        # BA optimization data
+        "ba_valid_points_mask": _to_cpu_numpy(image_info.get("ba_valid_points_mask")),
+        "ba_optimized_depth": _to_cpu_numpy(image_info.get("ba_optimized_depth")),
+        "ba_keyframe_indices": _to_cpu_numpy(image_info.get("ba_keyframe_indices")),
+        "ba_valid_pts_indices": _to_cpu_numpy(image_info.get("ba_valid_pts_indices")),
+        "ba_depth_prior_sampled": _to_cpu_numpy(image_info.get("ba_depth_prior_sampled")),
     }
 
     out_path = Path(out_dir) / "results.pkl"
@@ -221,6 +227,20 @@ def save_results(image_info, gen_3d, out_dir):
         image_info.get("uncertainties")['points3d'],
         Path(out_dir) / "points.ply"
     )
+
+    # Save valid BA points as separate PLY (green color for valid points)
+    ba_valid_mask = image_info.get("ba_valid_points_mask")
+    if ba_valid_mask is not None:
+        points_3d = image_info.get("points_3d")
+        valid_points = points_3d[ba_valid_mask]
+        if len(valid_points) > 0:
+            valid_colors = np.zeros((len(valid_points), 3), dtype=np.uint8)
+            valid_colors[:, 1] = 255  # Green for valid points
+            trimesh.PointCloud(valid_points, colors=valid_colors).export(
+                Path(out_dir) / "points_ba_valid.ply"
+            )
+            print(f"[save_results] Saved {len(valid_points)} BA-valid points to points_ba_valid.ply")
+
     save_depth_prior_with_uncertainty(
         image_info.get("depth_priors"),
         image_info.get("uncertainties")['depth_prior'],

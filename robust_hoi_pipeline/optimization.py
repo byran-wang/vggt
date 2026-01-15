@@ -386,6 +386,7 @@ def _init_optimization_tensors(kf_data, device, dtype, unc_thresh = 2.0):
               f"(valid: {valid_unc_mask.sum().item()}/{len(unc_t)})")
     else:
         weights_t = None
+        valid_unc_mask = None
 
     return {
         "points3d": points3d_t,
@@ -397,6 +398,7 @@ def _init_optimization_tensors(kf_data, device, dtype, unc_thresh = 2.0):
         "tvecs": tvecs_t,
         "depth_priors": kf_depth,
         "point_weights": weights_t,  # [P] or None
+        "valid_unc_mask": valid_unc_mask,  # [P] bool tensor or None
     }
 
 
@@ -619,7 +621,8 @@ def _run_ba_optimization(tensors, kf_ref_idx, iters, lr, rep_loss_thresh, depth_
 
 
 def _update_image_info(image_info, keyframe_indices, rvecs_t, tvecs_t, points3d_t,
-                       proj, tracks_t, mask_t, valid_pts_indices, device, dtype):
+                       proj, cam_pts, tracks_t, mask_t, valid_pts_indices, valid_unc_mask,
+                       depth_priors, device, dtype):
     """Extract optimized values and update image_info.
 
     Args:
@@ -629,9 +632,12 @@ def _update_image_info(image_info, keyframe_indices, rvecs_t, tvecs_t, points3d_
         tvecs_t: Optimized translation vectors
         points3d_t: Optimized 3D points (only valid points)
         proj: Final projected 2D points
+        cam_pts: Points in camera coordinates [K, 3, P]
         tracks_t: Track observations
         mask_t: Visibility mask
         valid_pts_indices: Indices of valid points in original points_3d array
+        valid_unc_mask: Boolean mask for points with valid (low) uncertainty [P]
+        depth_priors: Depth prior maps [K, H, W]
         device: Compute device
         dtype: Data type
 
@@ -655,6 +661,10 @@ def _update_image_info(image_info, keyframe_indices, rvecs_t, tvecs_t, points3d_
         rep_err = (proj - tracks_t) * mask_t.unsqueeze(-1)
         final_rep_err = torch.linalg.norm(rep_err, dim=-1).mean().item()
 
+        # Extract optimized depth (z-coordinate in camera space) for each keyframe
+        # cam_pts shape: [K, 3, P] -> z values: [K, P]
+        optimized_depth_per_kf = cam_pts[:, 2, :].cpu().numpy()  # [K, P]
+
     # Update extrinsics for keyframes
     extr_shape = image_info["extrinsics"].shape[-2:]
     for i, kf_idx in enumerate(keyframe_indices):
@@ -673,7 +683,35 @@ def _update_image_info(image_info, keyframe_indices, rvecs_t, tvecs_t, points3d_
         image_info["points_3d"][valid_pts_indices] = optimized_points_3d
         print(f"[_update_image_info] Updated {len(valid_pts_indices)}/{len(image_info['points_3d'])} points")
 
+    # Store valid uncertainty mask (maps back to filtered points, not original)
+    # Create full-size mask for original points array
+    full_valid_mask = np.zeros(len(image_info["points_3d"]), dtype=bool)
+    if valid_unc_mask is not None:
+        valid_unc_mask_np = valid_unc_mask.cpu().numpy()
+        full_valid_mask[valid_pts_indices] = valid_unc_mask_np
+    else:
+        full_valid_mask[valid_pts_indices] = True  # All filtered points are valid
+
+    image_info["ba_valid_points_mask"] = full_valid_mask
+    image_info["ba_optimized_depth"] = optimized_depth_per_kf  # [K, P_filtered]
+    image_info["ba_keyframe_indices"] = keyframe_indices
+    image_info["ba_valid_pts_indices"] = valid_pts_indices  # Indices into original points
+
+    # Sample depth priors at track locations for comparison
+    if depth_priors is not None:
+        H, W = depth_priors.shape[-2:]
+        grid_x = 2.0 * tracks_t[..., 0] / (W - 1) - 1.0
+        grid_y = 2.0 * tracks_t[..., 1] / (H - 1) - 1.0
+        grid = torch.stack([grid_x, grid_y], dim=-1).unsqueeze(2)
+
+        depth_prior_sampled = torch.nn.functional.grid_sample(
+            depth_priors.unsqueeze(1), grid,
+            mode='bilinear', padding_mode='zeros', align_corners=True
+        ).squeeze(1).squeeze(-1)
+        image_info["ba_depth_prior_sampled"] = depth_prior_sampled.cpu().numpy()  # [K, P_filtered]
+
     print(f"[bundle_adjust_keyframes] Complete. Final mean reproj error: {final_rep_err:.4f}px")
+    print(f"[bundle_adjust_keyframes] Valid points for BA: {full_valid_mask.sum()}/{len(full_valid_mask)}")
     return image_info
 
 
@@ -746,7 +784,8 @@ def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3,
     # Step 4: Update image_info with optimized values
     image_info = _update_image_info(
         image_info, keyframe_indices, rvecs_t, tvecs_t, points3d_t,
-        proj, tensors["tracks"], tensors["mask"], kf_data["valid_pts_indices"], device, dtype
+        proj, cam_pts, tensors["tracks"], tensors["mask"], kf_data["valid_pts_indices"],
+        tensors["valid_unc_mask"], tensors["depth_priors"], device, dtype
     )
 
     return image_info

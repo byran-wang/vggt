@@ -462,6 +462,96 @@ def log_points_3d(
     visualizer.log_points("/our/points_conf", pts, colors=points_conf_color, static=False)
 
 
+def log_ba_valid_points(
+    visualizer: Visualizer,
+    points_3d,
+    ba_valid_points_mask,
+    ba_optimized_depth=None,
+    ba_depth_prior_sampled=None,
+    ba_keyframe_indices=None,
+    ba_valid_pts_indices=None,
+):
+    """Log BA-valid 3D points and depth comparison.
+
+    Args:
+        visualizer: Rerun visualizer
+        points_3d: All 3D points
+        ba_valid_points_mask: Boolean mask for valid BA points
+        ba_optimized_depth: Optimized depth per keyframe [K, P_filtered]
+        ba_depth_prior_sampled: Sampled depth prior per keyframe [K, P_filtered]
+        ba_keyframe_indices: Keyframe indices array
+        ba_valid_pts_indices: Valid point indices into original points array
+    """
+    if points_3d is None or ba_valid_points_mask is None:
+        return
+
+    pts = np.asarray(points_3d)
+    mask = np.asarray(ba_valid_points_mask).astype(bool)
+
+    if mask.shape[0] != pts.shape[0]:
+        print(f"[log_ba_valid_points] Shape mismatch: points {pts.shape}, mask {mask.shape}")
+        return
+
+    valid_pts = pts[mask]
+    if len(valid_pts) == 0:
+        return
+
+    # Log valid points in green
+    valid_colors = np.zeros((len(valid_pts), 3), dtype=np.uint8)
+    valid_colors[:, 1] = 255  # Green
+    visualizer.log_points("/our/points_ba_valid", valid_pts, colors=valid_colors, static=False)
+
+    # Log invalid points in red (semi-transparent)
+    # invalid_pts = pts[~mask]
+    # if len(invalid_pts) > 0:
+    #     invalid_colors = np.zeros((len(invalid_pts), 3), dtype=np.uint8)
+    #     invalid_colors[:, 0] = 255  # Red
+    #     visualizer.log_points("/our/points_ba_invalid", invalid_pts, colors=invalid_colors, static=False)
+
+    # Log depth comparison if available
+    if (ba_optimized_depth is not None and ba_depth_prior_sampled is not None
+            and ba_keyframe_indices is not None and ba_valid_pts_indices is not None):
+        # Compute depth error for valid points across keyframes
+        opt_depth = np.asarray(ba_optimized_depth)  # [K, P_filtered]
+        prior_depth = np.asarray(ba_depth_prior_sampled)  # [K, P_filtered]
+
+        # Compute mean depth error per point (across keyframes where visible)
+        valid_prior = prior_depth > 0
+        depth_diff = np.abs(opt_depth - prior_depth)
+        depth_diff[~valid_prior] = 0
+
+        # Mean error per point
+        valid_count = valid_prior.sum(axis=0)
+        valid_count = np.maximum(valid_count, 1)
+        mean_depth_error = depth_diff.sum(axis=0) / valid_count
+
+        # Color by depth error (green=low error, red=high error)
+        # Normalize to [0, 1] with max error of 0.1m
+        error_norm = np.clip(mean_depth_error / 0.1, 0, 1)
+        depth_colors = np.stack([
+            (error_norm * 255).astype(np.uint8),
+            ((1 - error_norm) * 255).astype(np.uint8),
+            np.zeros(len(error_norm), dtype=np.uint8)
+        ], axis=1)
+
+        # Map filtered points back to valid mask positions
+        filtered_valid_in_mask = mask[ba_valid_pts_indices]
+        if filtered_valid_in_mask.sum() == len(depth_colors):
+            visualizer.log_points(
+                "/our/points_depth_error",
+                pts[ba_valid_pts_indices][filtered_valid_in_mask],
+                colors=depth_colors[filtered_valid_in_mask],
+                static=False
+            )
+
+        # Log depth statistics
+        rr.log(
+            "/our/depth_stats",
+            rr.TextLog(f"Depth error: mean={mean_depth_error.mean():.4f}m, max={mean_depth_error.max():.4f}m"),
+            static=False,
+        )
+
+
 def log_depth_points_3d(
     visualizer: Visualizer,
     obj_provider: ObjDataProvider,
@@ -695,6 +785,13 @@ def main(args):
         points_conf_color = data.get("points_conf_color")
         keyframe_flags = data.get("keyframe")
 
+        # BA optimization data
+        ba_valid_points_mask = data.get("ba_valid_points_mask")
+        ba_optimized_depth = data.get("ba_optimized_depth")
+        ba_depth_prior_sampled = data.get("ba_depth_prior_sampled")
+        ba_keyframe_indices = data.get("ba_keyframe_indices")
+        ba_valid_pts_indices = data.get("ba_valid_pts_indices")
+
         # Skip non-keyframe steps if vis_only_keyframes is enabled
         if args.vis_only_keyframes:
             cam_idx = int(step["path"].name)
@@ -739,6 +836,15 @@ def main(args):
             points_3d=points_3d,
             points_rgb=points_rgb,
             points_conf_color=points_conf_color,
+        )
+        log_ba_valid_points(
+            visualizer=visualizer,
+            points_3d=points_3d,
+            ba_valid_points_mask=ba_valid_points_mask,
+            ba_optimized_depth=ba_optimized_depth,
+            ba_depth_prior_sampled=ba_depth_prior_sampled,
+            ba_keyframe_indices=ba_keyframe_indices,
+            ba_valid_pts_indices=ba_valid_pts_indices,
         )
         log_depth_points_3d(
             visualizer=visualizer,
