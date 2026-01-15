@@ -27,7 +27,7 @@ def parse_args():
 
     # BA parameters
     parser.add_argument(
-        "--max_reproj_error", type=float, default=8.0, help="Maximum reprojection error for reconstruction"
+        "--max_reproj_error", type=float, default=4.0, help="Maximum reprojection error for reconstruction"
     )
     parser.add_argument("--shared_camera", action="store_true", default=False, help="Use shared camera for all images")
     parser.add_argument("--camera_type", type=str, default="SIMPLE_PINHOLE", help="Camera type for reconstruction")

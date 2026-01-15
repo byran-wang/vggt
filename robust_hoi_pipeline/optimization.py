@@ -839,8 +839,10 @@ def build_reconstruction_from_tracks(
     )
 
 
-def register_new_frame(image_info, gen_3d, frame_idx, args, out_dir, iters=100, depth_weight=0):
-    """Optimize only the pose of frame `frame_idx` using reprojection + mesh-depth consistency.
+def register_new_frame(image_info, frame_idx, args, iters=100):
+    """Estimate pose of frame `frame_idx` using PnP with existing 3D points and 2D tracks.
+
+    Uses RANSAC-based PnP to robustly estimate the camera pose from 2D-3D correspondences.
 
     Args:
         image_info: Dictionary containing reconstruction data
@@ -848,8 +850,8 @@ def register_new_frame(image_info, gen_3d, frame_idx, args, out_dir, iters=100, 
         frame_idx: Frame index to register
         args: Arguments with configuration
         out_dir: Output directory
-        iters: Number of optimization iterations
-        depth_weight: Weight for depth consistency loss
+        iters: Number of RANSAC iterations (default 100)
+        depth_weight: Weight for depth consistency loss (unused, kept for API compatibility)
 
     Returns:
         Updated image_info (in-place)
@@ -859,7 +861,6 @@ def register_new_frame(image_info, gen_3d, frame_idx, args, out_dir, iters=100, 
     intrinsics = image_info.get("intrinsics")
     pred_tracks = image_info.get("pred_tracks")
     track_mask = image_info.get("track_mask")
-    depth_priors = image_info.get("depth_priors")
 
     missing = [
         name
@@ -869,17 +870,95 @@ def register_new_frame(image_info, gen_3d, frame_idx, args, out_dir, iters=100, 
             ("intrinsics", intrinsics),
             ("pred_tracks", pred_tracks),
             ("track_mask", track_mask),
-            ("depth_priors", depth_priors),
         ]
         if val is None
     ]
 
     if missing:
-        print(f"[register_new_frame] Missing inputs: {missing}; skipping refinement.")
+        print(f"[register_new_frame] Missing inputs: {missing}; skipping registration.")
         return image_info
 
-    # Optimization logic would go here - simplified for module structure
-    # The actual implementation remains in the main file for now
+    # Get 2D tracks for this frame
+    tracks_2d = pred_tracks[frame_idx]  # [N, 2]
+    mask = track_mask[frame_idx]  # [N]
+
+    # Filter to visible points only
+    visible_mask = mask.astype(bool)
+    if not visible_mask.any():
+        print(f"[register_new_frame] Frame {frame_idx}: No visible tracks, skipping.")
+        return image_info
+
+    pts_3d = points_3d[visible_mask].astype(np.float64)  # [M, 3]
+    pts_2d = tracks_2d[visible_mask].astype(np.float64)  # [M, 2]
+
+    if len(pts_3d) < 4:
+        print(f"[register_new_frame] Frame {frame_idx}: Only {len(pts_3d)} visible points (need >= 4), skipping.")
+        return image_info
+
+    # Get intrinsic matrix for this frame
+    K = intrinsics[frame_idx].astype(np.float64)
+
+    # Use existing extrinsic as initial guess
+    R_init = extrinsics[frame_idx, :3, :3].astype(np.float64)
+    t_init = extrinsics[frame_idx, :3, 3].astype(np.float64)
+    rvec_init, _ = cv2.Rodrigues(R_init)
+
+    # Solve PnP with RANSAC
+    success, rvec, tvec, inliers = cv2.solvePnPRansac(
+        objectPoints=pts_3d,
+        imagePoints=pts_2d,
+        cameraMatrix=K,
+        distCoeffs=None,
+        rvec=rvec_init,
+        tvec=t_init.reshape(3, 1),
+        useExtrinsicGuess=True,
+        iterationsCount=iters,
+        reprojectionError=getattr(args, 'pnp_reproj_thresh', 8.0),
+        flags=cv2.SOLVEPNP_ITERATIVE,
+    )
+
+    if not success or inliers is None or len(inliers) < 4:
+        print(f"[register_new_frame] Frame {frame_idx}: PnP failed (inliers={len(inliers) if inliers is not None else 0}), keeping initial pose.")
+        return image_info
+
+    # Refine with all inliers using iterative PnP
+    inlier_mask = np.zeros(len(pts_3d), dtype=bool)
+    inlier_mask[inliers.flatten()] = True
+
+    pts_3d_inliers = pts_3d[inlier_mask]
+    pts_2d_inliers = pts_2d[inlier_mask]
+
+    success_refine, rvec_refined, tvec_refined = cv2.solvePnP(
+        objectPoints=pts_3d_inliers,
+        imagePoints=pts_2d_inliers,
+        cameraMatrix=K,
+        distCoeffs=None,
+        rvec=rvec,
+        tvec=tvec,
+        useExtrinsicGuess=True,
+        flags=cv2.SOLVEPNP_ITERATIVE,
+    )
+
+    if success_refine:
+        rvec = rvec_refined
+        tvec = tvec_refined
+
+    # Convert back to rotation matrix
+    R, _ = cv2.Rodrigues(rvec)
+    t = tvec.flatten()
+
+    # Update extrinsics
+    extrinsics[frame_idx, :3, :3] = R.astype(np.float32)
+    extrinsics[frame_idx, :3, 3] = t.astype(np.float32)
+
+    # Compute reprojection error for logging
+    proj_pts, _ = cv2.projectPoints(pts_3d_inliers, rvec, tvec, K, None)
+    proj_pts = proj_pts.reshape(-1, 2)
+    reproj_err = np.linalg.norm(proj_pts - pts_2d_inliers, axis=1).mean()
+
+    print(f"[register_new_frame] Frame {frame_idx}: PnP success with {len(inliers)}/{len(pts_3d)} inliers, "
+          f"mean reproj error: {reproj_err:.2f}px")
+
     return image_info
 
 
