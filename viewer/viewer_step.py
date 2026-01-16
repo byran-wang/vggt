@@ -379,7 +379,7 @@ def log_all_frames(
             static=False,
         )
         w2c = np.eye(4)
-        w2c[:3] = extr[cam_idx]
+        w2c[:3] = extr[cam_idx][:3]
         c2w = np.linalg.inv(w2c)
         visualizer.log_cam_pose(f"/our/camera/image_{cam_idx}", c2w, static=False)
 
