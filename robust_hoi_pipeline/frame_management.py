@@ -415,8 +415,8 @@ def _refine_frame_pose_3d(image_info, frame_idx, args):
             valid_mask = valid_mask & unc_valid
 
     num_valid = np.sum(valid_mask)
-    if num_valid < 10:
-        print(f"[_refine_frame_pose_3d] Insufficient valid points ({num_valid} < 10), skipping")
+    if num_valid < 30:
+        print(f"[_refine_frame_pose_3d] Insufficient valid points ({num_valid} < 30), skipping")
         return image_info
 
     print(f"[_refine_frame_pose_3d] Refining frame {frame_idx} pose with {num_valid} valid 3D correspondences")
