@@ -726,11 +726,12 @@ def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3,
 
     Points with infinite uncertainty are excluded from optimization.
     Point uncertainties are used as inverse weights (lower uncertainty = higher weight).
+    The first keyframe is always fixed with identity pose (R=I, t=0).
 
     Args:
         image_info: Dictionary containing keyframe, points_3d, pred_tracks, track_mask,
                    extrinsics, intrinsics, depth_priors, uncertainties
-        ref_frame_idx: Reference frame index (pose is fixed during optimization)
+        ref_frame_idx: Reference frame index (ignored, first keyframe is always used as reference)
         iters: Number of optimization iterations
         lr: Learning rate for optimizer
         rep_loss_thresh: Early-stop threshold for reprojection loss
@@ -753,8 +754,10 @@ def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3,
         print(f"[bundle_adjust_keyframes] Less than 2 keyframes ({len(keyframe_indices)}), skipping.")
         return image_info
 
+    # First keyframe is always the reference with identity pose
+    first_kf_idx = keyframe_indices[0]
     print(f"[bundle_adjust_keyframes] Optimizing {len(keyframe_indices)} keyframes, "
-          f"{image_info['points_3d'].shape[0]} points")
+          f"{image_info['points_3d'].shape[0]} points. First keyframe {first_kf_idx} fixed to identity.")
 
     # Setup device with proper handling for None depth_priors
     depth_priors = image_info.get("depth_priors")
@@ -767,7 +770,9 @@ def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3,
     dtype = torch.float32
 
     # Step 1: Extract keyframe data (filters out points with inf uncertainty)
-    kf_data = _extract_keyframe_data(image_info, keyframe_indices, ref_frame_idx)
+    # Use first keyframe as reference
+    kf_data = _extract_keyframe_data(image_info, keyframe_indices, first_kf_idx)
+    kf_data["ref_idx"] = 0  # Force first keyframe (index 0 in subset) as reference
 
     # Check if we have enough valid points
     if kf_data["points_3d"].shape[0] < 10:
@@ -777,9 +782,9 @@ def bundle_adjust_keyframes(image_info, ref_frame_idx, iters=30, lr=1e-3,
     # Step 2: Initialize optimization tensors (includes uncertainty weights)
     tensors = _init_optimization_tensors(kf_data, device, dtype, unc_thresh=unc_thresh)
 
-    # Step 3: Run optimization with uncertainty-weighted losses
+    # Step 3: Run optimization with uncertainty-weighted losses (ref_idx=0 for first keyframe)
     rvecs_t, tvecs_t, points3d_t, proj, cam_pts = _run_ba_optimization(
-        tensors, kf_data["ref_idx"], iters, lr, rep_loss_thresh, depth_loss_thresh, device, dtype
+        tensors, 0, iters, lr, rep_loss_thresh, depth_loss_thresh, device, dtype
     )
 
     # Step 4: Update image_info with optimized values
