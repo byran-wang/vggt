@@ -713,7 +713,7 @@ def log_hands(hand_provider: HandDataProvider, extr, cam_idx: int):
             except Exception as e:
                 print(f"[HandDataProvider] seal_mano_mesh_np failed for {mode}: {e}")
         w2c = np.eye(4)
-        w2c[:3] = extr[cam_idx]
+        w2c[:3] = extr[cam_idx][:3]
         c2w = np.linalg.inv(w2c)
         verts_world = (c2w[:3, :3] @ verts_cam.T + c2w[:3, 3:4]).T
         color_rgb = np.array(color[:3], dtype=np.uint8)
