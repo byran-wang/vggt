@@ -220,6 +220,145 @@ def _optimize_single_keyframe(
     return aligned_pose_opt_np, K_opt, best_loss
 
 
+def _optimize_multi_keyframes(
+    verts,
+    tri,
+    color_obj,
+    target_masks,
+    intrinsics,
+    extrinsics,
+    aligned_pose,
+    glctx,
+    device,
+    num_iters=200,
+    lr=1e-2,
+    optimize_intrinsic=True,
+    debug_dir=None,
+    frame_names=None,
+):
+    num_frames = len(target_masks)
+    if frame_names is None:
+        frame_names = [f"frame_{idx:04d}" for idx in range(num_frames)]
+
+    projection_mask = torch.tensor(
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+        ],
+        device=device,
+        dtype=torch.float32,
+    )
+
+    projection_origs = []
+    projection_residuals = []
+    extrinsic_ts = []
+    resolutions = []
+
+    for idx in range(num_frames):
+        mask = target_masks[idx]
+        H, W = mask.shape
+        resolutions.append((H, W))
+
+        K = intrinsics[idx].astype(np.float64)
+        projection_origs.append(
+            torch.tensor(
+                projection_matrix_from_intrinsics(K, height=H, width=W, znear=0.1, zfar=100),
+                dtype=torch.float32,
+                device=device,
+            )
+        )
+
+        if optimize_intrinsic:
+            projection_residuals.append(
+                torch.nn.Parameter(torch.zeros((4, 4), device=device, dtype=torch.float32))
+            )
+
+        extrinsic_ts.append(torch.tensor(extrinsics[idx], dtype=torch.float32, device=device))
+
+    aligned_pose_t = torch.tensor(aligned_pose, dtype=torch.float32, device=device)
+    pose_r_orig, pose_t_orig, pose_s_orig = matrix_to_axis_angle_t(aligned_pose_t)
+    pose_residual = torch.nn.Parameter(torch.zeros(6, device=device, dtype=torch.float32))
+
+    params = [pose_residual]
+    if optimize_intrinsic:
+        params.extend(projection_residuals)
+    optimizer = torch.optim.Adam(params, lr=lr)
+
+    best_loss = float("inf")
+    best_pose_residual = None
+    best_projection_residuals = None
+
+    for it in range(num_iters):
+        optimizer.zero_grad()
+
+        pose_r = pose_r_orig + pose_residual[:3] * 0.1
+        pose_t = pose_t_orig + pose_residual[3:]
+        aligned_pose_cur = axis_angle_t_to_matrix(pose_r, pose_t, pose_s_orig)
+
+        total_loss = 0.0
+        for idx in range(num_frames):
+            if optimize_intrinsic:
+                projection = projection_origs[idx] + projection_residuals[idx] * projection_mask
+            else:
+                projection = projection_origs[idx]
+
+            w2c = extrinsic_ts[idx] @ aligned_pose_cur
+            rgb_rendered, _ = diff_renderer(
+                verts, tri, color_obj, projection, w2c, resolutions[idx], glctx
+            )
+            sil_pred = rgb_rendered[..., 1]
+            total_loss = total_loss + compute_iou_loss(sil_pred, target_masks[idx])
+
+            if debug_dir and it % 50 == 0:
+                os.makedirs(debug_dir, exist_ok=True)
+                sil_np = sil_pred.detach().cpu().numpy()
+                tgt_np = target_masks[idx].detach().cpu().numpy()
+                Image.fromarray((sil_np * 255).astype(np.uint8)).save(
+                    os.path.join(debug_dir, f"{frame_names[idx]}_sil_{it:04d}.png")
+                )
+                if it == 0:
+                    Image.fromarray((tgt_np * 255).astype(np.uint8)).save(
+                        os.path.join(debug_dir, f"{frame_names[idx]}_gt.png")
+                    )
+
+        loss = total_loss / max(1, num_frames)
+        if loss.item() < best_loss:
+            best_loss = loss.item()
+            best_pose_residual = pose_residual.detach().clone()
+            if optimize_intrinsic:
+                best_projection_residuals = [p.detach().clone() for p in projection_residuals]
+
+        loss.backward()
+        optimizer.step()
+
+        if (it + 1) % 50 == 0:
+            print(f"[mask_opt] Iter {it+1:04d}: avg IoU loss={loss.item():.4f}")
+
+    if best_pose_residual is not None:
+        pose_r_best = pose_r_orig + best_pose_residual[:3] * 0.1
+        pose_t_best = pose_t_orig + best_pose_residual[3:]
+        aligned_pose_opt = axis_angle_t_to_matrix(pose_r_best, pose_t_best, pose_s_orig)
+        aligned_pose_opt_np = aligned_pose_opt.detach().cpu().numpy()
+    else:
+        aligned_pose_opt_np = aligned_pose
+
+    K_opts = []
+    for idx in range(num_frames):
+        if optimize_intrinsic and best_projection_residuals is not None:
+            projection_best = projection_origs[idx] + best_projection_residuals[idx] * projection_mask
+            H, W = resolutions[idx]
+            K_opt = projection_matrix_to_intrinsics(
+                projection_best.detach().cpu().numpy(), W, H
+            )
+        else:
+            K_opt = intrinsics[idx].astype(np.float32)
+        K_opts.append(K_opt)
+
+    return aligned_pose_opt_np, K_opts, best_loss
+
+
 def optimize_pose_with_mask_loss(image_info, gen_3d, args):
     """Optimize aligned poses and intrinsics using mask IoU loss.
 
@@ -300,74 +439,59 @@ def optimize_pose_with_mask_loss(image_info, gen_3d, args):
     output_dir = getattr(args, "output_dir", "output")
     debug_dir = os.path.join(output_dir, "mask_opt")
 
-    # Optimize over all keyframes jointly by averaging updates
-    accumulated_pose = np.zeros_like(aligned_pose)
-    total_loss = 0.0
-    num_optimized = 0
+    target_masks = []
+    use_extrinsics = []
+    use_intrinsics = []
+    frame_names = []
 
     for kf_idx in keyframe_indices:
-        print(f"[optimize_pose_with_mask_loss] Processing keyframe {kf_idx}")
+        print(f"[optimize_pose_with_mask_loss] Preparing keyframe {kf_idx}")
 
-        # Get target mask for this frame
         mask = image_masks[kf_idx]
         if torch.is_tensor(mask):
             mask = mask.to(device)
         else:
             mask = torch.tensor(mask, dtype=torch.float32, device=device)
 
-        # Handle shape: [1, H, W] or [H, W]
         if mask.ndim == 3:
             mask = mask.squeeze(0)
-        target_mask = (mask > 0.5).float()
+        target_masks.append((mask > 0.5).float())
+        frame_names.append(f"frame_{kf_idx:04d}")
 
-        # Get extrinsic for this frame
         extrinsic = extrinsics[kf_idx]
         if extrinsic.shape[0] == 3:
-            # Convert 3x4 to 4x4
             extrinsic_4x4 = np.eye(4, dtype=np.float64)
             extrinsic_4x4[:3, :] = extrinsic
         else:
             extrinsic_4x4 = extrinsic.astype(np.float64)
+        use_extrinsics.append(extrinsic_4x4)
 
-        # Get intrinsic for this frame
         if intrinsics.ndim == 3:
             intrinsic = intrinsics[kf_idx].astype(np.float64)
         else:
             intrinsic = intrinsics.astype(np.float64)
+        use_intrinsics.append(intrinsic)
 
-        # Optimize for this keyframe
-        aligned_pose_opt, K_opt, loss = _optimize_single_keyframe(
-            verts=verts,
-            tri=tri,
-            color_obj=color_obj,
-            target_mask=target_mask,
-            intrinsic=intrinsic,
-            extrinsic=extrinsic_4x4,
-            aligned_pose=aligned_pose,
-            glctx=glctx,
-            device=device,
-            num_iters=num_iters,
-            lr=lr,
-            optimize_intrinsic=optimize_intrinsic,
-            debug_dir=debug_dir,
-            frame_name=f"frame_{kf_idx:04d}",
-        )
+    final_aligned_pose, _, avg_loss = _optimize_multi_keyframes(
+        verts=verts,
+        tri=tri,
+        color_obj=color_obj,
+        target_masks=target_masks,
+        intrinsics=use_intrinsics,
+        extrinsics=use_extrinsics,
+        aligned_pose=aligned_pose,
+        glctx=glctx,
+        device=device,
+        num_iters=num_iters,
+        lr=lr,
+        optimize_intrinsic=optimize_intrinsic,
+        debug_dir=debug_dir,
+        frame_names=frame_names,
+    )
 
-        accumulated_pose += aligned_pose_opt
-        total_loss += loss
-        num_optimized += 1
+    gen_3d.save_aligned_pose(final_aligned_pose)
 
-        print(f"[optimize_pose_with_mask_loss] Keyframe {kf_idx}: final IoU loss={loss:.4f}")
-
-    if num_optimized > 0:
-        # Average the optimized poses from all keyframes
-        final_aligned_pose = accumulated_pose / num_optimized
-        avg_loss = total_loss / num_optimized
-
-        # Update gen_3d with optimized pose
-        gen_3d.save_aligned_pose(final_aligned_pose)
-
-        print(f"[optimize_pose_with_mask_loss] Optimization complete. "
-              f"Average IoU loss: {avg_loss:.4f}")
+    print(f"[optimize_pose_with_mask_loss] Optimization complete. "
+          f"Average IoU loss: {avg_loss:.4f}")
 
     return image_info, gen_3d
