@@ -69,7 +69,7 @@ def parse_args():
         help="Visualize HO3D ground-truth cameras and object meshes when available.",
     )
     parser.add_argument(
-        "--log_aliggned_mesh",
+        "--log_aligned_mesh",
         type=int,
         default=0,
         help="Visualize the aligned remeshed 3D mesh at each step.",
@@ -121,14 +121,14 @@ class ObjDataProvider:
                 continue
             with open(results_file, "rb") as f:
                 data = pickle.load(f)
-            gen_3d_mesh_aligned = step_dir / "white_mesh_remesh_aligned.obj"
-            self.steps.append({"index": step_idx, "path": step_dir, "data": data, "gen_3d_mesh_aligned": gen_3d_mesh_aligned})
+            self.steps.append({"index": step_idx, "path": step_dir, "data": data})
 
         gen3d_dir = self.base_dir / "gen_3d"
         self.mesh_path = gen3d_dir / "white_mesh_remesh.obj"
         self.cond_image = gen3d_dir / "image.png"
         self.cond_depth = gen3d_dir / "depth.png"
         self.camera_json = gen3d_dir / "camera.json"
+        self.gen3d_aligned = self.base_dir / "../gen_3d_aligned/white_mesh_remesh_aligned.obj"
 
     def get_seq_name(self):
         return self.base_dir.parents[0].name
@@ -772,6 +772,8 @@ def main(args):
             static=True,
         )
 
+    if args.log_aligned_mesh:
+        visualizer.log_mesh("/our/aligned_mesh", obj_provider.gen3d_aligned, colors=np.array([255, 255, 255]), static=True)
 
     for step in obj_provider.steps:
         step_idx = step["index"]
@@ -785,8 +787,6 @@ def main(args):
         registered = data.get("registered")
         pred_tracks = data.get("pred_tracks")
         track_mask = data.get("track_mask")
-        aligned_pose = data.get("aligned_pose")
-        gen_3d_mesh_aligned_path = step["gen_3d_mesh_aligned"]
         points_3d = data.get("points_3d")
         points_rgb = data.get("points_rgb")
         points_conf_color = data.get("points_conf_color")
@@ -835,9 +835,6 @@ def main(args):
             original_coords=original_coords,
             cam_idx=cam_idx,
         )
-
-        # if args.log_aliggned_mesh:
-        #     visualizer.log_mesh("/our/aligned_mesh", gen_3d_mesh_aligned_path, colors=np.array([255, 255, 255]), static=False)
         
         log_points_3d(
             visualizer=visualizer,
