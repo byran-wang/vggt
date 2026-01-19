@@ -308,7 +308,8 @@ def save_results(image_info, gen_3d, out_dir, args):
         image_info.get("uncertainties")['depth_prior'],
         Path(out_dir) / "depth_conf"
     )
-    save_aligned_3D_model(gen_3d, gen_3d.get_aligned_pose(), out_dir)
+    if payload["aligned_pose"] is not None:
+        save_aligned_3D_model(gen_3d, gen_3d.get_aligned_pose(), out_dir)
     save_low_uncertainty_points_in_obj_space(image_info, gen_3d, out_dir, args)
 
     print(f"[save_results] Saved reconstruction summary to {out_path}")

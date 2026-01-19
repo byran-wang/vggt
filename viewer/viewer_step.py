@@ -69,7 +69,7 @@ def parse_args():
         help="Visualize HO3D ground-truth cameras and object meshes when available.",
     )
     parser.add_argument(
-        "--aliggned_mesh",
+        "--log_aliggned_mesh",
         type=int,
         default=0,
         help="Visualize the aligned remeshed 3D mesh at each step.",
@@ -82,7 +82,7 @@ def parse_args():
     parser.add_argument(
         "--vis_in_seq_order",
         type=bool,
-        default=True,
+        default=False,
         help="Visualize frames in sequence order.",
     )    
     return parser.parse_args()
@@ -836,8 +836,8 @@ def main(args):
             cam_idx=cam_idx,
         )
 
-        if args.aliggned_mesh:
-            visualizer.log_mesh("/our/aligned_mesh", gen_3d_mesh_aligned_path, colors=np.array([255, 255, 255]), static=False)
+        # if args.log_aliggned_mesh:
+        #     visualizer.log_mesh("/our/aligned_mesh", gen_3d_mesh_aligned_path, colors=np.array([255, 255, 255]), static=False)
         
         log_points_3d(
             visualizer=visualizer,

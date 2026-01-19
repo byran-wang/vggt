@@ -204,24 +204,24 @@ def robust_hoi_pipeline(args):
             pred_tracks, track_mask, points_3d, points_rgb, args
         )
 
-        # Step 8: Get 3D correspondences
-        corres_3d = get_3D_correspondences(
-            gen_3d, image_info, reference_idx=args.cond_index,
-            out_dir=f"{args.output_dir}/3D_corres"
-        )
+        # # Step 8: Get 3D correspondences
+        # corres_3d = get_3D_correspondences(
+        #     gen_3d, image_info, reference_idx=args.cond_index,
+        #     out_dir=f"{args.output_dir}/3D_corres"
+        # )
 
-        # Step 9: Evaluate and align 3D model
-        evaluate_3D_corres(corres_3d, gen_3d, image_info, reference_idx=args.cond_index,
-                           out_dir=f"{args.output_dir}/3D_corres/eval")
+        # # Step 9: Evaluate and align 3D model
+        # evaluate_3D_corres(corres_3d, gen_3d, image_info, reference_idx=args.cond_index,
+        #                    out_dir=f"{args.output_dir}/3D_corres/eval")
 
-        align_3D_model_with_images(corres_3d, gen_3d, image_info, reference_idx=args.cond_index,
-                                   out_dir=f"{args.output_dir}/aligned")
+        # align_3D_model_with_images(corres_3d, gen_3d, image_info, reference_idx=args.cond_index,
+        #                            out_dir=f"{args.output_dir}/aligned")
 
         # Step 10: Register remaining frames
-        register_key_frames(image_info, gen_3d, args)
+        register_key_frames(image_info, args)
 
-        # Step 11: Optimize poses and intrinsics using mask loss
-        image_info, gen_3d = optimize_pose_with_mask_loss(image_info, gen_3d, args)
+        # # Step 11: Optimize poses and intrinsics using mask loss
+        # image_info, gen_3d = optimize_pose_with_mask_loss(image_info, gen_3d, args)
 
         print("=" * 50)
         print("Pipeline complete!")

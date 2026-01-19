@@ -661,7 +661,7 @@ def _compute_rigid_transform(src, dst):
     return R, t
 
 
-def process_key_frame(image_info, gen_3d, frame_idx, args):
+def process_key_frame(image_info, frame_idx, args):
     """Process frame designated as keyframe with multi-step workflow.
 
     Pipeline steps:
@@ -676,7 +676,6 @@ def process_key_frame(image_info, gen_3d, frame_idx, args):
 
     Args:
         image_info: Dictionary containing reconstruction data
-        gen_3d: Generated 3D model object (contains depth/point data)
         frame_idx: Frame index to process as keyframe
         args: Arguments with configuration
 
@@ -736,12 +735,11 @@ def process_key_frame(image_info, gen_3d, frame_idx, args):
     return image_info
 
 
-def register_key_frames(image_info, gen_3d, args):
+def register_key_frames(image_info, args):
     """Register all remaining frames in the sequence.
 
     Args:
         image_info: Dictionary containing reconstruction data
-        gen_3d: Generated 3D model object
         args: Arguments with configuration
 
     Returns:
@@ -760,7 +758,7 @@ def register_key_frames(image_info, gen_3d, args):
     image_info["keyframe"] = np.array([False] * num_images)
     image_info["keyframe"][args.cond_index] = True
 
-    save_results(image_info, gen_3d, out_dir=f"{args.output_dir}/results/{args.cond_index:04d}/", args=args)
+    save_results(image_info, gen_3d=None, out_dir=f"{args.output_dir}/results/{args.cond_index:04d}/", args=args)
 
     while image_info["registered"].sum() + image_info["invalid"].sum() < num_images:
         next_frame_idx = find_next_frame(image_info)
@@ -797,10 +795,10 @@ def register_key_frames(image_info, gen_3d, args):
             depth_thresh=args.kf_depth_thresh,
             frame_inliner_thresh=args.kf_inlier_thresh
         ):
-            image_info = process_key_frame(image_info, gen_3d, next_frame_idx, args)
+            image_info = process_key_frame(image_info, next_frame_idx, args)
 
 
-        save_results(image_info, gen_3d, out_dir=f"{args.output_dir}/results/{next_frame_idx:04d}/", args=args)
+        save_results(image_info, gen_3d=None, out_dir=f"{args.output_dir}/results/{next_frame_idx:04d}/", args=args)
 
         print(f"registered: {image_info['registered'].sum()}, "
               f"keyframes: {image_info['keyframe'].sum()}, invalid: {image_info['invalid'].sum()}")
