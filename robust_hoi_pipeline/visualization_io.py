@@ -138,7 +138,7 @@ def save_depth_prior_with_uncertainty(depth, depth_unc, out_dir):
         Image.fromarray(rgba, mode="RGBA").save(Path(out_dir) / f"depth_unc_{i:04d}.png")
 
 
-def eval_reprojection(image_info, frame_idx, intr_np, pts_np, tracks_np, mask_np, R_final, t_final, out_dir):
+def eval_reprojection(image_info, frame_idx, intr_np, pts_np, tracks_np, mask_np, R_final, t_final, out_dir, uncertainties=None, args=None):
     """Overlay reprojection error vectors on the raw image for a frame.
 
     Args:
@@ -151,6 +151,8 @@ def eval_reprojection(image_info, frame_idx, intr_np, pts_np, tracks_np, mask_np
         R_final: Final rotation matrix (3x3)
         t_final: Final translation vector (3,)
         out_dir: Output directory
+        uncertainties: Point uncertainties for filtering high-uncertainty points
+        args: Arguments with unc_thresh configuration
 
     Returns:
         Path to saved visualization image, or None on failure
@@ -162,19 +164,37 @@ def eval_reprojection(image_info, frame_idx, intr_np, pts_np, tracks_np, mask_np
     base_img = Image.open(img_paths[frame_idx]).convert("RGB")
     vis_img = np.array(base_img)
 
-    cam_pts = (R_final @ pts_np.T).T + t_final
+    # Filter by uncertainty threshold if provided
+    valid_mask = np.ones(len(pts_np), dtype=bool)
+    if uncertainties is not None and args is not None:
+        unc_thresh = getattr(args, 'unc_thresh', 2.0)
+        pts_unc = np.asarray(uncertainties)
+        valid_mask = np.isfinite(pts_unc) & (pts_unc <= unc_thresh)
+
+    # Apply uncertainty filter to all point data
+    pts_np_filtered = pts_np[valid_mask]
+    tracks_np_filtered = tracks_np[valid_mask]
+    mask_np_filtered = np.asarray(mask_np)[valid_mask]
+
+    cam_pts = (R_final @ pts_np_filtered.T).T + t_final
     z = cam_pts[:, 2:3]
     uv = cam_pts[:, :2] / (z + 1e-8)
     proj = (intr_np @ np.concatenate([uv, np.ones_like(z)], axis=1).T).T[:, :2]
 
-    if proj.shape[0] != tracks_np.shape[0]:
-        return None
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    vis_path = out_dir / "reproj_error.png"
 
-    mask_np = np.asarray(mask_np).astype(bool)
-    end_pts = proj[mask_np]
-    start_pts = tracks_np[mask_np]
+    if proj.shape[0] != tracks_np_filtered.shape[0]:
+        Image.fromarray(vis_img).save(vis_path)
+        return vis_path
+
+    mask_np_filtered = np.asarray(mask_np_filtered).astype(bool)
+    end_pts = proj[mask_np_filtered]
+    start_pts = tracks_np_filtered[mask_np_filtered]
     if start_pts.shape[0] == 0:
-        return None
+        Image.fromarray(vis_img).save(vis_path)
+        return vis_path
 
     orig_coords = image_info.get("original_coords")
     if orig_coords is not None:
@@ -207,9 +227,6 @@ def eval_reprojection(image_info, frame_idx, intr_np, pts_np, tracks_np, mask_np
             tipLength=0.2,
         )
 
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    vis_path = out_dir / f"reproj_error.png"
     Image.fromarray(vis_img).save(vis_path)
     return vis_path
 
@@ -307,6 +324,8 @@ def save_results(image_info, gen_3d, out_dir, args):
         R_final=payload["extrinsics"][frame_idx][:3, :3],
         t_final=payload["extrinsics"][frame_idx][:3, 3],
         out_dir=out_dir,
+        uncertainties=image_info.get("uncertainties", {}).get("points3d"),
+        args=args,
     )
 
 

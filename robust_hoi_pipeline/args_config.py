@@ -27,24 +27,24 @@ def parse_args():
 
     # BA parameters
     parser.add_argument(
-        "--max_reproj_error", type=float, default=4.0, help="Maximum reprojection error for reconstruction"
+        "--max_reproj_error", type=float, default=3.0, help="Maximum reprojection error for reconstruction"
     )
-    parser.add_argument("--shared_camera", action="store_true", default=False, help="Use shared camera for all images")
+    parser.add_argument("--shared_camera", type=bool, default=True, help="Use shared camera for all images")
     parser.add_argument("--camera_type", type=str, default="SIMPLE_PINHOLE", help="Camera type for reconstruction")
     parser.add_argument("--dataset_type", type=str, default="ZED", help="Dataset type for SfM preprocessing")
-    parser.add_argument("--vis_thresh", type=float, default=0.2, help="Visibility threshold for tracks")
-    parser.add_argument("--query_frame_num", type=int, default=5, help="Number of frames to query")
-    parser.add_argument("--max_query_pts", type=int, default=2048, help="Maximum number of query points")
+    parser.add_argument("--vis_thresh", type=float, default=0.4, help="Visibility threshold for tracks")
+    parser.add_argument("--max_query_pts", type=int, default=512, help="Maximum number of query track points for each image")
     parser.add_argument(
         "--fine_tracking", action="store_true", default=True, help="Use fine tracking (slower but more accurate)"
     )
+    parser.add_argument("--query_frame_num", type=int, default=0, help="Number of query frames for DINO ranking")
     parser.add_argument(
         "--conf_thres_value", type=float, default=5.0, help="Confidence threshold value for depth filtering (wo BA)"
     )
     parser.add_argument("--min_depth_pixels", type=int, default=500, help="Minimum valid depth pixels to accept a frame")
     parser.add_argument("--output_dir", type=str, default="output", help="Output directory")
-    parser.add_argument("--use_calibrated_intrinsic", action="store_true", default=False, help="Use calibrated intrinsic for reconstruction")
-    parser.add_argument("--min_inlier_per_frame", type=int, default=10, help="Minimum inliers per frame for BA")
+    parser.add_argument("--use_calibrated_intrinsic", type=bool, default=True, help="Use calibrated intrinsic for reconstruction")
+    parser.add_argument("--min_inlier_per_frame", type=int, default=50, help="Minimum inliers per frame for BA")
     parser.add_argument("--min_inlier_per_track", type=int, default=4, help="Minimum inliers per track for BA")
     parser.add_argument("--min_frame_num", type=int, default=0, help="Minimum number of frames to process")
     parser.add_argument("--max_frame_num", type=int, default=50, help="Maximum number of frames to process")

@@ -161,6 +161,98 @@ def check_key_frame(image_info, frame_idx, rot_thresh, trans_thresh, depth_thres
     return True
 
 
+def check_reprojection_error(image_info, frame_idx, args):
+    """Check if frame has high reprojection error using low-uncertainty 3D points.
+
+    Reprojects 3D points (filtered by uncertainty threshold) to the frame and
+    computes the mean reprojection error against tracked 2D positions.
+
+    Args:
+        image_info: Dictionary containing points_3d, pred_tracks, track_mask,
+                    extrinsics, intrinsics, and uncertainties
+        frame_idx: Frame index to check
+        args: Arguments with unc_thresh and max_reproj_error configuration
+
+    Returns:
+        True if frame is invalid (high reprojection error), False otherwise
+    """
+    points_3d = image_info.get("points_3d")
+    pred_tracks = image_info.get("pred_tracks")
+    track_mask = image_info.get("track_mask")
+    extrinsics = image_info.get("extrinsics")
+    intrinsics = image_info.get("intrinsics")
+    uncertainties = image_info.get("uncertainties")
+
+    if points_3d is None or pred_tracks is None or track_mask is None:
+        print(f"[check_reprjection_error] Missing required data, skipping check")
+        return False
+
+    # Get frame-specific data
+    frame_track_mask = np.asarray(track_mask[frame_idx]).astype(bool)
+    valid_mask = frame_track_mask.copy()
+
+    # Filter by uncertainty threshold
+    unc_thresh = getattr(args, 'unc_thresh', 2.0)
+    if uncertainties is not None and 'points3d' in uncertainties:
+        pts_unc = uncertainties['points3d']
+        if pts_unc is not None:
+            pts_unc = np.asarray(pts_unc)
+            unc_valid = np.isfinite(pts_unc) & (pts_unc <= unc_thresh)
+            valid_mask = valid_mask & unc_valid
+
+    num_valid = np.sum(valid_mask)
+    if num_valid < 10:
+        print(f"[check_reprjection_error] Frame {frame_idx}: insufficient valid points ({num_valid} < 10), skipping check")
+        return False
+
+    # Get 3D points and 2D tracks for valid points
+    pts_3d = np.asarray(points_3d)[valid_mask]
+    tracks_2d = np.asarray(pred_tracks[frame_idx])[valid_mask]
+
+    # Get extrinsic and intrinsic for this frame
+    extrinsic = extrinsics[frame_idx]
+    intrinsic = intrinsics[frame_idx] if intrinsics.ndim == 3 else intrinsics
+
+    R = extrinsic[:3, :3]
+    t = extrinsic[:3, 3]
+
+    # Project 3D points to camera coordinates
+    cam_pts = (R @ pts_3d.T).T + t
+
+    # Filter points behind camera
+    valid_z = cam_pts[:, 2] > 0
+    if np.sum(valid_z) < 10:
+        print(f"[check_reprjection_error] Frame {frame_idx}: insufficient points in front of camera, marking invalid")
+        return True
+
+    cam_pts = cam_pts[valid_z]
+    tracks_2d = tracks_2d[valid_z]
+
+    # Project to image plane
+    fx, fy = intrinsic[0, 0], intrinsic[1, 1]
+    cx, cy = intrinsic[0, 2], intrinsic[1, 2]
+
+    proj_x = fx * cam_pts[:, 0] / cam_pts[:, 2] + cx
+    proj_y = fy * cam_pts[:, 1] / cam_pts[:, 2] + cy
+    proj_2d = np.stack([proj_x, proj_y], axis=1)
+
+    # Compute reprojection errors
+    errors = np.linalg.norm(proj_2d - tracks_2d, axis=1)
+    mean_error = np.mean(errors)
+    median_error = np.median(errors)
+
+    max_reproj_error = getattr(args, 'max_reproj_error', 5.0)
+
+    if mean_error > max_reproj_error:
+        print(f"[check_reprjection_error] Frame {frame_idx} invalid: high reprojection error "
+              f"(mean={mean_error:.2f}, median={median_error:.2f} > {max_reproj_error})")
+        return True
+
+    print(f"[check_reprjection_error] Frame {frame_idx} passed: reprojection error "
+          f"(mean={mean_error:.2f}, median={median_error:.2f})")
+    return False
+
+
 def _predict_new_tracks(images, image_masks, frame_idx, args, dtype):
     """Step 1: Predict new tracks using the keyframe as query frame.
 
@@ -687,10 +779,14 @@ def register_remaining_frames(image_info, gen_3d, args):
         register_new_frame(
             image_info, next_frame_idx, args,
         )
-        image_info["registered"][next_frame_idx] = True
+        image_info = _refine_frame_pose_3d(image_info, next_frame_idx, args)
 
         # Refine the frame pose using 3D-3D correspondences
-        image_info = _refine_frame_pose_3d(image_info, next_frame_idx, args)
+        if (check_reprojection_error(image_info, next_frame_idx, args)):
+            image_info["invalid"][next_frame_idx] = True
+        else:
+            image_info["registered"][next_frame_idx] = True
+        
 
         # Check if this frame should be a keyframe
         if check_key_frame(
