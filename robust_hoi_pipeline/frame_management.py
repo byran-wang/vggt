@@ -8,8 +8,25 @@
 Frame registration and keyframe management functions for the COLMAP pipeline.
 """
 
+import os
+
 import numpy as np
 import torch
+
+
+def _save_keyframe_indices(output_dir, frame_idx):
+    """Append a keyframe index to the keyframe indices file.
+
+    Args:
+        output_dir: Output directory path
+        frame_idx: Keyframe index to append
+    """
+    results_dir = os.path.join(output_dir, "results")
+    os.makedirs(results_dir, exist_ok=True)
+
+    filepath = os.path.join(results_dir, "key_frame_idx.txt")
+    with open(filepath, "a") as f:
+        f.write(f"{frame_idx}\n")
 
 
 def find_next_frame(image_info):
@@ -759,6 +776,7 @@ def register_key_frames(image_info, args):
     image_info["keyframe"][args.cond_index] = True
 
     save_results(image_info, gen_3d=None, out_dir=f"{args.output_dir}/results/{args.cond_index:04d}/", args=args)
+    _save_keyframe_indices(args.output_dir, args.cond_index)
 
     while image_info["registered"].sum() + image_info["invalid"].sum() < num_images:
         next_frame_idx = find_next_frame(image_info)
@@ -777,27 +795,30 @@ def register_key_frames(image_info, args):
         register_new_frame(
             image_info, next_frame_idx, args,
         )
-        if _refine_frame_pose_3d(image_info, next_frame_idx, args):
-            # Refine the frame pose using 3D-3D correspondences
+
+        # Refine the frame pose using 3D-3D correspondences
+        if _refine_frame_pose_3d(image_info, next_frame_idx, args):    
             if (check_reprojection_error(image_info, next_frame_idx, args)):
+                # high reprojection error, mark as invalid
                 image_info["invalid"][next_frame_idx] = True
             else:
                 image_info["registered"][next_frame_idx] = True
         else:
+            # not enough valid 3D points and depth to refine, mark as invalid
             image_info["invalid"][next_frame_idx] = True
         
 
         # Check if this frame should be a keyframe
-        if check_key_frame(
-            image_info, next_frame_idx,
-            rot_thresh=args.kf_rot_thresh,
-            trans_thresh=args.kf_trans_thresh,
-            depth_thresh=args.kf_depth_thresh,
-            frame_inliner_thresh=args.kf_inlier_thresh
-        ):
-            image_info = process_key_frame(image_info, next_frame_idx, args)
-
-
+        if not image_info["invalid"][next_frame_idx]:
+            if check_key_frame(
+                image_info, next_frame_idx,
+                rot_thresh=args.kf_rot_thresh,
+                trans_thresh=args.kf_trans_thresh,
+                depth_thresh=args.kf_depth_thresh,
+                frame_inliner_thresh=args.kf_inlier_thresh
+            ):
+                image_info = process_key_frame(image_info, next_frame_idx, args)
+                _save_keyframe_indices(args.output_dir, next_frame_idx)
         save_results(image_info, gen_3d=None, out_dir=f"{args.output_dir}/results/{next_frame_idx:04d}/", args=args)
 
         print(f"registered: {image_info['registered'].sum()}, "
