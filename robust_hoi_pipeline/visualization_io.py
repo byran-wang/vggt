@@ -57,6 +57,49 @@ def get_points_uncertainty_colors(points_3d, uncertainties, scale=0.4):
     return uncertainty_colors
 
 
+def save_low_uncertainty_points_in_obj_space(image_info, gen_3d, out_dir, args):
+    """Save 3D points with low uncertainty transformed to object space.
+
+    Args:
+        image_info: Dictionary containing points_3d and uncertainties
+        gen_3d: Generated 3D model object with aligned pose
+        out_dir: Output directory
+        args: Arguments with unc_thresh configuration
+    """
+    points_3d = image_info.get("points_3d")
+    uncertainties = image_info.get("uncertainties")
+    aligned_pose = gen_3d.get_aligned_pose() if hasattr(gen_3d, "get_aligned_pose") else None
+
+    if points_3d is None or uncertainties is None or aligned_pose is None:
+        return
+
+    pts_unc = uncertainties.get('points3d')
+    if pts_unc is None:
+        return
+
+    pts_unc = np.asarray(pts_unc)
+    # Filter points with uncertainty below threshold
+    valid_mask = np.isfinite(pts_unc) & (pts_unc <= args.unc_thresh)
+    low_unc_points = np.asarray(points_3d)[valid_mask]
+
+    if len(low_unc_points) == 0:
+        return
+
+    # Transform points to object space using aligned pose
+    # aligned_pose transforms from object space to world space, so we need its inverse
+    aligned_pose_inv = np.linalg.inv(aligned_pose)
+    low_unc_points_h = np.concatenate([low_unc_points, np.ones((len(low_unc_points), 1))], axis=1)
+    low_unc_points_obj = (aligned_pose_inv @ low_unc_points_h.T).T[:, :3]
+
+    # Save with green color for low uncertainty
+    low_unc_colors = np.zeros((len(low_unc_points_obj), 3), dtype=np.uint8)
+    low_unc_colors[:, 1] = 255  # Green
+    trimesh.PointCloud(low_unc_points_obj, colors=low_unc_colors).export(
+        Path(out_dir) / "points_low_unc_obj_space.ply"
+    )
+    print(f"[save_results] Saved {len(low_unc_points_obj)} low-uncertainty points in object space")
+
+
 def save_point_cloud_with_conf(points_3d, points_rgb, uncertainties, ply_path, args):
     """Save point cloud with uncertainty-based colors.
 
@@ -249,6 +292,8 @@ def save_results(image_info, gen_3d, out_dir, args):
         Path(out_dir) / "depth_conf"
     )
     save_aligned_3D_model(gen_3d, gen_3d.get_aligned_pose(), out_dir)
+    save_low_uncertainty_points_in_obj_space(image_info, gen_3d, out_dir, args)
+
     print(f"[save_results] Saved reconstruction summary to {out_path}")
 
     frame_idx = int(Path(out_dir).name)
