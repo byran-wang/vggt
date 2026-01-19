@@ -31,6 +31,39 @@ GREEN = [0, 255, 0, 255]
 LIGHT_RED = [255, 128, 128, 255]
 
 
+def log_mesh_as_sampled_points(
+    visualizer,
+    entity_path: str,
+    mesh_path,
+    sample_num: int = 10000,
+    radii: float = 0.0003,
+    colors=None,
+    static: bool = True,
+):
+    """Load a mesh and log sampled vertices as points for visualization.
+
+    Args:
+        visualizer: Visualizer instance
+        entity_path: Rerun entity path for logging
+        mesh_path: Path to the mesh file
+        sample_num: Maximum number of points to sample (default: 10000)
+        radii: Point radius for visualization (default: 0.0003)
+        colors: Point colors (default: white [255, 255, 255])
+        static: Whether to log as static (default: True)
+    """
+    if colors is None:
+        colors = np.array([255, 255, 255])
+
+    mesh = trimesh.load_mesh(mesh_path)
+    vertices = mesh.vertices
+
+    if len(vertices) > sample_num:
+        choice = np.random.choice(len(vertices), size=sample_num, replace=False)
+        vertices = vertices[choice]
+
+    visualizer.log_points(entity_path, vertices, radii=radii, colors=colors, static=static)
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -773,7 +806,15 @@ def main(args):
         )
 
     if args.log_aligned_mesh:
-        visualizer.log_mesh("/our/aligned_mesh", obj_provider.gen3d_aligned, colors=np.array([255, 255, 255]), static=True)
+        log_mesh_as_sampled_points(
+            visualizer,
+            "/our/aligned_mesh_points",
+            obj_provider.gen3d_aligned,
+            sample_num=10000,
+            radii=0.0003,
+            colors=np.array([255, 255, 255]),
+            static=True,
+        )
 
     for step in obj_provider.steps:
         step_idx = step["index"]
