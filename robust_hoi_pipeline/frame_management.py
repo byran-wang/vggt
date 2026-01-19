@@ -104,14 +104,15 @@ def check_key_frame(image_info, frame_idx, rot_thresh, trans_thresh, depth_thres
         True if frame should be a keyframe, False otherwise
     """
     registered = image_info.get("registered")
+    invalid = image_info.get("invalid")
     extrinsics = image_info.get("extrinsics")
     keyframes = image_info.get("keyframe")
     depth_priors = image_info.get("depth_priors")
     track_mask = image_info.get("track_mask")
 
-    registered = np.asarray(registered).astype(bool)
-    if not registered[frame_idx]:
-        print(f"[check_key_frame] Frame {frame_idx} is not registered; cannot be keyframe.")
+    invalid = np.asarray(invalid).astype(bool)
+    if invalid[frame_idx]:
+        print(f"[check_key_frame] Frame {frame_idx} is invalid; cannot be keyframe.")
         return False
 
     # Basic validity checks
@@ -480,8 +481,7 @@ def _refine_frame_pose_3d(image_info, frame_idx, args):
     uncertainties = image_info.get("uncertainties")
 
     if points_3d is None or pred_tracks is None or track_mask is None or depth_priors is None:
-        print(f"[_refine_frame_pose_3d] Missing required data, skipping refinement")
-        return image_info
+        return False
 
     # Get intrinsic and depth for this frame
     intrinsic = intrinsics[frame_idx] if intrinsics.ndim == 3 else intrinsics
@@ -492,24 +492,24 @@ def _refine_frame_pose_3d(image_info, frame_idx, args):
     # Filter points: must be visible in this frame
     frame_track_mask = np.asarray(track_mask[frame_idx]).astype(bool)
     valid_mask = frame_track_mask.copy()
-
-    # Also filter by uncertainty threshold
-    unc_thresh = getattr(args, 'unc_thresh', 2.0)
-    if uncertainties is not None and 'points3d' in uncertainties:
-        pts_unc = uncertainties['points3d']
-        if pts_unc is not None:
-            pts_unc = np.asarray(pts_unc)
-            # Valid if uncertainty is finite and below threshold
-            unc_valid = np.isfinite(pts_unc) & (pts_unc <= unc_thresh)
-            num_excluded = np.sum(frame_track_mask & ~unc_valid)
-            if num_excluded > 0:
-                print(f"[_refine_frame_pose_3d] Excluding {num_excluded} points with uncertainty > {unc_thresh}")
-            valid_mask = valid_mask & unc_valid
+    if image_info["registered"].sum() >= args.min_track_number:
+        # Also filter by uncertainty threshold
+        unc_thresh = getattr(args, 'unc_thresh', 2.0)
+        if uncertainties is not None and 'points3d' in uncertainties:
+            pts_unc = uncertainties['points3d']
+            if pts_unc is not None:
+                pts_unc = np.asarray(pts_unc)
+                # Valid if uncertainty is finite and below threshold
+                unc_valid = np.isfinite(pts_unc) & (pts_unc <= unc_thresh)
+                num_excluded = np.sum(frame_track_mask & ~unc_valid)
+                if num_excluded > 0:
+                    print(f"[_refine_frame_pose_3d] Excluding {num_excluded} points with uncertainty > {unc_thresh}")
+                valid_mask = valid_mask & unc_valid
 
     num_valid = np.sum(valid_mask)
     if num_valid < 30:
         print(f"[_refine_frame_pose_3d] Insufficient valid points ({num_valid} < 30), skipping")
-        return image_info
+        return False
 
     print(f"[_refine_frame_pose_3d] Refining frame {frame_idx} pose with {num_valid} valid 3D correspondences")
 
@@ -531,7 +531,7 @@ def _refine_frame_pose_3d(image_info, frame_idx, args):
     valid_depth = sampled_depth > 0
     if np.sum(valid_depth) < 10:
         print(f"[_refine_frame_pose_3d] Insufficient valid depth samples ({np.sum(valid_depth)} < 10), skipping")
-        return image_info
+        return False
 
     world_points = world_points[valid_depth]
     track_2d = track_2d[valid_depth]
@@ -581,7 +581,7 @@ def _refine_frame_pose_3d(image_info, frame_idx, args):
 
     if best_inlier_count < min_inliers:
         print(f"[_refine_frame_pose_3d] RANSAC failed: only {best_inlier_count} inliers (need {min_inliers}), keeping original pose")
-        return image_info
+        return False
 
     # Refine with all inliers
     src_inliers = world_points[best_inliers]
@@ -614,7 +614,7 @@ def _refine_frame_pose_3d(image_info, frame_idx, args):
           f"mean 3D error: {mean_error:.4f}m, rotation change: {angle_change:.3f}°, "
           f"translation change: {trans_change:.4f}m")
 
-    return image_info
+    return True
 
 
 def _compute_rigid_transform(src, dst):
@@ -779,13 +779,14 @@ def register_remaining_frames(image_info, gen_3d, args):
         register_new_frame(
             image_info, next_frame_idx, args,
         )
-        image_info = _refine_frame_pose_3d(image_info, next_frame_idx, args)
-
-        # Refine the frame pose using 3D-3D correspondences
-        if (check_reprojection_error(image_info, next_frame_idx, args)):
-            image_info["invalid"][next_frame_idx] = True
+        if _refine_frame_pose_3d(image_info, next_frame_idx, args):
+            # Refine the frame pose using 3D-3D correspondences
+            if (check_reprojection_error(image_info, next_frame_idx, args)):
+                image_info["invalid"][next_frame_idx] = True
+            else:
+                image_info["registered"][next_frame_idx] = True
         else:
-            image_info["registered"][next_frame_idx] = True
+            image_info["invalid"][next_frame_idx] = True
         
 
         # Check if this frame should be a keyframe
