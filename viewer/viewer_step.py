@@ -79,6 +79,12 @@ def parse_args():
         action="store_true",
         help="Only visualize keyframes (skip non-keyframe steps).",
     )
+    parser.add_argument(
+        "--vis_in_seq_order",
+        type=bool,
+        default=True,
+        help="Visualize frames in sequence order.",
+    )    
     return parser.parse_args()
 
 
@@ -770,7 +776,8 @@ def main(args):
     for step in obj_provider.steps:
         step_idx = step["index"]
         data = step["data"]
-        visualizer.set_time_sequence(step_idx)
+        if not args.vis_in_seq_order:
+            visualizer.set_time_sequence(step_idx)
 
         intr = data.get("intrinsics")
         extr = data.get("extrinsics")
@@ -802,7 +809,8 @@ def main(args):
             )
             if not is_keyframe:
                 continue
-        
+        if args.vis_in_seq_order:
+            visualizer.set_time_sequence(cam_idx)
 
         if not args.only_current_view:
             log_all_frames(
