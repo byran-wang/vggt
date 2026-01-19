@@ -257,6 +257,13 @@ def save_results(image_info, gen_3d, out_dir, args):
         scale=1/args.unc_thresh
     )
 
+    # Convert uncertainties dict to numpy
+    uncertainties_raw = image_info.get("uncertainties")
+    if uncertainties_raw is not None:
+        uncertainties_np = {k: _to_cpu_numpy(v) for k, v in uncertainties_raw.items()}
+    else:
+        uncertainties_np = None
+
     payload = {
         "intrinsics": _to_cpu_numpy(image_info.get("intrinsics")),
         "extrinsics": _to_cpu_numpy(image_info.get("extrinsics")),
@@ -270,6 +277,7 @@ def save_results(image_info, gen_3d, out_dir, args):
         "invalid": _to_cpu_numpy(image_info.get("invalid")),
         "keyframe": _to_cpu_numpy(image_info.get("keyframe")),
         "aligned_pose": gen_3d.get_aligned_pose() if hasattr(gen_3d, "get_aligned_pose") else None,
+        "uncertainties": uncertainties_np,
         # BA optimization data
         "ba_valid_points_mask": _to_cpu_numpy(image_info.get("ba_valid_points_mask")),
         "ba_optimized_depth": _to_cpu_numpy(image_info.get("ba_optimized_depth")),

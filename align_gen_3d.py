@@ -61,7 +61,7 @@ def _decompose_similarity(matrix):
     return rotation, translation, scale
 
 
-def _save_refined_outputs(gen_3d, refined_pose, output_dir):
+def save_aligned_results(gen_3d, refined_pose, image_info, output_dir, prefix="", unc_thresh=None):
     import trimesh
 
     output_path = Path(output_dir)
@@ -72,11 +72,11 @@ def _save_refined_outputs(gen_3d, refined_pose, output_dir):
         mesh = trimesh.load(mesh_path, process=False)
         if refined_pose is not None:
             mesh.apply_transform(refined_pose)
-        mesh.export(output_path / "white_mesh_remesh_refined.obj")
+        mesh.export(output_path / f"white_mesh_remesh{prefix}.obj")
 
     if refined_pose is not None:
         rotation, translation, scale = _decompose_similarity(refined_pose)
-        with open(output_path / "refined_transform.json", "w") as f:
+        with open(output_path / f"aligned_transform{prefix}.json", "w") as f:
             json.dump(
                 {
                     "matrix": refined_pose.tolist(),
@@ -87,6 +87,27 @@ def _save_refined_outputs(gen_3d, refined_pose, output_dir):
                 f,
                 indent=2,
             )
+
+    # Save the 3D point cloud filtered by uncertainty threshold to a PLY file
+    points3d = image_info.get("points_3d")
+    uncertainties = image_info.get("uncertainties")
+
+    if points3d is not None:
+        points3d_unc = uncertainties.get("points3d") if uncertainties else None
+
+        if unc_thresh is not None and points3d_unc is not None:
+            # Filter points where uncertainty does not exceed threshold
+            valid_mask = np.isfinite(points3d_unc) & (points3d_unc <= unc_thresh)
+            filtered_points = points3d[valid_mask]
+            print(f"[save_aligned_results] Filtered {valid_mask.sum()}/{len(points3d)} points with unc <= {unc_thresh}")
+        else:
+            filtered_points = points3d
+            print(f"[save_aligned_results] Saving all {len(points3d)} points (no uncertainty filtering)")
+
+        if len(filtered_points) > 0:
+            point_cloud = trimesh.PointCloud(filtered_points)
+            point_cloud.export(output_path / f"points3d_{prefix}.ply")
+            print(f"[save_aligned_results] Saved point cloud to {output_path / f'points3d_{prefix}.ply'}")
 
 
 def load_keyframe_indices(results_dir):
@@ -340,7 +361,7 @@ def main(args):
         gen_3d,
         image_info,
         reference_idx=init_pose_image_idx,
-        out_dir=f"{output_dir}/aligned",
+        out_dir=None,
     )
 
     if aligned_pose is None:
@@ -352,16 +373,10 @@ def main(args):
     print("Step 5: Saving aligned results...")
     print("=" * 50)
 
-    save_aligned_3D_model(gen_3d, aligned_pose, output_dir)
-
-    # Also save the transformation matrix as JSON
-    transform_path = Path(output_dir) / "aligned_transform.json"
-    with open(transform_path, "w") as f:
-        json.dump({
-            "matrix": aligned_pose.tolist(),
-            "keyframe_indices": keyframe_indices,
-            "init_pose_image_idx": init_pose_image_idx,
-        }, f, indent=2)
+    refined_pose = gen_3d.get_aligned_pose()
+    save_dir = Path(output_dir) / "init"
+    save_aligned_results(gen_3d, refined_pose, image_info, save_dir, unc_thresh=args.unc_thresh)
+    print(f"[main] init aligned results saved to {save_dir}")
 
     print(f"[main] Aligned results saved to {output_dir}")
     print("=" * 50)
@@ -382,12 +397,9 @@ def main(args):
 
         image_info, gen_3d = optimize_pose_with_mask_loss(image_info, gen_3d, args)
         refined_pose = gen_3d.get_aligned_pose()
-        if refined_pose is None:
-            print("[main] Mask refinement did not produce a pose, skipping save.")
-            return
-
-        _save_refined_outputs(gen_3d, refined_pose, output_dir)
-        print(f"[main] Refined results saved to {output_dir}")
+        save_dir = Path(output_dir) / "refined"
+        save_aligned_results(gen_3d, refined_pose, image_info, save_dir, unc_thresh=args.unc_thresh)
+        print(f"[main] Refined results saved to {save_dir}")
 
 
 
@@ -433,6 +445,12 @@ def parse_args():
         "--optimize_intrinsic",
         action="store_true",
         help="Also optimize camera intrinsics during mask refinement"
+    )
+    parser.add_argument(
+        "--unc_thresh",
+        type=float,
+        default=2.0,
+        help="Uncertainty threshold for filtering 3D points when saving PLY (points with uncertainty > threshold are excluded)"
     )
     return parser.parse_args()
 
