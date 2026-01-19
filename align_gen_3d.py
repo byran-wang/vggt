@@ -23,6 +23,72 @@ from robust_hoi_pipeline.correspondence_alignment import (
 )
 
 
+def _ensure_keyframe_mask(image_info, keyframe_indices):
+    keyframe_mask = image_info.get("keyframe")
+    if keyframe_mask is not None:
+        return image_info
+
+    num_frames = None
+    extrinsics = image_info.get("extrinsics")
+    image_masks = image_info.get("image_masks")
+    images = image_info.get("images")
+
+    if extrinsics is not None:
+        num_frames = len(extrinsics)
+    elif image_masks is not None:
+        num_frames = len(image_masks)
+    elif images is not None:
+        num_frames = len(images)
+
+    if num_frames is None:
+        print("[_ensure_keyframe_mask] Unable to infer number of frames, skipping keyframe mask setup")
+        return image_info
+
+    keyframe_mask = np.zeros(num_frames, dtype=bool)
+    for idx in keyframe_indices:
+        if 0 <= idx < num_frames:
+            keyframe_mask[idx] = True
+    image_info["keyframe"] = keyframe_mask
+    return image_info
+
+
+def _decompose_similarity(matrix):
+    linear = matrix[:3, :3].astype(np.float64)
+    col_norms = np.linalg.norm(linear, axis=0)
+    scale = float(col_norms.mean()) if np.all(col_norms > 0) else 1.0
+    rotation = linear / scale if scale != 0.0 else linear
+    translation = matrix[:3, 3].astype(np.float64)
+    return rotation, translation, scale
+
+
+def _save_refined_outputs(gen_3d, refined_pose, output_dir):
+    import trimesh
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    mesh_path = getattr(gen_3d, "mesh_path", None)
+    if mesh_path and os.path.exists(mesh_path):
+        mesh = trimesh.load(mesh_path, process=False)
+        if refined_pose is not None:
+            mesh.apply_transform(refined_pose)
+        mesh.export(output_path / "white_mesh_remesh_refined.obj")
+
+    if refined_pose is not None:
+        rotation, translation, scale = _decompose_similarity(refined_pose)
+        with open(output_path / "refined_transform.json", "w") as f:
+            json.dump(
+                {
+                    "matrix": refined_pose.tolist(),
+                    "rotation": rotation.tolist(),
+                    "translation": translation.tolist(),
+                    "scale": scale,
+                },
+                f,
+                indent=2,
+            )
+
+
 def load_keyframe_indices(results_dir):
     """Load keyframe indices from key_frame_idx.txt.
 
@@ -302,6 +368,28 @@ def main(args):
     print("Alignment complete!")
     print("=" * 50)
 
+    if args.enable_mask_refine:
+        print("=" * 50)
+        print("Step 6: Refining alignment with mask optimization...")
+        print("=" * 50)
+
+        image_info = _ensure_keyframe_mask(image_info, keyframe_indices)
+        try:
+            from robust_hoi_pipeline.mask_optimization import optimize_pose_with_mask_loss
+        except Exception as exc:
+            print(f"[main] Mask optimization unavailable: {exc}")
+            return
+
+        image_info, gen_3d = optimize_pose_with_mask_loss(image_info, gen_3d, args)
+        refined_pose = gen_3d.get_aligned_pose()
+        if refined_pose is None:
+            print("[main] Mask refinement did not produce a pose, skipping save.")
+            return
+
+        _save_refined_outputs(gen_3d, refined_pose, output_dir)
+        print(f"[main] Refined results saved to {output_dir}")
+
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Align generated 3D model with reconstructed scene")
@@ -322,6 +410,29 @@ def parse_args():
         type=int,
         default=0,
         help="Initial pose image index for alignment reference"
+    )
+    parser.add_argument(
+        "--enable_mask_refine",
+        type=bool,
+        default=True,
+        help="Refine aligned pose using mask IoU loss"
+    )
+    parser.add_argument(
+        "--mask_opt_iters",
+        type=int,
+        default=200,
+        help="Number of iterations for mask-based optimization"
+    )
+    parser.add_argument(
+        "--mask_opt_lr",
+        type=float,
+        default=1e-2,
+        help="Learning rate for mask-based optimization"
+    )
+    parser.add_argument(
+        "--optimize_intrinsic",
+        action="store_true",
+        help="Also optimize camera intrinsics during mask refinement"
     )
     return parser.parse_args()
 
