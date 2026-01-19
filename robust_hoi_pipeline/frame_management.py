@@ -736,7 +736,7 @@ def process_key_frame(image_info, gen_3d, frame_idx, args):
     return image_info
 
 
-def register_remaining_frames(image_info, gen_3d, args):
+def register_key_frames(image_info, gen_3d, args):
     """Register all remaining frames in the sequence.
 
     Args:

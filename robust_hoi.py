@@ -1,4 +1,4 @@
-from robust_hoi_pipeline import parse_args, demo_fn
+from robust_hoi_pipeline import parse_args, robust_hoi_pipeline
 
 args = parse_args()
-demo_fn(args)
+robust_hoi_pipeline(args)

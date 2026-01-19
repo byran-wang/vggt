@@ -23,7 +23,8 @@ from .track_prediction import predict_initial_tracks_wrapper, sample_points_at_t
 from .pose_estimation import estimate_initial_poses, filter_and_verify_tracks
 from .optimization import propagate_uncertainty_and_build_image_info
 from .correspondence_alignment import get_3D_correspondences, evaluate_3D_corres, align_3D_model_with_images
-from .frame_management import register_remaining_frames
+from .frame_management import register_key_frames
+from .mask_optimization import optimize_pose_with_mask_loss
 
 
 class TeeLogger:
@@ -131,7 +132,7 @@ def setup_environment(args):
     return device, dtype
 
 
-def demo_fn(args):
+def robust_hoi_pipeline(args):
     """Master orchestration function for the COLMAP pipeline.
 
     Coordinates all steps:
@@ -144,7 +145,7 @@ def demo_fn(args):
     7. Propagate uncertainties and build image info
     8. Get 3D correspondences
     9. Align 3D model
-    10. Register remaining frames
+    10. Register key frames
 
     Args:
         args: Parsed command-line arguments
@@ -217,7 +218,10 @@ def demo_fn(args):
                                    out_dir=f"{args.output_dir}/aligned")
 
         # Step 10: Register remaining frames
-        register_remaining_frames(image_info, gen_3d, args)
+        register_key_frames(image_info, gen_3d, args)
+
+        # Step 11: Optimize poses and intrinsics using mask loss
+        image_info, gen_3d = optimize_pose_with_mask_loss(image_info, gen_3d, args)
 
         print("=" * 50)
         print("Pipeline complete!")

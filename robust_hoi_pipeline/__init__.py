@@ -46,7 +46,7 @@ from .frame_management import (
     check_frame_invalid,
     check_key_frame,
     process_key_frame,
-    register_remaining_frames,
+    register_key_frames,
 )
 from .visualization_io import (
     save_results,
@@ -62,7 +62,7 @@ from .geometry_utils import (
     adjust_intrinsic_for_new_image_size,
     rename_colmap_recons_and_rescale_camera,
 )
-from .pipeline import demo_fn, setup_environment
+from .pipeline import robust_hoi_pipeline, setup_environment
 
 __all__ = [
     # args_config
@@ -100,7 +100,7 @@ __all__ = [
     "check_frame_invalid",
     "check_key_frame",
     "process_key_frame",
-    "register_remaining_frames",
+    "register_key_frames",
     # visualization_io
     "save_results",
     "save_input_data",
@@ -114,6 +114,6 @@ __all__ = [
     "adjust_intrinsic_for_new_image_size",
     "rename_colmap_recons_and_rescale_camera",
     # pipeline
-    "demo_fn",
+    "robust_hoi_pipeline",
     "setup_environment",
 ]
