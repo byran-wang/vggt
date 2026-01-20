@@ -797,15 +797,18 @@ def register_key_frames(image_info, args):
         )
 
         # Refine the frame pose using 3D-3D correspondences
-        if _refine_frame_pose_3d(image_info, next_frame_idx, args):    
-            if (check_reprojection_error(image_info, next_frame_idx, args)):
-                # high reprojection error, mark as invalid
-                image_info["invalid"][next_frame_idx] = True
+        if image_info["keyframe"].sum() > args.min_track_number:   
+            if _refine_frame_pose_3d(image_info, next_frame_idx, args):
+                    if (check_reprojection_error(image_info, next_frame_idx, args)):
+                        # high reprojection error, mark as invalid
+                        image_info["invalid"][next_frame_idx] = True
+                    else:
+                        image_info["registered"][next_frame_idx] = True
             else:
-                image_info["registered"][next_frame_idx] = True
+                # not enough valid 3D points and depth to refine, mark as invalid
+                image_info["invalid"][next_frame_idx] = True
         else:
-            # not enough valid 3D points and depth to refine, mark as invalid
-            image_info["invalid"][next_frame_idx] = True
+            image_info["registered"][next_frame_idx] = True
         
 
         # Check if this frame should be a keyframe

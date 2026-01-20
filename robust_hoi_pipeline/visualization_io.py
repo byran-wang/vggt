@@ -175,6 +175,7 @@ def eval_reprojection(image_info, frame_idx, intr_np, pts_np, tracks_np, mask_np
     pts_np_filtered = pts_np[valid_mask]
     tracks_np_filtered = tracks_np[valid_mask]
     mask_np_filtered = np.asarray(mask_np)[valid_mask]
+    print(f"[eval_reprojection] Frame {frame_idx}: {len(pts_np_filtered)}/{len(pts_np)} points after uncertainty filtering")
 
     cam_pts = (R_final @ pts_np_filtered.T).T + t_final
     z = cam_pts[:, 2:3]
