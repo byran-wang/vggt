@@ -28,7 +28,39 @@ except Exception:
 
 LIGHT_GRAY = [200, 200, 200, 255]
 GREEN = [0, 255, 0, 255]
-LIGHT_RED = [255, 128, 128, 255]
+LIGHT_RED = [200, 180, 220, 255]
+LIGHT_BLUE = [180, 200, 230]
+
+
+def compute_vertex_normals(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """Compute per-vertex normals by averaging adjacent face normals.
+
+    Args:
+        vertices: Vertex positions of shape (N, 3)
+        faces: Triangle indices of shape (F, 3)
+
+    Returns:
+        Vertex normals of shape (N, 3), normalized
+    """
+    v0 = vertices[faces[:, 0]]
+    v1 = vertices[faces[:, 1]]
+    v2 = vertices[faces[:, 2]]
+
+    # Compute face normals via cross product
+    face_normals = np.cross(v1 - v0, v2 - v0)
+
+    # Accumulate face normals to vertices
+    vertex_normals = np.zeros_like(vertices)
+    np.add.at(vertex_normals, faces[:, 0], face_normals)
+    np.add.at(vertex_normals, faces[:, 1], face_normals)
+    np.add.at(vertex_normals, faces[:, 2], face_normals)
+
+    # Normalize
+    norms = np.linalg.norm(vertex_normals, axis=1, keepdims=True)
+    norms = np.maximum(norms, 1e-8)  # Avoid division by zero
+    vertex_normals = vertex_normals / norms
+
+    return vertex_normals
 
 
 def log_mesh_as_sampled_points(
@@ -739,8 +771,8 @@ def log_hands(hand_provider: HandDataProvider, extr, cam_idx: int):
         return
 
     hand_modes = [
-        ("intrinsic", LIGHT_GRAY),
-        ("trans", GREEN),
+        # ("intrinsic", LIGHT_GRAY),
+        # ("trans", GREEN),
         ("rot", LIGHT_RED),
     ]
     for mode, color in hand_modes:
@@ -761,6 +793,7 @@ def log_hands(hand_provider: HandDataProvider, extr, cam_idx: int):
         w2c[:3] = extr[cam_idx][:3]
         c2w = np.linalg.inv(w2c)
         verts_world = (c2w[:3, :3] @ verts_cam.T + c2w[:3, 3:4]).T
+        vertex_normals = compute_vertex_normals(verts_world, faces)
         color_rgb = np.array(color[:3], dtype=np.uint8)
         rr.log(
             f"our/hand/{mode}/points",
@@ -777,6 +810,7 @@ def log_hands(hand_provider: HandDataProvider, extr, cam_idx: int):
             rr.Mesh3D(
                 vertex_positions=verts_world,
                 triangle_indices=faces,
+                vertex_normals=vertex_normals,
                 mesh_material=mat,
             ),
             static=False,
