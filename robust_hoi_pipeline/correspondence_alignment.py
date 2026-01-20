@@ -21,6 +21,59 @@ from vggt.dependency.projection import project_3D_points_np
 from vggt.utils.visual_track import visualize_tracks_on_images
 
 
+def save_correspondence_point_clouds(
+    cond_world,
+    ref_world,
+    cond_img,
+    ref_img,
+    cond_pixels,
+    ref_pixels,
+    out_dir,
+):
+    """Save 3D correspondence points with colors sampled from images.
+
+    Args:
+        cond_world: (N, 3) condition points in world coordinates
+        ref_world: (N, 3) reference points in world coordinates
+        cond_img: (C, H, W) condition image
+        ref_img: (C, H, W) reference image (numpy or tensor)
+        cond_pixels: (N, 2) pixel coordinates in condition image
+        ref_pixels: (N, 2) pixel coordinates in reference image
+        out_dir: Output directory path
+    """
+    import trimesh
+
+    eval_dir = Path(out_dir)
+    eval_dir.mkdir(parents=True, exist_ok=True)
+
+    # Sample colors from condition image at correspondence locations
+    cond_colors = cond_img[
+        :,
+        np.clip(np.round(cond_pixels[:, 1]).astype(int), 0, cond_img.shape[1] - 1),
+        np.clip(np.round(cond_pixels[:, 0]).astype(int), 0, cond_img.shape[2] - 1),
+    ].T  # (N, 3)
+    cond_colors = (cond_colors * 255).astype(np.uint8) if cond_colors.max() <= 1.0 else cond_colors.astype(np.uint8)
+
+    # Sample colors from reference image at correspondence locations
+    ref_img_np = ref_img.cpu().numpy() if torch.is_tensor(ref_img) else ref_img
+    ref_colors = ref_img_np[
+        :,
+        np.clip(np.round(ref_pixels[:, 1]).astype(int), 0, ref_img_np.shape[1] - 1),
+        np.clip(np.round(ref_pixels[:, 0]).astype(int), 0, ref_img_np.shape[2] - 1),
+    ].T  # (N, 3)
+    ref_colors = (ref_colors * 255).astype(np.uint8) if ref_colors.max() <= 1.0 else ref_colors.astype(np.uint8)
+
+    # Save condition points
+    cond_cloud = trimesh.PointCloud(cond_world, colors=cond_colors)
+    cond_cloud.export(eval_dir / "cond.ply")
+    print(f"[save_correspondence_point_clouds] Saved condition points to {eval_dir / 'cond.ply'}")
+
+    # Save reference points
+    ref_cloud = trimesh.PointCloud(ref_world, colors=ref_colors)
+    ref_cloud.export(eval_dir / "ref.ply")
+    print(f"[save_correspondence_point_clouds] Saved reference points to {eval_dir / 'ref.ply'}")
+
+
 def get_3D_correspondences(gen_3d, reference, reference_idx=0, out_dir=None, min_vis_score=0.2):
     """Compute 3D correspondences between generated model and image observations.
 
@@ -92,10 +145,9 @@ def get_3D_correspondences(gen_3d, reference, reference_idx=0, out_dir=None, min
     ref_img_t = ref_images[reference_idx]
 
     imgs_stack = torch.stack([cond_img_t, ref_img_t], dim=0)
-    cond_mask_t = torch.from_numpy(cond_mask_proc.astype(np.float32)).unsqueeze(0).to(device=device, dtype=torch.float32)
-    ref_mask_t = ref_mask
+    cond_mask_t = torch.from_numpy(cond_mask_proc.astype(np.float32)).unsqueeze(0).to(device=device, dtype=torch.float32)[None]
+    ref_mask_t = ref_mask[None]
     masks_stack = torch.cat([cond_mask_t, ref_mask_t], dim=0)
-
     with torch.no_grad():
         pred_tracks, pred_vis_scores, _, _, _ = predict_tracks(
             imgs_stack,
@@ -103,9 +155,11 @@ def get_3D_correspondences(gen_3d, reference, reference_idx=0, out_dir=None, min
             conf=None,
             points_3d=None,
             max_query_pts=1024,
-            query_frame_num=2,
-            fine_tracking=False,
+            query_frame_num=0,
+            keypoint_extractor="aliked+sp",
+            fine_tracking=True,
             complete_non_vis=False,
+            query_frame_indexes=[0],
         )
 
     if out_dir:
@@ -157,6 +211,18 @@ def get_3D_correspondences(gen_3d, reference, reference_idx=0, out_dir=None, min
     ref_world = _pixels_to_world(ref_pixels, ref_depth_vals, ref_intr, ref_extr)
 
     print(f"[get_3D_correspondences] Found {len(cond_world)} 3D correspondences.")
+
+    # Save the cond_world and ref_world with color to out_dir
+    if out_dir:
+        save_correspondence_point_clouds(
+            cond_world,
+            ref_world,
+            cond_img_raw,
+            ref_img,
+            cond_pixels_orig,
+            ref_pixels,
+            out_dir,
+        )
 
     return {
         "condition_points_world": cond_world,

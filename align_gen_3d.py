@@ -349,6 +349,7 @@ def main(args):
         image_info,
         reference_idx=init_pose_image_idx,
         out_dir=f"{output_dir}/3D_corres",
+        min_vis_score=0.0,
     )
 
     if corres_3d is None:
