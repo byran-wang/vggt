@@ -34,8 +34,8 @@ def load_data(args):
     extrinsics = data.get("extrinsics")
 
     img_fs = obj_provider.origin_images
-    seq_name = obj_provider.get_seq_name()    
-    mesh_file = last_step["gen_3d_mesh_aligned"]
+    seq_name = obj_provider.get_seq_name() 
+    mesh_file = obj_provider.gen3d_aligned["gen3d_omni"]
 
 
     hand_fit_mode = args.hand_fit_mode

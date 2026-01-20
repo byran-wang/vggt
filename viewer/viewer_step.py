@@ -53,7 +53,8 @@ def log_mesh_as_sampled_points(
     """
     if colors is None:
         colors = np.array([255, 255, 255])
-
+    if not Path(mesh_path).exists():
+        return
     mesh = trimesh.load_mesh(mesh_path)
     vertices = mesh.vertices
 
@@ -161,7 +162,12 @@ class ObjDataProvider:
         self.cond_image = gen3d_dir / "image.png"
         self.cond_depth = gen3d_dir / "depth.png"
         self.camera_json = gen3d_dir / "camera.json"
-        self.gen3d_aligned = self.base_dir / "../gen_3d_aligned/white_mesh_remesh_aligned.obj"
+
+        self.gen3d_aligned = {
+            "gen3d_omni": self.base_dir / "../gen_3d_aligned_omni/white_mesh_remesh_world.obj",
+            "gen3d_refined": self.base_dir / "../gen_3d_aligned/refined/white_mesh_remesh.obj",
+            "gen3d_init": self.base_dir / "../gen_3d_aligned/init/white_mesh_remesh.obj"
+        }
 
     def get_seq_name(self):
         return self.base_dir.parents[0].name
@@ -806,15 +812,16 @@ def main(args):
         )
 
     if args.log_aligned_mesh:
-        log_mesh_as_sampled_points(
-            visualizer,
-            "/our/aligned_mesh_points",
-            obj_provider.gen3d_aligned,
-            sample_num=10000,
-            radii=0.0003,
-            colors=np.array([255, 255, 255]),
-            static=True,
-        )
+        for label, mesh_path in obj_provider.gen3d_aligned.items():
+            log_mesh_as_sampled_points(
+                visualizer,
+                f"/our/gen3d/{label}",
+                mesh_path,
+                sample_num=10000,
+                radii=0.0003,
+                colors=np.array([255, 255, 255]),
+                static=True,
+            )
 
     for step in obj_provider.steps:
         step_idx = step["index"]
