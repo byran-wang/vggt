@@ -64,7 +64,7 @@ def eval_add_object(data_pred, data_gt, metric_dict):
     pred_o2c = data_pred.get("extrinsics")
     gt_o2c = data_gt.get("o2c")
     model_pts = data_gt.get("v3d_can.object")
-    is_valid = data_gt.get("is_valid")
+    is_valid = data_gt.get("is_valid") * data_pred.get("is_valid")
 
     if pred_o2c is None or gt_o2c is None or model_pts is None:
         print("[WARN][eval_add_object] missing extrinsics/gt poses/model points; skipping ADD.")
@@ -101,7 +101,7 @@ def eval_add_s_object(data_pred, data_gt, metric_dict):
     pred_extr = data_pred.get("extrinsics")
     gt_o2c = data_gt.get("o2c")
     model_pts = data_gt.get("v3d_can.object")
-    is_valid = data_gt.get("is_valid")
+    is_valid = data_gt.get("is_valid") * data_pred.get("is_valid")
 
     if pred_extr is None or gt_o2c is None or model_pts is None:
         print("[WARN][eval_add_s_object] missing extrinsics/gt poses/model points; skipping ADD-S.")

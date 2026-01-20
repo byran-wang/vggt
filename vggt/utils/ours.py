@@ -90,6 +90,7 @@ def load_data(args):
     out['root.object'] = compute_bounding_box_centers(out['verts.object']) # B, 3
     out['v3d_ra.object'] = out['verts.object'] - out['root.object'][:,None,:] # B, N, 3
     out["v3d_right.object"] = out["v3d_c.object"] - out["root.right"][:, None, :] # B, N, 3
+    out["is_valid"] = data.get("registered") # B, 1
 
     faces = {
         'object' : np.array(obj_mesh_c.faces),   # M,3          
