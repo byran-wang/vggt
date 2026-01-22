@@ -853,7 +853,13 @@ def main(args):
                 mesh_path,
                 sample_num=10000,
                 radii=0.0003,
-                colors=np.array([255, 255, 255]),
+                colors=np.array([255, 255, 0]),  # yellow
+                static=True,
+            )
+            visualizer.log_mesh(
+                f"/our/gen3d/{label}_mesh",
+                mesh_path,
+                colors=np.array(LIGHT_GRAY),  # gray
                 static=True,
             )
 
