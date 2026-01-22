@@ -175,10 +175,15 @@ class ObjDataProvider:
         self.depths = sorted((self.base_dir / "depth_prior").glob("*.png"))
 
         # Discover per-step folders containing results.pkl
-        step_dirs = sorted(
-            (d for d in self.base_dir.iterdir() if d.is_dir() and d.name.isdigit()),
-            key=lambda p: p.stat().st_mtime,
-        )
+        key_frame_idx_file = self.result_dir / "key_frame_idx.txt"
+        with open(key_frame_idx_file, "r") as f:
+            key_frame_idxs = [int(line.strip()) for line in f.readlines() if line.strip()]
+        step_dirs = [
+            self.result_dir / f"{idx:04d}"
+            for idx in key_frame_idxs
+            if (self.result_dir / f"{idx:04d}").exists()
+        ]
+
 
         self.steps = []
         for step_idx, step_dir in enumerate(step_dirs):
