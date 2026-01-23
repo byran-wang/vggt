@@ -22,3 +22,4 @@ pymeshlab
 ipython
 open3d
 chumpy
+pymcubes
