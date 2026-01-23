@@ -289,19 +289,21 @@ def train_sdf(
         K = intrinsics[img_idx]
         pose = c2w[img_idx]
 
-        # Sample pixels (prefer object region)
+        # Sample pixels (prefer object region, ratio 10:1 object:background)
+        n_obj_target = batch_size * 10 // 11
+        n_bg_target = batch_size - n_obj_target
+
         obj_coords = torch.nonzero(mask > 0.5, as_tuple=False)
-        if len(obj_coords) > batch_size // 2:
-            obj_sample_idx = torch.randperm(len(obj_coords))[: batch_size // 2]
+        if len(obj_coords) > n_obj_target:
+            obj_sample_idx = torch.randperm(len(obj_coords))[:n_obj_target]
             obj_pixels = obj_coords[obj_sample_idx]
         else:
             obj_pixels = obj_coords
 
         # Random background pixels
         bg_coords = torch.nonzero(mask <= 0.5, as_tuple=False)
-        n_bg = batch_size - len(obj_pixels)
-        if len(bg_coords) > n_bg:
-            bg_sample_idx = torch.randperm(len(bg_coords))[:n_bg]
+        if len(bg_coords) > n_bg_target:
+            bg_sample_idx = torch.randperm(len(bg_coords))[:n_bg_target]
             bg_pixels = bg_coords[bg_sample_idx]
         else:
             bg_pixels = bg_coords
