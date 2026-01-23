@@ -23,3 +23,6 @@ ipython
 open3d
 chumpy
 pymcubes
+nerfacc==0.3.3
+torch_efficient_distloss
+tensorboard
