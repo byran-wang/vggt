@@ -164,6 +164,88 @@ def compute_scene_bounds(c2w_list, scale=1.5):
     return center, radius
 
 
+def visualize_dataset_in_rerun(images, intrinsics, c2w):
+    """Visualize camera poses, intrinsics and images in rerun."""
+    import rerun as rr
+    rr.init("train_sdf", spawn=True)
+
+    n_images, H, W, _ = images.shape
+    for cam_idx in range(n_images):
+        K = intrinsics[cam_idx].cpu().numpy()
+        pose = c2w[cam_idx].cpu().numpy()
+        img = (images[cam_idx].cpu().numpy() * 255).astype(np.uint8)
+
+        rr.log(
+            f"world/camera_{cam_idx}",
+            rr.Pinhole(image_from_camera=K, resolution=[W, H]),
+        )
+        rr.log(
+            f"world/camera_{cam_idx}",
+            rr.Transform3D(translation=pose[:3, 3], mat3x3=pose[:3, :3]),
+        )
+        rr.log(f"world/camera_{cam_idx}/image", rr.Image(img))
+
+
+def visualize_rays_in_rerun(rays_o, rays_d, pts, far, scale, iter_idx, n_vis=50):
+    """Visualize rays and sampled points in rerun."""
+    import rerun as rr
+    if iter_idx == 0:
+        rr.init("train_sdf", spawn=True)
+
+    n_vis = min(n_vis, len(rays_o))
+    ray_origins = rays_o[:n_vis].cpu().numpy()
+    ray_ends = (rays_o[:n_vis] + rays_d[:n_vis] * far * scale).cpu().numpy()
+    rr.log(
+        f"training/rays_{iter_idx}",
+        rr.LineStrips3D(
+            [np.stack([o, e]) for o, e in zip(ray_origins, ray_ends)],
+            colors=[255, 255, 0],
+        ),
+    )
+    # Visualize sampled points along rays
+    pts_vis = pts[:n_vis].reshape(-1, 3).cpu().numpy()
+    rr.log(
+        f"training/sample_points_{iter_idx}",
+        rr.Points3D(pts_vis, colors=[0, 255, 255], radii=0.005),
+        static=True,
+    )
+
+
+def render_preview_image(
+    sdf_net, color_net, H, W, K, pose, center, scale, near, far, n_samples, output_dir, iter_idx, device
+):
+    """Render a full preview image and save to disk."""
+    preview_dir = output_dir / "preview"
+    os.makedirs(preview_dir, exist_ok=True)
+
+    with torch.no_grad():
+        preview_img = torch.zeros(H, W, 3, device=device)
+        preview_depth = torch.zeros(H, W, device=device)
+        chunk_size = 4096
+        all_pixels = torch.stack(
+            torch.meshgrid(torch.arange(H), torch.arange(W), indexing="ij"), dim=-1
+        ).reshape(-1, 2).to(device)
+
+        for chunk_start in range(0, len(all_pixels), chunk_size):
+            chunk_pixels = all_pixels[chunk_start:chunk_start + chunk_size]
+            chunk_rays_o, chunk_rays_d = get_rays(H, W, K, pose)
+            chunk_rays_o = chunk_rays_o[chunk_pixels[:, 0], chunk_pixels[:, 1]]
+            chunk_rays_d = chunk_rays_d[chunk_pixels[:, 0], chunk_pixels[:, 1]]
+            chunk_rays_o = (chunk_rays_o - center) * scale
+            chunk_rays_d = chunk_rays_d / chunk_rays_d.norm(dim=-1, keepdim=True)
+            chunk_pts, chunk_z_vals = sample_points_in_tsdf(
+                chunk_rays_o, chunk_rays_d, near * scale, far * scale, n_samples
+            )
+            chunk_rgb, chunk_depth, _ = volume_render_sdf(
+                sdf_net, color_net, chunk_pts, chunk_z_vals, chunk_rays_d
+            )
+            preview_img[chunk_pixels[:, 0], chunk_pixels[:, 1]] = chunk_rgb
+            preview_depth[chunk_pixels[:, 0], chunk_pixels[:, 1]] = chunk_depth
+
+        preview_img_np = (preview_img.cpu().numpy() * 255).astype(np.uint8)
+        Image.fromarray(preview_img_np).save(preview_dir / f"preview_{iter_idx:05d}.png")
+
+
 def train_sdf(
     sdf_net,
     color_net,
@@ -187,6 +269,9 @@ def train_sdf(
     masks = dataset["masks"].to(device)
     intrinsics = dataset["intrinsics"].to(device)
     c2w = dataset["c2w"].to(device)
+    
+    if 0:
+        visualize_dataset_in_rerun(images, intrinsics, c2w)
 
     n_images, H, W, _ = images.shape
     center, radius = compute_scene_bounds(c2w)
@@ -242,6 +327,10 @@ def train_sdf(
             rays_o, rays_d, near * scale, far * scale, n_samples
         )
 
+        # Visualize rays and points in rerun (every 10 iterations)
+        if 0 and iter_idx % 10 == 0:
+            visualize_rays_in_rerun(rays_o, rays_d, pts, far, scale, iter_idx)
+
         # Volume render
         rgb_pred, depth_pred, weights = volume_render_sdf(
             sdf_net, color_net, pts, z_vals, rays_d
@@ -282,6 +371,9 @@ def train_sdf(
         if iter_idx % 100 == 0:
             pbar.set_postfix(
                 rgb=rgb_loss.item(), eik=eikonal_loss.item(), free=free_space_loss.item()
+            )
+            render_preview_image(
+                sdf_net, color_net, H, W, K, pose, center, scale, near, far, n_samples, output_dir, iter_idx, device
             )
 
     return sdf_net, color_net, {"center": center.cpu(), "scale": scale}
@@ -346,6 +438,7 @@ def parse_args():
     parser.add_argument("--num_iters", type=int, default=5000, help="Training iterations")
     parser.add_argument("--batch_size", type=int, default=1024, help="Batch size")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--n_samples", type=int, default=64, help="Number of samples per ray")
     parser.add_argument(
         "--mesh_resolution", type=int, default=128, help="Mesh extraction resolution"
     )
@@ -373,6 +466,7 @@ def main(args):
         num_iters=args.num_iters,
         batch_size=args.batch_size,
         lr=args.lr,
+        n_samples=args.n_samples,
         device=args.device,
     )
 
