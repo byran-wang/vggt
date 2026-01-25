@@ -203,7 +203,8 @@ class ObjDataProvider:
         self.gen3d_aligned = {
             "gen3d_omni": self.base_dir / "../gen_3d_aligned_omni/white_mesh_remesh_world.obj",
             "gen3d_refined": self.base_dir / "../gen_3d_aligned/refined/white_mesh_remesh.obj",
-            "gen3d_init": self.base_dir / "../gen_3d_aligned/init/white_mesh_remesh.obj"
+            "gen3d_init": self.base_dir / "../gen_3d_aligned/init/white_mesh_remesh.obj",
+            "transform_world2obj": self.base_dir / "../gen_3d_aligned/refined/aligned_transform.json",
         }
 
     def get_seq_name(self):
