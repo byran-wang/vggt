@@ -185,7 +185,7 @@ def main(args):
         image_path_list,
         args,
         target_size=1024,
-        out_dir=f"{args.out_dir}/data_processed",
+        out_dir=None,
     )
 
     # Load camera intrinsics
