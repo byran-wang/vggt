@@ -177,8 +177,11 @@ def load_and_preprocess_images_square_ZED(image_path_list, args, target_size=102
             mask = np.array(img.getchannel('A'))
         elif mask_path.exists():
             mask_img = Image.open(mask_path)
+            # Convert to grayscale if RGB
+            if mask_img.mode == "RGB" or mask_img.mode == "RGBA":
+                mask_img = mask_img.convert("L")
             mask = np.array(mask_img)
-            mask[mask != instance_id] = 0      
+            mask[mask != instance_id] = 0
         else:
             mask = np.ones((img.size[1], img.size[0]))
         mask = mask > 0  # (H, W) bool
@@ -367,8 +370,11 @@ def load_and_preprocess_images_square_HO3D(image_path_list, args, target_size=10
             mask = np.array(img.getchannel('A'))
         elif mask_path.exists():
             mask_img = Image.open(mask_path)
+            # Convert to grayscale if RGB
+            if mask_img.mode == "RGB" or mask_img.mode == "RGBA":
+                mask_img = mask_img.convert("L")
             mask = np.array(mask_img)
-            # mask[mask != instance_id] = 0      
+            # mask[mask != instance_id] = 0
         else:
             mask = np.ones((img.size[1], img.size[0]))
         mask = mask > 0  # (H, W) bool
