@@ -363,8 +363,8 @@ def load_and_preprocess_images_square_HO3D(image_path_list, args, target_size=10
         img = Image.open(image_path)
         seq_id = Path(image_path).parents[1].name
         img_index = int(Path(image_path).stem.split('_')[-1])
-        mask_path = Path(image_path.replace('rgb', 'depth').replace('.jpg', '.png'))
-        depth_path = Path(image_path.replace('rgb', 'mask_object').replace('.jpg', '.png'))
+        mask_path = Path(image_path.replace('rgb', 'mask_object').replace('.jpg', '.png'))
+        depth_path = Path(image_path.replace('rgb', 'depth').replace('.jpg', '.png'))
 
         if img.mode == "RGBA":
             mask = np.array(img.getchannel('A'))
