@@ -44,10 +44,16 @@ def load_intrinsics(intrinsics_path):
         return intrinsics
 
 class GEN_3D:
-    def __init__(self, gen_3D_dir):
+    def __init__(self, gen_3D_dir, gen_3D_type="SAM3D"):
+        if gen_3D_type not in ["HY", "SAM3D"]:
+            raise ValueError(f"Unsupported GEN_3D type: {gen_3D_type}")
         self.gen_3D_path = Path(gen_3D_dir)
-        self.mesh_path = Path(str(self.gen_3D_path).replace("align_mesh_image", "3D_gen")) / "white_mesh_remesh.obj"
-        self.condition_image_path = self.gen_3D_path / "image.png"
+        if gen_3D_type == "HY":
+            self.mesh_path = Path(str(self.gen_3D_path).replace("align_mesh_image", "3D_gen")) / "white_mesh_remesh.obj"
+            self.condition_image_path = self.gen_3D_path / "image.png"
+        elif gen_3D_type == "SAM3D":
+            self.mesh_path = self.gen_3D_path / "mesh.obj"
+            self.condition_image_path = self.gen_3D_path / "input.png" 
         self.camera_path = self.gen_3D_path / "camera.json"
         self.depth_path = self.gen_3D_path / "depth.png"
 

@@ -11,7 +11,7 @@ This package provides a modular pipeline for 3D reconstruction from RGBD sequenc
 """
 
 from .args_config import parse_args, set_seed
-from .data_loading import load_images_and_intrinsics, get_image_list, save_intrinsics
+from .data_loading import load_inputs_and_gen3d, get_image_list, save_intrinsics
 from .track_prediction import (
     run_VGGT,
     predict_initial_tracks_wrapper,
@@ -69,7 +69,7 @@ __all__ = [
     "parse_args",
     "set_seed",
     # data_loading
-    "load_images_and_intrinsics",
+    "load_inputs_and_gen3d",
     "get_image_list",
     "save_intrinsics",
     # track_prediction

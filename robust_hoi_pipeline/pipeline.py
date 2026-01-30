@@ -18,7 +18,7 @@ import torch
 from vggt.models.vggt import VGGT
 
 from .args_config import set_seed
-from .data_loading import load_images_and_intrinsics
+from .data_loading import load_inputs_and_gen3d
 from .track_prediction import predict_initial_tracks_wrapper, sample_points_at_track_locations
 from .pose_estimation import estimate_initial_poses, filter_and_verify_tracks
 from .optimization import propagate_uncertainty_and_build_image_info
@@ -173,7 +173,7 @@ def robust_hoi_pipeline(args):
             vggt_fixed_resolution,
             img_load_resolution,
             gen_3d,
-        ) = load_images_and_intrinsics(args, device)
+        ) = load_inputs_and_gen3d(args, device)
 
         # Step 3: Predict initial tracks
         pred_tracks, pred_vis_scores, points_rgb = predict_initial_tracks_wrapper(

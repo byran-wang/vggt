@@ -93,7 +93,7 @@ def save_intrinsics(intrinsic, filepath):
     np.savetxt(filepath, K, fmt="%.8f")
 
 
-def load_images_and_intrinsics(args, device):
+def load_inputs_and_gen3d(args, device):
     """Load images, depth prior, masks, and camera intrinsics.
 
     Args:

@@ -18,7 +18,7 @@ import torch
 from vggt.models.vggt import VGGT
 
 from .args_config import set_seed
-from .data_loading import load_images_and_intrinsics
+from .data_loading import load_inputs_and_gen3d
 from .track_prediction import predict_initial_tracks_wrapper, sample_points_at_track_locations
 from .pose_estimation import estimate_initial_poses, filter_and_verify_tracks
 from .optimization import propagate_uncertainty_and_build_image_info
@@ -135,18 +135,6 @@ def setup_environment(args):
 def robust_hoi_pipeline(args):
     """Master orchestration function for the COLMAP pipeline.
 
-    Coordinates all steps:
-    1. Setup environment
-    2. Load images and intrinsics
-    3. Predict initial tracks
-    4. Estimate initial poses
-    5. Sample points at track locations
-    6. Filter and verify tracks
-    7. Propagate uncertainties and build image info
-    8. Get 3D correspondences
-    9. Align 3D model
-    10. Register key frames
-
     Args:
         args: Parsed command-line arguments
     """
@@ -173,7 +161,7 @@ def robust_hoi_pipeline(args):
             vggt_fixed_resolution,
             img_load_resolution,
             gen_3d,
-        ) = load_images_and_intrinsics(args, device)
+        ) = load_inputs_and_gen3d(args, device)
 
         # Step 3: Predict initial tracks
         pred_tracks, pred_vis_scores, points_rgb = predict_initial_tracks_wrapper(
@@ -203,7 +191,6 @@ def robust_hoi_pipeline(args):
             image_masks, depth_prior, intrinsic, extrinsic,
             pred_tracks, track_mask, points_3d, points_rgb, args
         )
-
 
 
 

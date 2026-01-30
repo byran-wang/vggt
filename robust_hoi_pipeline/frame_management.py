@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 
-def _save_keyframe_indices(output_dir, frame_idx):
+def save_keyframe_indices(output_dir, frame_idx):
     """Append a keyframe index to the keyframe indices file.
 
     Args:
@@ -751,6 +751,17 @@ def process_key_frame(image_info, frame_idx, args):
     print(f"[process_key_frame] Keyframe {frame_idx} processing complete")
     return image_info
 
+def register_condition_frame_as_keyframe(image_info, args):
+    num_images = len(image_info["images"])
+    image_info["registered"] = np.array([False] * num_images)
+    image_info["registered"][args.cond_index] = True
+
+    image_info["invalid"] = np.array([False] * num_images)
+
+    image_info["keyframe"] = np.array([False] * num_images)
+    image_info["keyframe"][args.cond_index] = True
+
+    return image_info    
 
 def register_key_frames(image_info, args):
     """Register all remaining frames in the sequence.
@@ -765,19 +776,9 @@ def register_key_frames(image_info, args):
     # Import here to avoid circular dependency
     from .visualization_io import save_results
     from .optimization import register_new_frame
-
+    
+    image_info = register_condition_frame_as_keyframe(image_info, args)
     num_images = len(image_info["images"])
-    image_info["registered"] = np.array([False] * num_images)
-    image_info["registered"][args.cond_index] = True
-
-    image_info["invalid"] = np.array([False] * num_images)
-
-    image_info["keyframe"] = np.array([False] * num_images)
-    image_info["keyframe"][args.cond_index] = True
-
-    save_results(image_info, gen_3d=None, out_dir=f"{args.output_dir}/results/{args.cond_index:04d}/", args=args)
-    _save_keyframe_indices(args.output_dir, args.cond_index)
-
     while image_info["registered"].sum() + image_info["invalid"].sum() < num_images:
         next_frame_idx = find_next_frame(image_info)
         print("+" * 50)
@@ -821,7 +822,7 @@ def register_key_frames(image_info, args):
                 frame_inliner_thresh=args.kf_inlier_thresh
             ):
                 image_info = process_key_frame(image_info, next_frame_idx, args)
-                _save_keyframe_indices(args.output_dir, next_frame_idx)
+                save_keyframe_indices(args.output_dir, next_frame_idx)
         save_results(image_info, gen_3d=None, out_dir=f"{args.output_dir}/results/{next_frame_idx:04d}/", args=args)
 
         print(f"registered: {image_info['registered'].sum()}, "
