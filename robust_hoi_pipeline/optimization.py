@@ -13,6 +13,8 @@ Includes bundle adjustment, uncertainty propagation, and pose optimization.
 import numpy as np
 import torch
 import cv2
+import trimesh
+from pathlib import Path
 
 from vggt.dependency.np_to_pycolmap import batch_np_matrix_to_pycolmap
 
@@ -23,6 +25,177 @@ from .geometry_utils import axis_angle_to_matrix
 DEFAULT_RAY_WEIGHT = 10
 DEFAULT_DEPTH_WEIGHT = 1000
 MIN_VALID_OBSERVATIONS_THRESHOLD = 1e-6
+
+
+def fuse_keyframe_depths(depth_prior, extrinsics, intrinsics, keyframes, rep_unc_frame, device, dtype):
+    """Fuse keyframe depths into a single world-space point cloud (KinectFusion-style).
+
+    Args:
+        depth_prior: Depth maps tensor (N, H, W)
+        extrinsics: Camera extrinsic matrices (N, 4, 4)
+        intrinsics: Camera intrinsic matrices (N, 3, 3)
+        keyframes: List of keyframe indices
+        rep_unc_frame: Per-frame reprojection uncertainty
+        device: Torch device
+        dtype: Torch dtype
+
+    Returns:
+        fused_points: World-space point cloud (M, 3)
+        fused_colors: Point colors based on source frame (M, 3)
+    """
+    H, W = depth_prior.shape[-2:]
+    ys, xs = torch.meshgrid(
+        torch.arange(H, device=device, dtype=dtype),
+        torch.arange(W, device=device, dtype=dtype),
+        indexing="ij",
+    )
+
+    all_points = []
+    all_frame_ids = []
+    for kf_idx in keyframes:
+        # Skip frames with high reprojection error or no extrinsic
+        if rep_unc_frame[kf_idx] > 5.0 or rep_unc_frame[kf_idx] == 0.:
+            continue
+
+        depth = depth_prior[kf_idx].to(device=device, dtype=dtype)
+        valid = depth > 0
+        if not valid.any():
+            continue
+
+        # Get camera parameters
+        fx = intrinsics[kf_idx, 0, 0]
+        fy = intrinsics[kf_idx, 1, 1]
+        cx = intrinsics[kf_idx, 0, 2]
+        cy = intrinsics[kf_idx, 1, 2]
+        R = extrinsics[kf_idx, :3, :3]
+        t = extrinsics[kf_idx, :3, 3]
+
+        # Unproject to camera coordinates
+        X = (xs - cx) / fx * depth
+        Y = (ys - cy) / fy * depth
+        Z = depth
+        pts_cam = torch.stack([X, Y, Z], dim=-1)  # (H, W, 3)
+        pts_cam = pts_cam[valid]  # (M, 3)
+
+        # Transform to world coordinates: p_world = (p_cam - t) @ R
+        # Since extrinsic convention is p_cam = R @ p_world + t (column vectors)
+        # With row vectors: p_cam = p_world @ R^T + t, so inverse is p_world = (p_cam - t) @ R
+        pts_world = torch.matmul(pts_cam - t, R)
+
+        all_points.append(pts_world)
+        all_frame_ids.append(torch.full((pts_world.shape[0],), kf_idx, device=device, dtype=torch.long))
+
+    if len(all_points) == 0:
+        return None, None
+
+    fused_points = torch.cat(all_points, dim=0)
+    fused_frame_ids = torch.cat(all_frame_ids, dim=0)
+
+    return fused_points, fused_frame_ids
+
+
+def compute_depth_uncertainty_from_fusion(
+    depth_prior, extrinsics, intrinsics, keyframes, fused_points, rep_unc_frame, device, dtype
+):
+    """Compute depth uncertainty by comparing each keyframe's depth to fused point cloud.
+
+    For each keyframe:
+    1. Project fused points into the keyframe
+    2. Compare projected depth with original depth
+    3. Uncertainty = |fused_depth - original_depth|
+
+    Args:
+        depth_prior: Depth maps tensor (N, H, W)
+        extrinsics: Camera extrinsic matrices (N, 4, 4)
+        intrinsics: Camera intrinsic matrices (N, 3, 3)
+        keyframes: List of keyframe indices
+        fused_points: World-space fused point cloud (M, 3)
+        rep_unc_frame: Per-frame reprojection uncertainty
+        device: Torch device
+        dtype: Torch dtype
+
+    Returns:
+        depth_unc: Depth uncertainty maps (N, H, W) as numpy array
+    """
+    N, H, W = depth_prior.shape
+    depth_unc = torch.zeros_like(depth_prior, dtype=dtype, device=device)
+    depth_cnt = torch.zeros_like(depth_prior, dtype=dtype, device=device)
+
+    for kf_idx in keyframes:
+        if rep_unc_frame[kf_idx] > 5.0 or rep_unc_frame[kf_idx] == 0.:
+            continue
+
+        # Get camera parameters
+        fx = intrinsics[kf_idx, 0, 0]
+        fy = intrinsics[kf_idx, 1, 1]
+        cx = intrinsics[kf_idx, 0, 2]
+        cy = intrinsics[kf_idx, 1, 2]
+        R = extrinsics[kf_idx, :3, :3]
+        t = extrinsics[kf_idx, :3, 3]
+
+        # Transform fused points to camera coordinates: p_cam = R @ p_world + t
+        pts_cam = torch.matmul(fused_points, R.transpose(0, 1)) + t  # (M, 3)
+
+        # Filter points in front of camera
+        z = pts_cam[:, 2]
+        valid = z > 0
+        if not valid.any():
+            continue
+
+        pts_cam = pts_cam[valid]
+        z = z[valid]
+
+        # Project to image plane
+        u = (pts_cam[:, 0] / z) * fx + cx
+        v = (pts_cam[:, 1] / z) * fy + cy
+
+        # Filter points within image bounds
+        in_bounds = (u >= 0) & (u <= W - 1) & (v >= 0) & (v <= H - 1)
+        if not in_bounds.any():
+            continue
+
+        u = u[in_bounds]
+        v = v[in_bounds]
+        z_fused = z[in_bounds]
+
+        # Sample original depth at projected locations
+        u_round = u.round().long()
+        v_round = v.round().long()
+        flat_idx = v_round * W + u_round
+
+        # Use grid_sample for bilinear interpolation
+        grid = torch.empty((1, 1, u.shape[0], 2), device=device, dtype=dtype)
+        grid[..., 0] = (u / (W - 1)) * 2 - 1
+        grid[..., 1] = (v / (H - 1)) * 2 - 1
+        depth_original = torch.nn.functional.grid_sample(
+            depth_prior[kf_idx].to(device=device, dtype=dtype).unsqueeze(0).unsqueeze(0),
+            grid,
+            align_corners=False,
+            mode="bilinear",
+        ).view(-1)
+
+        # Filter valid original depth
+        valid_depth = depth_original > 0
+        if not valid_depth.any():
+            continue
+
+        depth_original = depth_original[valid_depth]
+        z_fused = z_fused[valid_depth]
+        flat_idx = flat_idx[valid_depth]
+
+        # Compute squared residual between fused and original depth
+        residual = (depth_original - z_fused).pow(2)
+
+        # Accumulate uncertainty
+        unc_flat = depth_unc[kf_idx].view(-1)
+        cnt_flat = depth_cnt[kf_idx].view(-1)
+        unc_flat.scatter_add_(0, flat_idx, residual)
+        cnt_flat.scatter_add_(0, flat_idx, torch.ones_like(residual))
+
+    # Compute final uncertainty as sqrt(mean squared error)
+    depth_unc = (depth_unc / depth_cnt.clamp(min=1)).sqrt().cpu().numpy()
+
+    return depth_unc
 
 
 def propagate_uncertainties(
@@ -170,95 +343,34 @@ def propagate_uncertainties(
         insufficient_tracks = kf_track_count.cpu().numpy() < min_track_number
         pts_unc[insufficient_tracks] = np.inf
 
+        # KinectFusion-style depth uncertainty computation
         depth_unc = None
+        fused_points = None
         if torch.is_tensor(depth_prior):
-            H, W = depth_prior.shape[-2:]
-            ys, xs = torch.meshgrid(
-                torch.arange(H, device=device, dtype=dtype),
-                torch.arange(W, device=device, dtype=dtype),
-                indexing="ij",
+            # Step 1: Fuse all keyframe depths into world-space point cloud
+            fused_points, fused_frame_ids = fuse_keyframe_depths(
+                depth_prior, extr_final, intr_t, keyframes, rep_unc_frame, device, dtype
             )
-            depth_unc = torch.zeros_like(depth_prior, dtype=dtype, device=device)
-            depth_cnt = torch.zeros_like(depth_prior, dtype=dtype, device=device)
 
-            # Only iterate over keyframes for depth uncertainty computation
-            for ref in keyframes:
-                fx_r, fy_r = intr_t[ref, 0, 0], intr_t[ref, 1, 1]
-                cx_r, cy_r = intr_t[ref, 0, 2], intr_t[ref, 1, 2]
-                Rr = extr_final[ref, :3, :3]
-                tr = extr_final[ref, :3, 3]
-                unc_flat = depth_unc[ref].view(-1)
-                cnt_flat = depth_cnt[ref].view(-1)
+            if fused_points is not None and len(fused_points) > 0:
+                print(f"[propagate_uncertainties] Fused {len(fused_points)} points from {len(keyframes)} keyframes")
 
-                # Only use other keyframes as source frames
-                for src in keyframes:
-                    if src == ref:
-                        continue
-                    if rep_unc_frame[src] > 5.0 or rep_unc_frame[src] == 0.:  # 0 means no extrinsic estimated
-                        continue
-                    depth_src = depth_prior[src].to(device=device, dtype=dtype)
-                    valid_src = depth_src > 0
-                    if not valid_src.any():
-                        continue
-                    fx_s, fy_s = intr_t[src, 0, 0], intr_t[src, 1, 1]
-                    cx_s, cy_s = intr_t[src, 0, 2], intr_t[src, 1, 2]
-                    Rs = extr_final[src, :3, :3]
-                    ts = extr_final[src, :3, 3]
-                    X = (xs - cx_s) / fx_s * depth_src
-                    Y = (ys - cy_s) / fy_s * depth_src
-                    Z = depth_src
-                    pts_cam_s = torch.stack([X, Y, Z], dim=-1)
-                    pts_cam_s = pts_cam_s[valid_src]  # M,3
-                    if pts_cam_s.numel() == 0:
-                        continue
+                # Step 2: Compute depth uncertainty from fusion
+                depth_unc = compute_depth_uncertainty_from_fusion(
+                    depth_prior, extr_final, intr_t, keyframes, fused_points, rep_unc_frame, device, dtype
+                )
 
-                    pts_world = torch.matmul(pts_cam_s - ts, Rs.transpose(0, 1))
-                    # transform pts_world to ref camera
-                    pts_cam_r = torch.matmul(pts_world, Rr.transpose(0, 1)) + tr
-
-                    zr = pts_cam_r[:, 2]
-                    positive = zr > 0
-                    if not positive.any():
-                        continue
-                    pts_cam_r = pts_cam_r[positive]
-                    zr = zr[positive]
-                    u = (pts_cam_r[:, 0] / zr) * fx_r + cx_r
-                    v = (pts_cam_r[:, 1] / zr) * fy_r + cy_r
-                    in_bounds = (u >= 0) & (u <= W - 1) & (v >= 0) & (v <= H - 1)
-                    if not in_bounds.any():
-                        continue
-                    u = u[in_bounds]
-                    v = v[in_bounds]
-                    zr = zr[in_bounds]
-                    u_round = u.round().long()
-                    v_round = v.round().long()
-                    flat_idx = (v_round * W + u_round)
-                    grid = torch.empty((1, 1, u.shape[0], 2), device=device, dtype=dtype)
-                    grid[..., 0] = (u / (W - 1)) * 2 - 1
-                    grid[..., 1] = (v / (H - 1)) * 2 - 1
-                    depth_ref_sampled = torch.nn.functional.grid_sample(
-                        depth_prior[ref].to(device=device, dtype=dtype).unsqueeze(0).unsqueeze(0),
-                        grid,
-                        align_corners=False,
-                        mode="bilinear",
-                    ).view(-1)
-                    valid_ref_depth = depth_ref_sampled > 0
-                    if not valid_ref_depth.any():
-                        continue
-                    depth_ref_sampled = depth_ref_sampled[valid_ref_depth]
-                    zr = zr[valid_ref_depth]
-                    flat_idx = flat_idx[valid_ref_depth]
-                    resid = (depth_ref_sampled - zr)
-                    unc_flat.scatter_add_(0, flat_idx, resid.pow(2))
-                    cnt_flat.scatter_add_(0, flat_idx, torch.ones_like(resid))
-
-            depth_unc = (depth_unc / depth_cnt.clamp(min=1)).sqrt().cpu().numpy()
+                # Convert fused points to numpy for saving
+                fused_points = fused_points.cpu().numpy()
+            else:
+                print("[propagate_uncertainties] No valid points to fuse")
 
     uncertainties = {
         "extrinsic": rep_unc_frame,
         "points3d": pts_unc,
         "depth_prior": depth_unc,
         "keyframes": keyframes,
+        "fused_points": fused_points,  # World-space fused point cloud for saving
     }
 
     return uncertainties
