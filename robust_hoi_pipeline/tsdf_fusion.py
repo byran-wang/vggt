@@ -379,6 +379,15 @@ def fuse_depth_to_mesh(
             faces=faces,
             vertex_normals=norms,
         )
+    # remove disconnect part
+    connected_comp = mesh.split(only_watertight=False)
+    max_area = 0
+    max_comp = None
+    for comp in connected_comp:
+        if comp.area > max_area:
+            max_area = comp.area
+            max_comp = comp
+    mesh = max_comp        
 
     print(f"[fuse_depth_to_mesh] Extracted mesh: {len(verts)} vertices, {len(faces)} faces")
 
