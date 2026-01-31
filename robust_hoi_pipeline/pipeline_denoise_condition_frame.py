@@ -186,29 +186,7 @@ def robust_hoi_pipeline_denoise_condition_frame(args):
             points_rgb, args, args.output_dir
         )
 
-        # Step 7: Build image info with uncertainty propagation
-        image_info = propagate_uncertainty_and_build_image_info(
-            images, image_path_list, base_image_path_list, original_coords,
-            image_masks, depth_prior, intrinsic, extrinsic,
-            pred_tracks, track_mask, points_3d, points_rgb, args,
-            out_dir=f"{args.output_dir}/results/{args.cond_index:04d}/"
-        )
 
-        image_info = register_condition_frame_as_keyframe(image_info, args)
-
-        from .visualization_io import save_results, save_depth_point_clouds, save_fused_point_cloud
-        save_results(image_info, gen_3d=None, out_dir=f"{args.output_dir}/results/{args.cond_index:04d}/", args=args)
-        save_keyframe_indices(args.output_dir, args.cond_index)
-
-        # Save fused point cloud from KinectFusion-style depth fusion
-        save_fused_point_cloud(image_info, out_dir=f"{args.output_dir}/results/{args.cond_index:04d}/")
-
-        # Convert condition depth to point cloud and save filtered versions
-        save_depth_point_clouds(
-            image_info, image_masks, intrinsic, args.cond_index,
-            out_dir=f"{args.output_dir}/results/{args.cond_index:04d}/",
-            unc_thresh=1
-        )
 
         print("=" * 50)
         print("Pipeline complete: Denoise Condition Frame!")
