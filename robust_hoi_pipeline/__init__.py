@@ -64,6 +64,11 @@ from .geometry_utils import (
     adjust_intrinsic_for_new_image_size,
     rename_colmap_recons_and_rescale_camera,
 )
+from .tsdf_fusion import (
+    fuse_depth_to_mesh,
+    compute_volume_bounds,
+    select_keyframes,
+)
 from .pipeline import robust_hoi_pipeline, setup_environment
 
 __all__ = [
@@ -117,6 +122,10 @@ __all__ = [
     "axis_angle_to_matrix",
     "adjust_intrinsic_for_new_image_size",
     "rename_colmap_recons_and_rescale_camera",
+    # tsdf_fusion
+    "fuse_depth_to_mesh",
+    "compute_volume_bounds",
+    "select_keyframes",
     # pipeline
     "robust_hoi_pipeline",
     "setup_environment",

@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 import torch
+import trimesh
 
 from vggt.models.vggt import VGGT
 
@@ -25,6 +26,7 @@ from .optimization import propagate_uncertainty_and_build_image_info
 from .correspondence_alignment import get_3D_correspondences, evaluate_3D_corres, align_3D_model_with_images
 from .frame_management import register_condition_frame_as_keyframe, save_keyframe_indices
 from .mask_optimization import optimize_pose_with_mask_loss
+from .tsdf_fusion import fuse_depth_to_mesh, select_keyframes
 
 
 class TeeLogger:
@@ -186,7 +188,38 @@ def robust_hoi_pipeline_denoise_condition_frame(args):
             points_rgb, args, args.output_dir
         )
 
+        # Step 7: TSDF Fusion - fuse keyframe depths into mesh
+        print("=" * 50)
+        print("Step 7: TSDF Fusion (keyframes only)")
+        print("=" * 50)
 
+        # Select keyframes based on validity and rotation/translation thresholds
+        keyframe_indices = select_keyframes(
+            extrinsic,
+            rot_thresh=args.kf_rot_thresh,
+            trans_thresh=args.kf_trans_thresh,
+            track_mask=track_mask,
+            depth_frames=depth_prior,
+            track_inlier_thresh=args.kf_inlier_thresh,
+            depth_thresh=args.kf_depth_thresh,
+        )
+        print(f"Selected {len(keyframe_indices)}/{len(extrinsic)} keyframes: {keyframe_indices}")
+
+        # Prepare color frames: images is (N, 3, H, W) float [0,1] -> (N, H, W, 3) float [0,255]
+        color_frames = images.permute(0, 2, 3, 1).cpu().numpy() * 255.0
+
+        tsdf_mesh = fuse_depth_to_mesh(
+            depth_frames=depth_prior,
+            extrinsics=extrinsic,
+            intrinsic=intrinsic,
+            color_frames=color_frames,
+            masks=image_masks,
+            frame_indices=keyframe_indices,
+            voxel_size=getattr(args, "tsdf_voxel_size", 0.005),
+            margin=getattr(args, "tsdf_margin", 3),
+            device=device,
+            output_path=os.path.join(args.output_dir, "tsdf_fused_mesh.ply"),
+        )
 
         print("=" * 50)
         print("Pipeline complete: Denoise Condition Frame!")
