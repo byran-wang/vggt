@@ -55,6 +55,8 @@ from .visualization_io import (
     get_points_uncertainty_colors,
     save_point_cloud_with_conf,
     save_depth_prior_with_uncertainty,
+    save_depth_point_clouds,
+    save_fused_point_cloud,
 )
 from .geometry_utils import (
     compute_normals_from_depth,
@@ -108,6 +110,8 @@ __all__ = [
     "get_points_uncertainty_colors",
     "save_point_cloud_with_conf",
     "save_depth_prior_with_uncertainty",
+    "save_depth_point_clouds",
+    "save_fused_point_cloud",
     # geometry_utils
     "compute_normals_from_depth",
     "axis_angle_to_matrix",

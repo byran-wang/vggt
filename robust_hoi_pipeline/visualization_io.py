@@ -23,6 +23,8 @@ import sys
 sys.path.append("third_party/utils_simba")
 from utils_simba.depth import save_depth
 
+from vggt.utils.geometry import depth_to_cam_coords_points
+
 
 def get_points_uncertainty_colors(points_3d, uncertainties, scale=0.4):
     """Map uncertainty values to RGB colors for visualization.
@@ -136,6 +138,90 @@ def save_depth_prior_with_uncertainty(depth, depth_unc, out_dir):
         alpha = np.where(d > 0, 255, 0).astype(np.uint8)
         rgba = np.concatenate([rgb, alpha[..., None]], axis=-1)
         Image.fromarray(rgba, mode="RGBA").save(Path(out_dir) / f"depth_unc_{i:04d}.png")
+
+
+def save_depth_point_clouds(image_info, image_masks, intrinsic, cond_index, out_dir, unc_thresh=0.1):
+    """Convert condition frame depth to point clouds with different filtering.
+
+    Saves two point cloud files:
+    1. depth_point_map_erode_filter.ply: Points within the object mask
+    2. depth_point_map_uncertainty_filter.ply: Points with low uncertainty
+
+    Args:
+        image_info: Dictionary containing depth_priors and uncertainties
+        image_masks: Image masks tensor (N, H, W) or (N, 1, H, W)
+        intrinsic: Camera intrinsic matrix (3x3)
+        cond_index: Condition frame index
+        out_dir: Output directory path
+        unc_thresh: Uncertainty threshold for filtering (points with unc < thresh are kept)
+    """
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Get depth for condition frame
+    depth_priors = image_info.get("depth_priors")
+    depth = np.asarray(depth_priors[cond_index])
+    if depth.ndim == 3:
+        depth = depth.squeeze()
+
+    # Get mask for condition frame
+    mask = image_masks[cond_index]
+    if torch.is_tensor(mask):
+        mask = mask.cpu().numpy()
+    if mask.ndim == 3:
+        mask = mask.squeeze()
+    mask = mask > 0.5
+
+    # Get intrinsic matrix
+    intr = np.asarray(intrinsic)
+    if intr.ndim == 3:
+        intr = intr[cond_index]
+
+    # Convert depth to point cloud
+    point_cloud = depth_to_cam_coords_points(depth, intr)  # (H, W, 3)
+
+    # Valid depth mask (positive depth)
+    valid_depth_mask = depth > 1e-6
+
+    # 1. Save mask-filtered point cloud (erode filter)
+    erode_mask = valid_depth_mask & mask
+    erode_points = point_cloud[erode_mask]
+    if len(erode_points) > 0:
+        trimesh.PointCloud(erode_points).export(Path(out_dir) / "depth_point_map_erode_filter.ply")
+        print(f"[save_depth_point_clouds] Saved {len(erode_points)} mask-filtered points")
+
+    # 2. Save uncertainty-filtered point cloud
+    depth_unc = image_info.get("uncertainties", {}).get("depth_prior")
+    if depth_unc is not None:
+        unc = np.asarray(depth_unc[cond_index])
+        if unc.ndim == 3:
+            unc = unc.squeeze()
+
+        # Filter: low uncertainty AND valid depth AND within mask
+        unc_mask = (unc < unc_thresh) & valid_depth_mask & mask
+        unc_points = point_cloud[unc_mask]
+        if len(unc_points) > 0:
+            trimesh.PointCloud(unc_points).export(Path(out_dir) / f"depth_point_map_uncertainty_filter_thresh_{unc_thresh:.2f}.ply")
+            print(f"[save_depth_point_clouds] Saved {len(unc_points)} low-uncertainty points (thresh={unc_thresh})")
+    else:
+        print("[save_depth_point_clouds] No depth uncertainty available, skipping uncertainty filter")
+
+
+def save_fused_point_cloud(image_info, out_dir):
+    """Save the KinectFusion-style fused point cloud from depth fusion.
+
+    Args:
+        image_info: Dictionary containing uncertainties with fused_points
+        out_dir: Output directory path
+    """
+    uncertainties = image_info.get("uncertainties", {})
+    fused_points = uncertainties.get("fused_points")
+
+    if fused_points is not None and len(fused_points) > 0:
+        os.makedirs(out_dir, exist_ok=True)
+        trimesh.PointCloud(fused_points).export(Path(out_dir) / "fused_depth_points.ply")
+        print(f"[save_fused_point_cloud] Saved {len(fused_points)} fused points to fused_depth_points.ply")
+    else:
+        print("[save_fused_point_cloud] No fused points available")
 
 
 def eval_reprojection(image_info, frame_idx, intr_np, pts_np, tracks_np, mask_np, R_final, t_final, out_dir, uncertainties=None, args=None):
@@ -339,7 +425,7 @@ def save_results(image_info, gen_3d, out_dir, args):
     )
 
 
-def save_input_data(images, image_masks, depth_prior, gen_3d, image_path_list, out_dir):
+def save_input_data(images, image_masks, depth_prior, gen_3d, image_path_list, out_dir, intrinsic=None):
     """Save preprocessed inputs to disk for inspection/debugging.
 
     Args:
@@ -349,12 +435,14 @@ def save_input_data(images, image_masks, depth_prior, gen_3d, image_path_list, o
         gen_3d: Generated 3D model object
         image_path_list: List of original image paths
         out_dir: Output directory
+        intrinsic: Camera intrinsic matrix (3x3) for point cloud conversion
     """
     images_dir = Path(out_dir) / "images"
     images_origin_dir = Path(out_dir) / "images_origin"
     masks_dir = Path(out_dir) / "masks"
     depth_dir = Path(out_dir) / "depth_prior"
-    for d in (images_dir, images_origin_dir, masks_dir, depth_dir):
+    pcd_dir = Path(out_dir) / "pcd"
+    for d in (images_dir, images_origin_dir, masks_dir, depth_dir, pcd_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     num_frames = len(images)
@@ -376,6 +464,31 @@ def save_input_data(images, image_masks, depth_prior, gen_3d, image_path_list, o
 
         # Save depth prior using 24-bit PNG encoding
         save_depth(np.asarray(depth, dtype=np.float32), str(depth_dir / f"{idx:04d}.png"))
+
+        # Convert masked depth to point cloud and save
+        if intrinsic is not None:
+            depth_np = np.asarray(depth, dtype=np.float32)
+            if depth_np.ndim == 3:
+                depth_np = depth_np.squeeze()
+            mask_np = mask.squeeze().numpy() > 0.5
+
+            # Get intrinsic for this frame (handle both single and per-frame intrinsics)
+            intr_np = np.asarray(intrinsic)
+            if intr_np.ndim == 3:
+                intr = intr_np[idx]
+            else:
+                intr = intr_np
+
+            # Convert depth to point cloud
+            point_cloud = depth_to_cam_coords_points(depth_np, intr)
+
+            # Filter by mask and valid depth
+            valid_mask = mask_np & (depth_np > 1e-6)
+            valid_points = point_cloud[valid_mask]
+
+            if len(valid_points) > 0:
+                trimesh.PointCloud(valid_points).export(pcd_dir / f"{idx:04d}.ply")
+                # print(f"[save_input_data] Frame {idx}: saved {len(valid_points)} points to pcd/{idx:04d}.ply")
 
     if gen_3d is not None:
         gen3d_dir = Path(out_dir) / "gen_3d"

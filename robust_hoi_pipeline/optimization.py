@@ -27,7 +27,7 @@ DEFAULT_DEPTH_WEIGHT = 1000
 MIN_VALID_OBSERVATIONS_THRESHOLD = 1e-6
 
 
-def fuse_keyframe_depths(depth_prior, extrinsics, intrinsics, keyframes, rep_unc_frame, device, dtype):
+def fuse_keyframe_depths(depth_prior, extrinsics, intrinsics, keyframes, rep_unc_frame, device, dtype, out_dir=None):
     """Fuse keyframe depths into a single world-space point cloud (KinectFusion-style).
 
     Args:
@@ -38,10 +38,11 @@ def fuse_keyframe_depths(depth_prior, extrinsics, intrinsics, keyframes, rep_unc
         rep_unc_frame: Per-frame reprojection uncertainty
         device: Torch device
         dtype: Torch dtype
+        out_dir: Optional output directory for saving per-keyframe point clouds (debug)
 
     Returns:
         fused_points: World-space point cloud (M, 3)
-        fused_colors: Point colors based on source frame (M, 3)
+        fused_frame_ids: Frame IDs for each point (M,)
     """
     H, W = depth_prior.shape[-2:]
     ys, xs = torch.meshgrid(
@@ -49,6 +50,11 @@ def fuse_keyframe_depths(depth_prior, extrinsics, intrinsics, keyframes, rep_unc
         torch.arange(W, device=device, dtype=dtype),
         indexing="ij",
     )
+
+    # Create output directory for debug point clouds
+    if out_dir is not None:
+        pcd_debug_dir = Path(out_dir) / "fused_pcd_debug"
+        pcd_debug_dir.mkdir(parents=True, exist_ok=True)
 
     all_points = []
     all_frame_ids = []
@@ -81,6 +87,12 @@ def fuse_keyframe_depths(depth_prior, extrinsics, intrinsics, keyframes, rep_unc
         # Since extrinsic convention is p_cam = R @ p_world + t (column vectors)
         # With row vectors: p_cam = p_world @ R^T + t, so inverse is p_world = (p_cam - t) @ R
         pts_world = torch.matmul(pts_cam - t, R)
+
+        # Save per-keyframe point cloud for debugging
+        if out_dir is not None:
+            pts_np = pts_world.cpu().numpy()
+            trimesh.PointCloud(pts_np).export(pcd_debug_dir / f"keyframe_{kf_idx:04d}.ply")
+            # print(f"[fuse_keyframe_depths] Saved keyframe {kf_idx} point cloud: {len(pts_np)} points")
 
         all_points.append(pts_world)
         all_frame_ids.append(torch.full((pts_world.shape[0],), kf_idx, device=device, dtype=torch.long))
@@ -211,6 +223,7 @@ def propagate_uncertainties(
     track_inlier_thresh=50,
     min_track_number=3,
     keyframe_indices=None,
+    out_dir=None,
 ):
     """Propagate uncertainties for extrinsics, 3D points, and depth priors.
 
@@ -241,6 +254,7 @@ def propagate_uncertainties(
         min_track_number: Minimum keyframe observations per point
         keyframe_indices: Optional list/array of keyframe indices. If None, keyframes
                           are computed from the data using threshold criteria.
+        out_dir: Optional output directory for saving debug point clouds
 
     Returns:
         Dictionary containing uncertainties for extrinsics, points3d, depth_prior, and keyframes list
@@ -349,7 +363,7 @@ def propagate_uncertainties(
         if torch.is_tensor(depth_prior):
             # Step 1: Fuse all keyframe depths into world-space point cloud
             fused_points, fused_frame_ids = fuse_keyframe_depths(
-                depth_prior, extr_final, intr_t, keyframes, rep_unc_frame, device, dtype
+                depth_prior, extr_final, intr_t, keyframes, rep_unc_frame, device, dtype, out_dir=out_dir
             )
 
             if fused_points is not None and len(fused_points) > 0:
@@ -1082,7 +1096,7 @@ def register_new_frame(image_info, frame_idx, args, iters=100):
 def propagate_uncertainty_and_build_image_info(images, image_path_list, base_image_path_list, original_coords,
                                                image_masks, depth_prior, intrinsic, extrinsic,
                                                pred_tracks, track_mask, points_3d, points_rgb, args,
-                                               keyframe_indices=None):
+                                               keyframe_indices=None, out_dir=None):
     """Build unified image_info dictionary with uncertainty propagation.
 
     Args:
@@ -1118,6 +1132,7 @@ def propagate_uncertainty_and_build_image_info(images, image_path_list, base_ima
         track_inlier_thresh=args.kf_inlier_thresh,
         min_track_number=args.min_track_number,
         keyframe_indices=keyframe_indices,
+        out_dir=out_dir,
     )
 
     image_info = {

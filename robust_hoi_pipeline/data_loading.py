@@ -137,16 +137,18 @@ def load_inputs_and_gen3d(args, device):
         target_size=img_load_resolution,
         out_dir=f"{args.output_dir}/data_processed",
     )
+
+    # Load and adjust intrinsic before saving input data (needed for point cloud conversion)
+    intrinsic = load_intrinsics(os.path.join(args.scene_dir, "meta", f"{args.cond_index_raw:04d}.pkl"))
+    intrinsic = adjust_intrinsic_for_new_image_size(intrinsic, original_coords, frame_idx=args.cond_index)
+
     gen_3d = GEN_3D(f"{args.scene_dir}/align_mesh_image/{args.cond_index_raw:04d}")
-    save_input_data(images, image_masks, depth_prior, gen_3d, image_path_list, f"{args.output_dir}/results/")
+    save_input_data(images, image_masks, depth_prior, gen_3d, image_path_list, f"{args.output_dir}/results/", intrinsic)
 
     images = images.to(device)
     original_coords = original_coords.to(device)
     image_masks = image_masks.to(device)
     print(f"Loaded {len(images)} images from {image_dir}")
-
-    intrinsic = load_intrinsics(os.path.join(args.scene_dir, "meta", f"{args.cond_index_raw:04d}.pkl"))
-    intrinsic = adjust_intrinsic_for_new_image_size(intrinsic, original_coords, frame_idx=args.cond_index)
 
     depth_conf = np.ones_like(depth_prior)
     return (

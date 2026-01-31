@@ -190,7 +190,8 @@ def robust_hoi_pipeline_denoise_condition_frame(args):
         image_info = propagate_uncertainty_and_build_image_info(
             images, image_path_list, base_image_path_list, original_coords,
             image_masks, depth_prior, intrinsic, extrinsic,
-            pred_tracks, track_mask, points_3d, points_rgb, args
+            pred_tracks, track_mask, points_3d, points_rgb, args,
+            out_dir=f"{args.output_dir}/results/{args.cond_index:04d}/"
         )
 
         image_info = register_condition_frame_as_keyframe(image_info, args)
@@ -206,7 +207,7 @@ def robust_hoi_pipeline_denoise_condition_frame(args):
         save_depth_point_clouds(
             image_info, image_masks, intrinsic, args.cond_index,
             out_dir=f"{args.output_dir}/results/{args.cond_index:04d}/",
-            unc_thresh=args.unc_thresh
+            unc_thresh=1
         )
 
         print("=" * 50)

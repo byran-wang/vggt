@@ -52,7 +52,8 @@ class GEN_3D:
             self.mesh_path = Path(str(self.gen_3D_path).replace("align_mesh_image", "3D_gen")) / "white_mesh_remesh.obj"
             self.condition_image_path = self.gen_3D_path / "image.png"
         elif gen_3D_type == "SAM3D":
-            self.mesh_path = self.gen_3D_path / "mesh.obj"
+            self.gen_3D_path = Path(str(self.gen_3D_path).replace("align_mesh_image", "SAM3D"))
+            self.mesh_path = self.gen_3D_path / "scene.glb"
             self.condition_image_path = self.gen_3D_path / "input.png" 
         self.camera_path = self.gen_3D_path / "camera.json"
         self.depth_path = self.gen_3D_path / "depth.png"
