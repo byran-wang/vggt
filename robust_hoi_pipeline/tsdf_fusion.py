@@ -388,3 +388,93 @@ def fuse_depth_to_mesh(
         print(f"[fuse_depth_to_mesh] Saved mesh to {output_path}")
 
     return mesh
+
+
+def visualize_tsdf_fusion_rerun(
+    tsdf_mesh,
+    extrinsics,
+    intrinsic,
+    color_frames,
+    frame_indices,
+    image_masks=None,
+):
+    """Visualize TSDF fusion results in Rerun: camera frustums, images, and fused mesh.
+
+    Args:
+        tsdf_mesh: trimesh.Trimesh of the fused mesh.
+        extrinsics: Camera w2c matrices (N, 4, 4) numpy array.
+        intrinsic: Camera intrinsic matrix (3, 3) or (N, 3, 3) numpy array.
+        color_frames: RGB images (N, H, W, 3) numpy float [0,255].
+        frame_indices: List of keyframe indices.
+        image_masks: Optional (N, H, W) masks.
+    """
+    import rerun as rr
+    import rerun.blueprint as rrb
+
+    # Build blueprint: vertical layout with 3D view on top, 2D image grid below
+    image_views = [
+        rrb.Spatial2DView(name=f"Camera {idx}", origin=f"world/camera_{idx}")
+        for idx in range(len(frame_indices))
+    ]
+    blueprint = rrb.Vertical(
+        rrb.Spatial3DView(name="3D View", origin="world"),
+        rrb.Grid(*image_views, name="Images"),
+        row_shares=[2, 1],
+    )
+
+    rr.init("tsdf_fusion", spawn=True, default_blueprint=blueprint)
+
+    # Log world coordinate axes
+    rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
+
+    extr = np.asarray(extrinsics)
+    intr = np.asarray(intrinsic)
+
+    for idx, frame_idx in enumerate(frame_indices):
+        rr.set_time_sequence("frame", idx)
+
+        # Compute c2w from w2c
+        ext = extr[frame_idx].astype(np.float64)
+        if ext.shape == (3, 4):
+            ext_4x4 = np.eye(4, dtype=np.float64)
+            ext_4x4[:3, :] = ext
+        else:
+            ext_4x4 = ext
+        c2w = np.linalg.inv(ext_4x4)
+
+        translation = c2w[:3, 3]
+        mat3x3 = c2w[:3, :3]
+
+        entity = f"world/camera_{idx}"
+
+        # Log camera transform (c2w)
+        rr.log(entity, rr.Transform3D(translation=translation, mat3x3=mat3x3))
+
+        # Get intrinsic for this frame
+        K = intr[frame_idx] if intr.ndim == 3 else intr
+
+        color = color_frames[frame_idx]
+        if torch.is_tensor(color):
+            color = color.cpu().numpy()
+        color = np.asarray(color)
+        H, W = color.shape[:2]
+
+        # Log pinhole camera
+        rr.log(entity, rr.Pinhole(image_from_camera=K, resolution=[W, H]))
+
+        # Log image
+        rr.log(entity, rr.Image(color.astype(np.uint8)))
+
+    # Log the TSDF mesh as static
+    if tsdf_mesh is not None:
+        kwargs = dict(
+            vertex_positions=tsdf_mesh.vertices,
+            triangle_indices=tsdf_mesh.faces,
+        )
+        if tsdf_mesh.vertex_normals is not None and len(tsdf_mesh.vertex_normals) > 0:
+            kwargs["vertex_normals"] = tsdf_mesh.vertex_normals
+        if tsdf_mesh.visual and hasattr(tsdf_mesh.visual, "vertex_colors"):
+            kwargs["vertex_colors"] = np.asarray(tsdf_mesh.visual.vertex_colors)[:, :3]
+        rr.log("world/mesh", rr.Mesh3D(**kwargs), static=True)
+
+    print("[visualize_tsdf_fusion_rerun] Rerun visualization launched.")

@@ -68,6 +68,7 @@ from .tsdf_fusion import (
     fuse_depth_to_mesh,
     compute_volume_bounds,
     select_keyframes,
+    visualize_tsdf_fusion_rerun,
 )
 from .pipeline import robust_hoi_pipeline, setup_environment
 
@@ -126,6 +127,7 @@ __all__ = [
     "fuse_depth_to_mesh",
     "compute_volume_bounds",
     "select_keyframes",
+    "visualize_tsdf_fusion_rerun",
     # pipeline
     "robust_hoi_pipeline",
     "setup_environment",

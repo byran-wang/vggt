@@ -1,6 +1,7 @@
 from robust_hoi_pipeline import parse_args
 from robust_hoi_pipeline.pipeline_denoise_condition_frame import robust_hoi_pipeline_denoise_condition_frame
+from robust_hoi_pipeline.pipeline import robust_hoi_pipeline
 
 args = parse_args()
-# robust_hoi_pipeline(args)
-robust_hoi_pipeline_denoise_condition_frame(args)
+robust_hoi_pipeline(args)
+# robust_hoi_pipeline_denoise_condition_frame(args)

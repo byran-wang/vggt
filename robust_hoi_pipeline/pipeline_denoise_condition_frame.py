@@ -26,7 +26,7 @@ from .optimization import propagate_uncertainty_and_build_image_info
 from .correspondence_alignment import get_3D_correspondences, evaluate_3D_corres, align_3D_model_with_images
 from .frame_management import register_condition_frame_as_keyframe, save_keyframe_indices
 from .mask_optimization import optimize_pose_with_mask_loss
-from .tsdf_fusion import fuse_depth_to_mesh, select_keyframes
+from .tsdf_fusion import fuse_depth_to_mesh, select_keyframes, visualize_tsdf_fusion_rerun
 
 
 class TeeLogger:
@@ -201,10 +201,9 @@ def robust_hoi_pipeline_denoise_condition_frame(args):
             trans_thresh=args.kf_trans_thresh,
             track_mask=track_mask,
             depth_frames=depth_prior,
-            track_inlier_thresh=args.kf_inlier_thresh,
+            track_inlier_thresh=min_inlier_per_frame,
             depth_thresh=args.kf_depth_thresh,
         )
-        print(f"Selected {len(keyframe_indices)}/{len(extrinsic)} keyframes: {keyframe_indices}")
 
         # Prepare color frames: images is (N, 3, H, W) float [0,1] -> (N, H, W, 3) float [0,255]
         color_frames = images.permute(0, 2, 3, 1).cpu().numpy() * 255.0
@@ -221,6 +220,16 @@ def robust_hoi_pipeline_denoise_condition_frame(args):
             device=device,
             output_path=os.path.join(args.output_dir, "tsdf_fused_mesh.ply"),
         )
+        
+        if tsdf_mesh is not None:
+            visualize_tsdf_fusion_rerun(
+                tsdf_mesh=tsdf_mesh,
+                extrinsics=extrinsic,
+                intrinsic=intrinsic,
+                color_frames=color_frames,
+                frame_indices=keyframe_indices,
+                image_masks=image_masks,
+            )
 
         print("=" * 50)
         print("Pipeline complete: Denoise Condition Frame!")

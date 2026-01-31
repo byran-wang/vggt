@@ -64,7 +64,7 @@ def parse_args():
     parser.add_argument("--unc_thresh", type=float, default=4.0, help="Uncertainty threshold for refining keyframe poses")
 
     # TSDF fusion parameters
-    parser.add_argument("--tsdf_voxel_size", type=float, default=0.005, help="TSDF voxel size in meters (default 5mm)")
+    parser.add_argument("--tsdf_voxel_size", type=float, default=0.002, help="TSDF voxel size in meters (default 5mm)")
     parser.add_argument("--tsdf_margin", type=int, default=3, help="TSDF truncation margin in voxels (trunc_dist = margin * voxel_size)")
 
     return parser.parse_args()
