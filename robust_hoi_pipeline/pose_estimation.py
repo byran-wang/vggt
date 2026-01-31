@@ -267,7 +267,7 @@ def estimate_initial_poses(images, depth_prior, intrinsic, pred_tracks, pred_vis
 
 
 def filter_and_verify_tracks(images, points_3d, extrinsic, intrinsic, pred_tracks, pred_vis_scores,
-                             points_rgb, args, output_dir):
+                             points_rgb, output_dir, cond_index, vis_thresh, max_reproj_error, min_inlier_per_frame, min_inlier_per_track):
     """Filter tracks by geometry verification and valid correspondences.
 
     Args:
@@ -278,22 +278,21 @@ def filter_and_verify_tracks(images, points_3d, extrinsic, intrinsic, pred_track
         pred_tracks: Predicted track positions
         pred_vis_scores: Predicted visibility scores
         points_rgb: Point RGB colors
-        args: Arguments with configuration
         output_dir: Output directory for visualizations
 
     Returns:
         Tuple of (track_mask, points_3d, pred_tracks, points_rgb)
     """
-    track_mask = pred_vis_scores > args.vis_thresh
+    track_mask = pred_vis_scores > vis_thresh
 
     track_mask = verify_tracks_by_geometry(
         points_3d,
         extrinsic,
         intrinsic,
         pred_tracks,
-        ref_index=args.cond_index,
+        ref_index=cond_index,
         masks=track_mask,
-        max_reproj_error=args.max_reproj_error,
+        max_reproj_error=max_reproj_error,
     )
     visualize_tracks_on_images(
         images[None],
@@ -304,7 +303,7 @@ def filter_and_verify_tracks(images, points_3d, extrinsic, intrinsic, pred_track
 
     # Prep valid correspondences and drop 3D points without surviving tracks
     track_mask, points_3d, keep_pts = prep_valid_correspondences(
-        points_3d, track_mask, args.min_inlier_per_frame, args.min_inlier_per_track
+        points_3d, track_mask, min_inlier_per_frame, min_inlier_per_track
     )
     pred_tracks = pred_tracks[:, keep_pts]
     if points_rgb is not None:

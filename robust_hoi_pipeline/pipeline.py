@@ -194,7 +194,7 @@ def robust_hoi_pipeline(args):
         # Step 6: Filter and verify tracks
         track_mask, points_3d, pred_tracks, points_rgb = filter_and_verify_tracks(
             images, sampled_points_3d, extrinsic, intrinsic, pred_tracks, pred_vis_scores,
-            points_rgb, args, args.output_dir
+            points_rgb, args.output_dir, args.cond_index, args.vis_thresh, args.max_reproj_error, args.min_inlier_per_frame, args.min_inlier_per_track
         )
 
         # Step 7: Build image info with uncertainty propagation

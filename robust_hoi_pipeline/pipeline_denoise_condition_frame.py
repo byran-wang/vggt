@@ -181,11 +181,12 @@ def robust_hoi_pipeline_denoise_condition_frame(args):
             pred_tracks, pred_vis_scores, points_3d, depth_conf,
             image_masks, points_rgb, args.cond_index, images.shape
         )
-
+        min_inlier_per_frame = 200
+        min_inlier_per_track = 5
         # Step 6: Filter and verify tracks
         track_mask, points_3d, pred_tracks, points_rgb = filter_and_verify_tracks(
             images, sampled_points_3d, extrinsic, intrinsic, pred_tracks, pred_vis_scores,
-            points_rgb, args, args.output_dir
+            points_rgb, args.output_dir, args.cond_index, args.vis_thresh, args.max_reproj_error, min_inlier_per_frame=min_inlier_per_frame, min_inlier_per_track=min_inlier_per_track
         )
 
         # Step 7: TSDF Fusion - fuse keyframe depths into mesh
