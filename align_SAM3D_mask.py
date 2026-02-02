@@ -555,8 +555,8 @@ def optimize_o2c_with_mask(
 
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    # image_path = os.path.join(args.data_dir, "rgb", f"{args.cond_index:04d}.jpg")
-    # obj_mask_path = os.path.join(args.data_dir, "mask_object", f"{args.cond_index:04d}.png")
+    image_path = os.path.join(args.data_dir, "rgb", f"{args.cond_index:04d}.jpg")
+    obj_mask_path = os.path.join(args.data_dir, "mask_object", f"{args.cond_index:04d}.png")
     inpaint_image_path = os.path.join(args.data_dir, "inpaint", f"{args.cond_index:04d}_rgba.png")
     inpaint_mask_path = os.path.join(args.data_dir, "inpaint", f"{args.cond_index:04d}_rgba.png")
     hand_mask_path = os.path.join(args.data_dir, "mask_hand", f"{args.cond_index:04d}.png")
@@ -689,9 +689,13 @@ def main(args):
             json.dump(optimized_camera_data, f, indent=2)
         print(f"Saved optimized camera to {args.out_dir}/camera.json")
 
-        # Copy inpaint image to output directory
-        shutil.copy(inpaint_image_path, os.path.join(args.out_dir, "image_rgba.png"))
-        print(f"Copied inpaint image to {args.out_dir}/image_rgba.png")
+        # Copy image to output directory
+        shutil.copy(image_path, os.path.join(args.out_dir, "image.png"))
+        print(f"Copied inpaint image to {args.out_dir}/image.png")
+
+        # Copy mask to output directory
+        shutil.copy(obj_mask_path, os.path.join(args.out_dir, "mask.png"))
+        print(f"Copied object mask to {args.out_dir}/mask.png")
 
         # Save optimized mesh
         mesh_in_cam_optimized.export(os.path.join(args.out_dir, "mesh_aligned.ply"))
