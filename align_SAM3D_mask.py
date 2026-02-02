@@ -2,6 +2,7 @@
 import sys
 import json
 import os
+import shutil
 import numpy as np
 import torch
 import argparse
@@ -21,6 +22,7 @@ from third_party.utils_simba.utils_simba.depth import (
     erode_depth_map_torch,
     bilateral_filter_depth,
     remove_depth_outliers,
+    save_depth,
 )
 
 from third_party.utils_simba.utils_simba.render import (
@@ -28,6 +30,7 @@ from third_party.utils_simba.utils_simba.render import (
     make_mesh_tensors,
     projection_matrix_from_intrinsics,
     projection_matrix_to_intrinsics,
+    nvdiffrast_render,
 )
 from viewer_step import HandDataProvider, compute_vertex_normals
 
@@ -686,9 +689,26 @@ def main(args):
             json.dump(optimized_camera_data, f, indent=2)
         print(f"Saved optimized camera to {args.out_dir}/camera.json")
 
+        # Copy inpaint image to output directory
+        shutil.copy(inpaint_image_path, os.path.join(args.out_dir, "image_rgba.png"))
+        print(f"Copied inpaint image to {args.out_dir}/image_rgba.png")
+
         # Save optimized mesh
-        mesh_in_cam_optimized.export(os.path.join(args.out_dir, "mesh.ply"))
-        print(f"Saved optimized mesh to {args.out_dir}/mesh.ply")
+        mesh_in_cam_optimized.export(os.path.join(args.out_dir, "mesh_aligned.ply"))
+        print(f"Saved optimized mesh to {args.out_dir}/mesh_aligned.ply")
+
+        # Render depth from optimized mesh and save
+        ob_in_cvcams = torch.eye(4, device=device, dtype=torch.float32).unsqueeze(0)  # Identity since mesh is already in camera space
+        _, rendered_depth, _ = nvdiffrast_render(
+            K=K,
+            H=height,
+            W=width,
+            ob_in_cvcams=ob_in_cvcams,
+            mesh=mesh_in_cam_optimized,
+        )
+        rendered_depth_np = rendered_depth[0].cpu().numpy()
+        save_depth(rendered_depth_np, os.path.join(args.out_dir, "depth_aligned.png"))
+        print(f"Saved rendered depth to {args.out_dir}/depth_aligned.png")
 
     # Visualize after optimization
     if args.vis:
