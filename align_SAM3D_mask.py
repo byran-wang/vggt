@@ -682,13 +682,13 @@ def main(args):
             "K": K.tolist(),
             "blw2cvc": optimized_o2c.tolist(),
         }
-        with open(os.path.join(args.out_dir, "camera_optimized.json"), "w") as f:
+        with open(os.path.join(args.out_dir, "camera.json"), "w") as f:
             json.dump(optimized_camera_data, f, indent=2)
-        print(f"Saved optimized camera to {args.out_dir}/camera_optimized.json")
+        print(f"Saved optimized camera to {args.out_dir}/camera.json")
 
         # Save optimized mesh
-        mesh_in_cam_optimized.export(os.path.join(args.out_dir, "mesh_optimized.ply"))
-        print(f"Saved optimized mesh to {args.out_dir}/mesh_optimized.ply")
+        mesh_in_cam_optimized.export(os.path.join(args.out_dir, "mesh.ply"))
+        print(f"Saved optimized mesh to {args.out_dir}/mesh.ply")
 
     # Visualize after optimization
     if args.vis:
