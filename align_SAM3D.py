@@ -60,40 +60,31 @@ def load_mesh_from_glb(glb_path: str) -> trimesh.Trimesh:
         return loaded
 
 
-def decompose_o2c_to_pose(o2c: np.ndarray, device: str = "cuda"):
-    """Decompose o2c matrix back to quaternion, translation, scale.
+def load_pointmap_from_depth(depth_file, K, thresh_min=0.01, thresh_max=1.5):
+    """Load depth and convert to pointmap using intrinsics K."""
+    # Load depth
+    depth = get_depth(depth_file)
 
-    The o2c in camera.json was computed as:
-        o2c = _GL_TO_CV.T @ _R_ZUP_TO_YUP.T @ transform_matrix @ _R_ZUP_TO_YUP
+    # Convert depth to pointmap (H, W, 3)
+    pointmap = depth2xyzmap(depth, K)
+    # if the depth of pointmap is less than thresh_min and greater than thresh_max meter set to nan
+    pointmap[(pointmap[..., 2] <= thresh_min) | (pointmap[..., 2] >= thresh_max)] = np.nan
 
-    We need to reverse this to get back the original transform.
 
-    Returns:
-        quaternion: (1, 1, 4) tensor
-        translation: (1, 3) tensor
-        scale: (1, 3) tensor
-    """
-    # Reverse the coordinate transforms
-    # o2c = _GL_TO_CV.T @ _R_ZUP_TO_YUP.T @ M @ _R_ZUP_TO_YUP
-    # M = _R_ZUP_TO_YUP @ _GL_TO_CV @ o2c @ _R_ZUP_TO_YUP.T
-    transform_matrix = _R_ZUP_TO_YUP @ _GL_TO_CV @ o2c @ _R_ZUP_TO_YUP.T
+    # Convert to torch tensor
+    pointmap = torch.from_numpy(pointmap).float()
 
-    # Convert to torch and create Transform3d
-    # Note: transform_matrix is in row-major form, need to transpose for Transform3d
-    M = torch.from_numpy(transform_matrix.T.astype(np.float32)).to(device)
-    tfm = Transform3d(matrix=M.unsqueeze(0), device=device)
+    return pointmap
 
-    # Decompose into scale, rotation, translation
-    decomposed = decompose_transform(tfm)
-    scale = decomposed.scale  # (1, 3)
-    rotation = decomposed.rotation  # (1, 3, 3)
-    translation = decomposed.translation  # (1, 3)
+def _load_camera_data(camera_json_path: str) -> tuple[np.ndarray, np.ndarray]:
+    """Load camera intrinsics (K) and object-to-camera transform (o2c) from JSON."""
+    with open(camera_json_path, "r") as f:
+        camera_data = json.load(f)
+    K = np.array(camera_data["K"], dtype=np.float32)
+    o2c = np.array(camera_data["blw2cvc"], dtype=np.float32)
+    return K, o2c
 
-    # Convert rotation matrix to quaternion
-    quaternion = matrix_to_quaternion(rotation)  # (1, 4)
-    quaternion = quaternion.unsqueeze(1)  # (1, 1, 4)
 
-    return quaternion, translation, scale
 
 
 def load_filtered_pointmap(
@@ -131,8 +122,6 @@ def load_filtered_pointmap(
 
     # Apply depth thresholds and convert to pytorch3d coords
     pointmap_filtered[(pointmap_filtered[..., 2] <= thresh_min) | (pointmap_filtered[..., 2] >= thresh_max)] = np.nan
-    pointmap_filtered[..., 0] = -pointmap_filtered[..., 0]  # Flip x for pytorch3d
-    pointmap_filtered[..., 1] = -pointmap_filtered[..., 1]  # Flip y for pytorch3d
 
     pointmap_tensor = torch.from_numpy(pointmap_filtered).float().to(device)
     print(f"Filtered pointmap shape: {pointmap_tensor.shape}")
@@ -158,9 +147,8 @@ def main(args):
         return
 
     # Check demo.py outputs
-    camera_json_path = os.path.join(args.demo_out_dir, "camera.json")
-    scene_glb_path = os.path.join(args.demo_out_dir, "scene.glb")
-
+    camera_json_path = os.path.join(args.SAM3D_dir, "camera.json")
+    scene_glb_path = os.path.join(args.SAM3D_dir, "scene.glb")
 
 
     # --- Load image, mask ---
@@ -175,8 +163,7 @@ def main(args):
     print(f"Loading intrinsics from: {args.meta_file}")
     K = load_intrinsics(args.meta_file)
     pointmap = load_pointmap_from_depth(args.depth_file, K)
-    K_normalized = normalize_intrinsics(K, height, width)
-    print(f"Pointmap shape: {pointmap.shape}")
+ 
 
     # --- Load camera.json for initial pose ---
     print(f"Loading camera data from: {camera_json_path}")
@@ -187,108 +174,62 @@ def main(args):
     mesh = load_mesh_from_glb(scene_glb_path)
     print(f"Mesh vertices: {len(mesh.vertices)}, faces: {len(mesh.faces)}")
 
-    # --- Decompose o2c to get initial pose parameters ---
-    print("Decomposing initial pose...")
-    quaternion, translation, scale = decompose_o2c_to_pose(o2c, device=device)
-    print(f"Initial quaternion: {quaternion.squeeze()}")
-    print(f"Initial translation: {translation.squeeze()}")
-    print(f"Initial scale: {scale.squeeze()}")
-
-    # --- Prepare inputs for post-optimization ---
-    # Convert mask to tensor (H, W)
-    mask_tensor = torch.from_numpy(mask.astype(np.float32)).to(device)
-
-    # Pointmap is already a tensor (H, W, 3)
-    pointmap_tensor = pointmap.to(device)
-
-    # Intrinsics normalized
-    intrinsics_tensor = torch.from_numpy(K_normalized).to(device)
-
-    # --- Run post-optimization ---
-    if args.vis:
-        # Visualization mode: show current state in rerun
-        print("Visualizing in rerun...")
-        # Flip pointmap for visualization (reverse pytorch3d coords)
-        pointmap_vis = convert_pointmap_to_pytorch3d(pointmap.numpy().copy())
-        visualize_in_rerun(
-            image, mask, camera_json_path,
-            scene_glb_path,
-            pointmap=pointmap_vis
-        )
-        return
-
-    print("Running post-optimization...")
-
-    # Load and filter depth, convert to pointmap
-    pointmap_tensor = load_filtered_pointmap(args.depth_file, K, device)
-
-    result = layout_post_optimization(
-        Mesh=mesh,
-        quaternion=quaternion,
-        translation=translation,
-        scale=scale,
-        mask=mask_tensor,
-        point_map=pointmap_tensor,
-        intrinsics=intrinsics_tensor,
-        Enable_shape_ICP=args.enable_shape_icp,
-        Enable_rendering_optimization=args.enable_rendering_optimization,
-        min_size=image.shape[0],
-        device=device,
+    # Convert the mesh from object coordinate system to camera coordinate system
+    # o2c is the object-to-camera transform (4x4 matrix)
+    mesh_vertices_homo = np.hstack([mesh.vertices, np.ones((len(mesh.vertices), 1))])
+    mesh_vertices_cam = (o2c @ mesh_vertices_homo.T).T[:, :3]
+    mesh_in_cam = trimesh.Trimesh(
+        vertices=mesh_vertices_cam,
+        faces=mesh.faces,
+        vertex_normals=mesh.vertex_normals @ o2c[:3, :3].T if mesh.vertex_normals is not None else None,
     )
+    if hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
+        mesh_in_cam.visual.vertex_colors = mesh.visual.vertex_colors
+    print(f"Mesh transformed to camera coordinate system")
 
-    # Unpack results
-    (
-        optimized_quaternion,
-        optimized_translation,
-        optimized_scale,
-        final_iou,
-        flag_manual,
-        flag_icp,
-    ) = result
+    # Visualize camera frustum, pointmap, and mesh in Rerun
+    import rerun as rr
+    import rerun.blueprint as rrb
 
-    print(f"\n=== Post-optimization Results ===")
-    print(f"Final IoU: {final_iou:.4f}")
-    print(f"Manual alignment applied: {flag_manual}")
-    print(f"ICP applied: {flag_icp}")
-    print(f"Optimized quaternion: {optimized_quaternion.squeeze()}")
-    print(f"Optimized translation: {optimized_translation.squeeze()}")
-    print(f"Optimized scale: {optimized_scale.squeeze()}")
-
-    # --- Save optimized results ---
-    os.makedirs(args.out_dir, exist_ok=True)
-
-    # Recompute o2c from optimized parameters
-    from pytorch3d.transforms import quaternion_to_matrix
-    from sam3d_objects.data.dataset.tdfy.transforms_3d import compose_transform
-
-    R_optimized = quaternion_to_matrix(optimized_quaternion.squeeze(1))
-    l2c_transform = compose_transform(
-        scale=optimized_scale,
-        rotation=R_optimized,
-        translation=optimized_translation,
+    # Build blueprint: 3D view and 2D image view side by side
+    blueprint = rrb.Horizontal(
+        rrb.Spatial3DView(name="3D View", origin="world"),
+        rrb.Spatial2DView(name="Image", origin="world/camera"),
     )
-    transform_matrix = l2c_transform.get_matrix()[0].cpu().numpy().T
-    o2c_optimized = _GL_TO_CV.T @ _R_ZUP_TO_YUP.T @ transform_matrix @ _R_ZUP_TO_YUP
-    # Save optimized camera.json
-    camera_data_optimized = {
-        "K": K.tolist(),
-        "blw2cvc": o2c_optimized.tolist(),
-        "final_iou": final_iou,
-    }
-    optimized_camera_path = os.path.join(args.out_dir, "camera_optimized.json")
-    with open(optimized_camera_path, "w") as f:
-        json.dump(camera_data_optimized, f, indent=2)
-    print(f"Saved optimized camera to: {optimized_camera_path}")
+    rr.init("align_SAM3D", spawn=True, default_blueprint=blueprint)
 
-    # Visualize optimized result in rerun
-    print("Visualizing optimized result in rerun...")
-    # Flip pointmap for visualization (reverse pytorch3d coords)
-    pointmap_vis = convert_pointmap_to_pytorch3d(pointmap.numpy().copy())
-    visualize_in_rerun(
-        image, mask, optimized_camera_path,
-        scene_glb_path,
-        pointmap=pointmap_vis
-    )
+    # Log world coordinate system
+    rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
+
+    # Log camera frustum at origin (camera coordinate system)
+    rr.log("world/camera", rr.Transform3D(translation=[0, 0, 0], mat3x3=np.eye(3)))
+    rr.log("world/camera", rr.Pinhole(image_from_camera=K, resolution=[width, height]))
+    rr.log("world/camera", rr.Image(image))
+
+    # Log pointmap as point cloud (filter out NaN values)
+    pointmap_np = pointmap.numpy()
+    valid_mask_pts = ~np.isnan(pointmap_np).any(axis=-1) & mask
+    valid_points = pointmap_np[valid_mask_pts]
+    valid_colors = image[valid_mask_pts]
+    rr.log("world/pointmap", rr.Points3D(
+        positions=valid_points,
+        colors=valid_colors,
+        radii=0.002,
+    ), static=True)
+
+    # Log mesh in camera coordinate system
+    mesh_colors = None
+    if hasattr(mesh_in_cam.visual, 'vertex_colors') and mesh_in_cam.visual.vertex_colors is not None:
+        mesh_colors = np.asarray(mesh_in_cam.visual.vertex_colors)[:, :3]
+    rr.log("world/mesh", rr.Mesh3D(
+        vertex_positions=mesh_in_cam.vertices,
+        triangle_indices=mesh_in_cam.faces,
+        vertex_normals=mesh_in_cam.vertex_normals if mesh_in_cam.vertex_normals is not None else None,
+        vertex_colors=mesh_colors,
+    ), static=True)
+
+    print("Rerun visualization launched.")
+
 
 
 if __name__ == "__main__":
@@ -318,7 +259,7 @@ if __name__ == "__main__":
         help="Path to the meta pickle file containing intrinsics (camMat key).",
     )
     parser.add_argument(
-        "--demo-out-dir",
+        "--SAM3D-dir",
         type=str,
         required=True,
         help="Directory containing demo.py outputs (camera.json, scene.glb).",
