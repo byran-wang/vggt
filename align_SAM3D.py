@@ -48,9 +48,13 @@ def load_image(path):
 
 def load_mask(path):
     mask = load_image(path)
-    mask = mask > 0
-    if mask.ndim == 3:
-        mask = mask[..., -1]
+    # If RGBA, use alpha channel as mask
+    if mask.ndim == 3 and mask.shape[-1] == 4:
+        mask = mask[..., 3] > 0
+    elif mask.ndim == 3:
+        mask = mask.any(axis=-1) > 0
+    else:
+        mask = mask > 0
     return mask
 
 def load_intrinsics(meta_file):
@@ -177,7 +181,10 @@ def visualize_optimization_rerun(
     # Build blueprint: 3D view and 2D image view side by side
     blueprint = rrb.Horizontal(
         rrb.Spatial3DView(name="3D View", origin="world"),
+        rrb.Vertical(
         rrb.Spatial2DView(name="Image", origin="world/camera"),
+        rrb.Spatial2DView(name="image_raw", origin="world/image_raw"),
+        )
     )
     rr.init(app_name, spawn=True, default_blueprint=blueprint)
 
@@ -187,7 +194,13 @@ def visualize_optimization_rerun(
     # Log camera frustum at origin (camera coordinate system)
     rr.log("world/camera", rr.Transform3D(translation=[0, 0, 0], mat3x3=np.eye(3)))
     rr.log("world/camera", rr.Pinhole(image_from_camera=K, resolution=[width, height], image_plane_distance=1.0))
-    rr.log("world/camera", rr.Image(image))
+    # Mask the image with the mask (set non-masked pixels to black)
+    masked_image = image.copy()
+    masked_image[~mask] = 0
+    rr.log("world/camera/image", rr.Image(masked_image))
+    rr.log("world/image_raw", rr.Image(image))
+
+
 
     # Log pointmap as point cloud (filter out NaN values)
     pointmap_np = pointmap.numpy() if torch.is_tensor(pointmap) else pointmap
@@ -539,13 +552,17 @@ def optimize_o2c_with_mask(
 
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    image_path = os.path.join(args.data_dir, "rgb", f"{args.cond_index:04d}.jpg")
-    obj_mask_path = os.path.join(args.data_dir, "mask_object", f"{args.cond_index:04d}.png")
+    # image_path = os.path.join(args.data_dir, "rgb", f"{args.cond_index:04d}.jpg")
+    # obj_mask_path = os.path.join(args.data_dir, "mask_object", f"{args.cond_index:04d}.png")
+    image_path = os.path.join(args.data_dir, "inpaint", f"{args.cond_index:04d}_rgba.png")
+    obj_mask_path = os.path.join(args.data_dir, "inpaint", f"{args.cond_index:04d}_rgba.png")
     hand_mask_path = os.path.join(args.data_dir, "mask_hand", f"{args.cond_index:04d}.png")
+    hand_mask_path = ""
     depth_file = os.path.join(args.data_dir, "depth", f"{args.cond_index:04d}.png")
     meta_file = os.path.join(args.data_dir, "meta", f"{args.cond_index:04d}.pkl")
     SAM3D_dir = os.path.join(args.data_dir, "SAM3D", f"{args.cond_index:04d}")
     hand_pose_dir = args.data_dir
+    hand_pose_dir = ""
 
     # Check required input files
     if not os.path.exists(image_path):
@@ -630,8 +647,9 @@ def main(args):
         print(f"Merged mesh: obj={len(mesh_in_cam.vertices)} + hand={len(hand_verts_np)} = {len(merged_mesh.vertices)} vertices")
 
     # Visualize camera frustum, pointmap, mesh, and hand in Rerun (before optimization)
-    visualize_optimization_rerun(image, merged_mask, pointmap, mesh_in_cam, K, hand_verts, hand_faces,
-                                 app_name="align_SAM3D_before_optimized")
+    if args.vis:
+        visualize_optimization_rerun(image, merged_mask, pointmap, mesh_in_cam, K, hand_verts, hand_faces,
+                                    app_name="align_SAM3D_before_optimized")
 
     # Optimize the o2c to fit the rendered merged mesh to merged mask
     print("=" * 50)
@@ -711,7 +729,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num-iters",
         type=int,
-        default=200,
+        default=1000,
         help="Number of optimization iterations.",
     )
     parser.add_argument(
