@@ -17,77 +17,9 @@ from tqdm import tqdm
 _THIRD_PARTY_UTILS_SIMBA = str(Path(__file__).resolve().parents[2] / "third_party" / "utils_simba")
 if _THIRD_PARTY_UTILS_SIMBA not in sys.path:
     sys.path.insert(0, _THIRD_PARTY_UTILS_SIMBA)
-from utils_simba.depth import get_depth, erode_depth_map_torch, gauss_filter_depth_map_torch
+from utils_simba.depth import get_depth, erode_depth_map_torch, bilateral_filter_depth, remove_depth_outliers
 
 
-def bilateral_filter_depth(depth, d=5, sigma_color=0.2, sigma_space=15):
-    """Apply bilateral filter to depth image while preserving invalid (zero) pixels.
-
-    Args:
-        depth: Depth image as torch tensor or numpy array (H, W). Zero values are treated as invalid.
-        d: Diameter of each pixel neighborhood (filter kernel size).
-        sigma_color: Filter sigma in depth space. Depths within this range are smoothed together.
-        sigma_space: Filter sigma in coordinate space (pixels).
-
-    Returns:
-        Filtered depth as torch tensor (H, W).
-    """
-    from scipy.ndimage import distance_transform_edt
-
-    if torch.is_tensor(depth):
-        depth_np = depth.numpy()
-    else:
-        depth_np = np.asarray(depth, dtype=np.float32)
-
-    valid_mask = depth_np > 0
-    if not valid_mask.any():
-        return torch.from_numpy(depth_np)
-
-    # Replace zeros with nearest valid depth to avoid blending with invalid pixels
-    _, nearest_idx = distance_transform_edt(~valid_mask, return_distances=True, return_indices=True)
-    depth_filled = depth_np[tuple(nearest_idx)]
-
-    # Apply bilateral filter
-    depth_filtered = cv2.bilateralFilter(depth_filled, d=d, sigmaColor=sigma_color, sigmaSpace=sigma_space)
-
-    # Restore zeros at originally invalid pixels
-    depth_filtered[~valid_mask] = 0.0
-
-    return torch.from_numpy(depth_filtered)
-
-
-def remove_depth_outliers(depth, num_std=4.0, num_iterations=1):
-    """Remove depth outliers that are too far from the mean.
-
-    Args:
-        depth: Depth image as torch tensor or numpy array (H, W). Zero values are treated as invalid.
-        num_std: Number of standard deviations from the mean to consider as outlier.
-        num_iterations: Number of iterations to apply outlier removal.
-
-    Returns:
-        Depth with outliers set to zero, as torch tensor (H, W).
-    """
-    if torch.is_tensor(depth):
-        depth_np = depth.numpy().copy()
-    else:
-        depth_np = np.asarray(depth, dtype=np.float32).copy()
-
-    for _ in range(num_iterations):
-        valid_depths = depth_np[depth_np > 0]
-        if len(valid_depths) == 0:
-            break
-
-        depth_mean = valid_depths.mean()
-        depth_std = valid_depths.std()
-
-        if depth_std < 1e-6:
-            break
-
-        # Remove pixels beyond num_std standard deviations from the mean
-        outlier_mask = (depth_np > 0) & (np.abs(depth_np - depth_mean) > num_std * depth_std)
-        depth_np[outlier_mask] = 0.0
-
-    return torch.from_numpy(depth_np)
 
 def load_intrinsics(intrinsics_path):
     try:
