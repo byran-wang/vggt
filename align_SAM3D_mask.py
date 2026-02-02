@@ -554,8 +554,8 @@ def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # image_path = os.path.join(args.data_dir, "rgb", f"{args.cond_index:04d}.jpg")
     # obj_mask_path = os.path.join(args.data_dir, "mask_object", f"{args.cond_index:04d}.png")
-    image_path = os.path.join(args.data_dir, "inpaint", f"{args.cond_index:04d}_rgba.png")
-    obj_mask_path = os.path.join(args.data_dir, "inpaint", f"{args.cond_index:04d}_rgba.png")
+    inpaint_image_path = os.path.join(args.data_dir, "inpaint", f"{args.cond_index:04d}_rgba.png")
+    inpaint_mask_path = os.path.join(args.data_dir, "inpaint", f"{args.cond_index:04d}_rgba.png")
     hand_mask_path = os.path.join(args.data_dir, "mask_hand", f"{args.cond_index:04d}.png")
     hand_mask_path = ""
     depth_file = os.path.join(args.data_dir, "depth", f"{args.cond_index:04d}.png")
@@ -565,11 +565,11 @@ def main(args):
     hand_pose_dir = ""
 
     # Check required input files
-    if not os.path.exists(image_path):
-        print(f"Image {image_path} not found.")
+    if not os.path.exists(inpaint_image_path):
+        print(f"Image {inpaint_image_path} not found.")
         return
-    if not os.path.exists(obj_mask_path):
-        print(f"Mask {obj_mask_path} not found.")
+    if not os.path.exists(inpaint_mask_path):
+        print(f"Mask {inpaint_mask_path} not found.")
         return
     if not os.path.exists(depth_file):
         print(f"Depth file {depth_file} not found.")
@@ -584,11 +584,11 @@ def main(args):
 
 
     # --- Load image, mask ---
-    print(f"Loading image: {image_path}")
-    image = load_image(image_path)
-    print(f"Loading obj mask: {obj_mask_path}")
-    obj_mask = load_mask(obj_mask_path)
-    height, width = image.shape[:2]
+    print(f"Loading inpaint image: {inpaint_image_path}")
+    inpaint_image = load_image(inpaint_image_path)
+    print(f"Loading inpaint mask: {inpaint_mask_path}")
+    inpaint_mask = load_mask(inpaint_mask_path)
+    height, width = inpaint_image.shape[:2]
 
     # --- Load depth and intrinsics to create pointmap ---
     print(f"Loading depth: {depth_file}")
@@ -622,11 +622,11 @@ def main(args):
         hand_mask = load_mask(hand_mask_path)
     else:
         print(f"[WARNING] Hand mask not found: {hand_mask_path}, using empty mask")
-        hand_mask = np.zeros_like(obj_mask)
+        hand_mask = np.zeros_like(inpaint_mask)
 
     # Merge the object mask and hand mask to merged mask for optimization
-    merged_mask = obj_mask | hand_mask
-    print(f"Merged mask: obj={obj_mask.sum()} + hand={hand_mask.sum()} = merged={merged_mask.sum()} pixels")
+    merged_mask = inpaint_mask | hand_mask
+    print(f"Merged mask: obj={inpaint_mask.sum()} + hand={hand_mask.sum()} = merged={merged_mask.sum()} pixels")
 
     # Merge the object mesh and hand mesh to merged mesh for optimization
     merged_mesh = mesh_in_cam
@@ -648,7 +648,7 @@ def main(args):
 
     # Visualize camera frustum, pointmap, mesh, and hand in Rerun (before optimization)
     if args.vis:
-        visualize_optimization_rerun(image, merged_mask, pointmap, mesh_in_cam, K, hand_verts, hand_faces,
+        visualize_optimization_rerun(inpaint_image, merged_mask, pointmap, mesh_in_cam, K, hand_verts, hand_faces,
                                     app_name="align_SAM3D_before_optimized")
 
     # Optimize the o2c to fit the rendered merged mesh to merged mask
@@ -693,7 +693,7 @@ def main(args):
     # Visualize after optimization
     if args.vis:
         visualize_optimization_rerun(
-            image, merged_mask, pointmap, mesh_in_cam_optimized, K, hand_verts, hand_faces,
+            inpaint_image, merged_mask, pointmap, mesh_in_cam_optimized, K, hand_verts, hand_faces,
             app_name="align_SAM3D_after_optimized"
         )
 
