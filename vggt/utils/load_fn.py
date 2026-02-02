@@ -4,6 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import cv2
 import torch
 from PIL import Image
 from torchvision import transforms as TF
@@ -17,6 +18,76 @@ _THIRD_PARTY_UTILS_SIMBA = str(Path(__file__).resolve().parents[2] / "third_part
 if _THIRD_PARTY_UTILS_SIMBA not in sys.path:
     sys.path.insert(0, _THIRD_PARTY_UTILS_SIMBA)
 from utils_simba.depth import get_depth, erode_depth_map_torch, gauss_filter_depth_map_torch
+
+
+def bilateral_filter_depth(depth, d=5, sigma_color=0.2, sigma_space=15):
+    """Apply bilateral filter to depth image while preserving invalid (zero) pixels.
+
+    Args:
+        depth: Depth image as torch tensor or numpy array (H, W). Zero values are treated as invalid.
+        d: Diameter of each pixel neighborhood (filter kernel size).
+        sigma_color: Filter sigma in depth space. Depths within this range are smoothed together.
+        sigma_space: Filter sigma in coordinate space (pixels).
+
+    Returns:
+        Filtered depth as torch tensor (H, W).
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    if torch.is_tensor(depth):
+        depth_np = depth.numpy()
+    else:
+        depth_np = np.asarray(depth, dtype=np.float32)
+
+    valid_mask = depth_np > 0
+    if not valid_mask.any():
+        return torch.from_numpy(depth_np)
+
+    # Replace zeros with nearest valid depth to avoid blending with invalid pixels
+    _, nearest_idx = distance_transform_edt(~valid_mask, return_distances=True, return_indices=True)
+    depth_filled = depth_np[tuple(nearest_idx)]
+
+    # Apply bilateral filter
+    depth_filtered = cv2.bilateralFilter(depth_filled, d=d, sigmaColor=sigma_color, sigmaSpace=sigma_space)
+
+    # Restore zeros at originally invalid pixels
+    depth_filtered[~valid_mask] = 0.0
+
+    return torch.from_numpy(depth_filtered)
+
+
+def remove_depth_outliers(depth, num_std=4.0, num_iterations=1):
+    """Remove depth outliers that are too far from the mean.
+
+    Args:
+        depth: Depth image as torch tensor or numpy array (H, W). Zero values are treated as invalid.
+        num_std: Number of standard deviations from the mean to consider as outlier.
+        num_iterations: Number of iterations to apply outlier removal.
+
+    Returns:
+        Depth with outliers set to zero, as torch tensor (H, W).
+    """
+    if torch.is_tensor(depth):
+        depth_np = depth.numpy().copy()
+    else:
+        depth_np = np.asarray(depth, dtype=np.float32).copy()
+
+    for _ in range(num_iterations):
+        valid_depths = depth_np[depth_np > 0]
+        if len(valid_depths) == 0:
+            break
+
+        depth_mean = valid_depths.mean()
+        depth_std = valid_depths.std()
+
+        if depth_std < 1e-6:
+            break
+
+        # Remove pixels beyond num_std standard deviations from the mean
+        outlier_mask = (depth_np > 0) & (np.abs(depth_np - depth_mean) > num_std * depth_std)
+        depth_np[outlier_mask] = 0.0
+
+    return torch.from_numpy(depth_np)
 
 def load_intrinsics(intrinsics_path):
     try:
@@ -447,8 +518,11 @@ def load_and_preprocess_images_square_HO3D(image_path_list, args, target_size=10
             )
             depth_square = torch.frombuffer(bytearray(square_depth_img.tobytes()), dtype=torch.float32)
             depth_square = depth_square.view(target_size, target_size)
-            depth_square = erode_depth_map_torch(depth_square, structure_size=2, d_thresh=0.01, frac_req=0.6)
-            depth_square = erode_depth_map_torch(depth_square, structure_size=2, d_thresh=0.01, frac_req=0.6)
+            depth_square = erode_depth_map_torch(depth_square, structure_size=2, d_thresh=0.003, frac_req=0.5)
+
+            # Apply bilateral filter and remove outliers
+            depth_square = bilateral_filter_depth(depth_square, d=5, sigma_color=0.2, sigma_space=15)
+            depth_square = remove_depth_outliers(depth_square, num_std=4.0, num_iterations=3)
 
             square_mask_tensor = square_mask_tensor & (depth_square > 0.0).unsqueeze(0)
 
