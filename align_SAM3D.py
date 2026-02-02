@@ -87,6 +87,98 @@ def _load_camera_data(camera_json_path: str) -> tuple[np.ndarray, np.ndarray]:
 
 
 
+def visualize_alignment_rerun(
+    image: np.ndarray,
+    mask: np.ndarray,
+    pointmap: torch.Tensor,
+    mesh: trimesh.Trimesh,
+    K: np.ndarray,
+    app_name: str = "align_SAM3D",
+):
+    """Visualize camera frustum, pointmap, and mesh in Rerun.
+
+    Args:
+        image: RGB image (H, W, 3) uint8.
+        mask: Binary mask (H, W) bool.
+        pointmap: Point cloud from depth (H, W, 3) torch tensor in camera coords.
+        mesh: Trimesh mesh in camera coordinate system.
+        K: Camera intrinsic matrix (3, 3).
+        app_name: Name for the Rerun application.
+    """
+    import rerun as rr
+    import rerun.blueprint as rrb
+
+    height, width = image.shape[:2]
+
+    # Build blueprint: 3D view and 2D image view side by side
+    blueprint = rrb.Horizontal(
+        rrb.Spatial3DView(name="3D View", origin="world"),
+        rrb.Spatial2DView(name="Image", origin="world/camera"),
+    )
+    rr.init(app_name, spawn=True, default_blueprint=blueprint)
+
+    # Log world coordinate system
+    rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
+
+    # Log camera frustum at origin (camera coordinate system)
+    rr.log("world/camera", rr.Transform3D(translation=[0, 0, 0], mat3x3=np.eye(3)))
+    rr.log("world/camera", rr.Pinhole(image_from_camera=K, resolution=[width, height]))
+    rr.log("world/camera", rr.Image(image))
+
+    # Log pointmap as point cloud (filter out NaN values)
+    pointmap_np = pointmap.numpy() if torch.is_tensor(pointmap) else pointmap
+    valid_mask_pts = ~np.isnan(pointmap_np).any(axis=-1) & mask
+    valid_points = pointmap_np[valid_mask_pts]
+    valid_colors = image[valid_mask_pts]
+    rr.log("world/pointmap", rr.Points3D(
+        positions=valid_points,
+        colors=valid_colors,
+        radii=0.002,
+    ), static=True)
+
+    # Log mesh in camera coordinate system
+    mesh_colors = None
+    if hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
+        mesh_colors = np.asarray(mesh.visual.vertex_colors)[:, :3]
+    rr.log("world/mesh", rr.Mesh3D(
+        vertex_positions=mesh.vertices,
+        triangle_indices=mesh.faces,
+        vertex_normals=mesh.vertex_normals if mesh.vertex_normals is not None else None,
+        vertex_colors=mesh_colors,
+    ), static=True)
+
+    print("Rerun visualization launched.")
+
+
+def transform_mesh_to_camera(mesh: trimesh.Trimesh, o2c: np.ndarray) -> trimesh.Trimesh:
+    """Transform mesh from object coordinate system to camera coordinate system.
+
+    Args:
+        mesh: Input mesh in object coordinates.
+        o2c: Object-to-camera transform (4x4 matrix).
+
+    Returns:
+        Mesh transformed to camera coordinates.
+    """
+    mesh_vertices_homo = np.hstack([mesh.vertices, np.ones((len(mesh.vertices), 1))])
+    mesh_vertices_cam = (o2c @ mesh_vertices_homo.T).T[:, :3]
+
+    vertex_normals = None
+    if mesh.vertex_normals is not None and len(mesh.vertex_normals) > 0:
+        vertex_normals = mesh.vertex_normals @ o2c[:3, :3].T
+
+    mesh_in_cam = trimesh.Trimesh(
+        vertices=mesh_vertices_cam,
+        faces=mesh.faces,
+        vertex_normals=vertex_normals,
+    )
+
+    if hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
+        mesh_in_cam.visual.vertex_colors = mesh.visual.vertex_colors
+
+    return mesh_in_cam
+
+
 def load_filtered_pointmap(
     depth_file: str,
     K: np.ndarray,
@@ -175,61 +267,11 @@ def main(args):
     print(f"Mesh vertices: {len(mesh.vertices)}, faces: {len(mesh.faces)}")
 
     # Convert the mesh from object coordinate system to camera coordinate system
-    # o2c is the object-to-camera transform (4x4 matrix)
-    mesh_vertices_homo = np.hstack([mesh.vertices, np.ones((len(mesh.vertices), 1))])
-    mesh_vertices_cam = (o2c @ mesh_vertices_homo.T).T[:, :3]
-    mesh_in_cam = trimesh.Trimesh(
-        vertices=mesh_vertices_cam,
-        faces=mesh.faces,
-        vertex_normals=mesh.vertex_normals @ o2c[:3, :3].T if mesh.vertex_normals is not None else None,
-    )
-    if hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
-        mesh_in_cam.visual.vertex_colors = mesh.visual.vertex_colors
+    mesh_in_cam = transform_mesh_to_camera(mesh, o2c)
     print(f"Mesh transformed to camera coordinate system")
 
     # Visualize camera frustum, pointmap, and mesh in Rerun
-    import rerun as rr
-    import rerun.blueprint as rrb
-
-    # Build blueprint: 3D view and 2D image view side by side
-    blueprint = rrb.Horizontal(
-        rrb.Spatial3DView(name="3D View", origin="world"),
-        rrb.Spatial2DView(name="Image", origin="world/camera"),
-    )
-    rr.init("align_SAM3D", spawn=True, default_blueprint=blueprint)
-
-    # Log world coordinate system
-    rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
-
-    # Log camera frustum at origin (camera coordinate system)
-    rr.log("world/camera", rr.Transform3D(translation=[0, 0, 0], mat3x3=np.eye(3)))
-    rr.log("world/camera", rr.Pinhole(image_from_camera=K, resolution=[width, height]))
-    rr.log("world/camera", rr.Image(image))
-
-    # Log pointmap as point cloud (filter out NaN values)
-    pointmap_np = pointmap.numpy()
-    valid_mask_pts = ~np.isnan(pointmap_np).any(axis=-1) & mask
-    valid_points = pointmap_np[valid_mask_pts]
-    valid_colors = image[valid_mask_pts]
-    rr.log("world/pointmap", rr.Points3D(
-        positions=valid_points,
-        colors=valid_colors,
-        radii=0.002,
-    ), static=True)
-
-    # Log mesh in camera coordinate system
-    mesh_colors = None
-    if hasattr(mesh_in_cam.visual, 'vertex_colors') and mesh_in_cam.visual.vertex_colors is not None:
-        mesh_colors = np.asarray(mesh_in_cam.visual.vertex_colors)[:, :3]
-    rr.log("world/mesh", rr.Mesh3D(
-        vertex_positions=mesh_in_cam.vertices,
-        triangle_indices=mesh_in_cam.faces,
-        vertex_normals=mesh_in_cam.vertex_normals if mesh_in_cam.vertex_normals is not None else None,
-        vertex_colors=mesh_colors,
-    ), static=True)
-
-    print("Rerun visualization launched.")
-
+    visualize_alignment_rerun(image, mask, pointmap, mesh_in_cam, K)
 
 
 if __name__ == "__main__":
