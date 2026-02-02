@@ -22,6 +22,13 @@ from third_party.utils_simba.utils_simba.depth import (
     bilateral_filter_depth,
     remove_depth_outliers,
 )
+
+from third_party.utils_simba.utils_simba.render import (
+    diff_renderer,
+    make_mesh_tensors,
+    projection_matrix_from_intrinsics,
+    projection_matrix_to_intrinsics,
+)
 from viewer_step import HandDataProvider, compute_vertex_normals
 
 # Try to import seal_mano_mesh_np
@@ -140,7 +147,7 @@ def _load_camera_data(camera_json_path: str) -> tuple[np.ndarray, np.ndarray]:
 
 
 
-def visualize_alignment_rerun(
+def visualize_optimization_rerun(
     image: np.ndarray,
     mask: np.ndarray,
     pointmap: torch.Tensor,
@@ -179,7 +186,7 @@ def visualize_alignment_rerun(
 
     # Log camera frustum at origin (camera coordinate system)
     rr.log("world/camera", rr.Transform3D(translation=[0, 0, 0], mat3x3=np.eye(3)))
-    rr.log("world/camera", rr.Pinhole(image_from_camera=K, resolution=[width, height]))
+    rr.log("world/camera", rr.Pinhole(image_from_camera=K, resolution=[width, height], image_plane_distance=1.0))
     rr.log("world/camera", rr.Image(image))
 
     # Log pointmap as point cloud (filter out NaN values)
@@ -197,11 +204,25 @@ def visualize_alignment_rerun(
     mesh_colors = None
     if hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
         mesh_colors = np.asarray(mesh.visual.vertex_colors)[:, :3]
-    rr.log("world/mesh", rr.Mesh3D(
+    rr.log("world/object/mesh", rr.Mesh3D(
         vertex_positions=mesh.vertices,
         triangle_indices=mesh.faces,
         vertex_normals=mesh.vertex_normals if mesh.vertex_normals is not None else None,
         vertex_colors=mesh_colors,
+    ), static=True)
+
+    # Log 3D mesh points with blue color (randomly sample up to 5000 for visualization)
+    blue_color = np.array([0, 0, 255], dtype=np.uint8)
+    num_verts = len(mesh.vertices)
+    if num_verts > 5000:
+        sample_idx = np.random.choice(num_verts, 5000, replace=False)
+        sampled_verts = mesh.vertices[sample_idx]
+    else:
+        sampled_verts = mesh.vertices
+    rr.log("world/object/points", rr.Points3D(
+        positions=sampled_verts,
+        colors=np.tile(blue_color, (len(sampled_verts), 1)),
+        radii=0.0003,
     ), static=True)
 
     # Log hand mesh if available
@@ -347,10 +368,180 @@ def load_filtered_pointmap(
     return pointmap_tensor
 
 
+
+def optimize_o2c_with_mask(
+    mesh: trimesh.Trimesh,
+    hand_verts: Optional[np.ndarray],
+    hand_faces: Optional[np.ndarray],
+    target_mask: np.ndarray,
+    intrinsic: np.ndarray,
+    o2c_init: np.ndarray,
+    device: str,
+    num_iters: int = 200,
+    lr: float = 1e-2,
+    debug_dir: Optional[str] = None,
+) -> tuple[np.ndarray, float]:
+    """Optimize object-to-camera transform to fit rendered mesh silhouette to target mask.
+
+    Args:
+        mesh: Object mesh in object coordinate system.
+        hand_verts: Hand vertices in camera coordinates (already transformed), optional.
+        hand_faces: Hand faces, optional.
+        target_mask: Target binary mask (H, W).
+        intrinsic: Camera intrinsic matrix (3, 3).
+        o2c_init: Initial object-to-camera transform (4, 4).
+        device: Torch device.
+        num_iters: Number of optimization iterations.
+        lr: Learning rate.
+        debug_dir: Optional directory to save debug images.
+
+    Returns:
+        Tuple of (optimized_o2c, final_iou_loss).
+    """
+    import nvdiffrast.torch as dr
+    from utils_simba.render import (
+        diff_renderer,
+        make_mesh_tensors,
+        projection_matrix_from_intrinsics,
+    )
+    from utils_simba.geometry import matrix_to_axis_angle_t, axis_angle_t_to_matrix
+
+    H, W = target_mask.shape
+    resolution = (H, W)
+
+    # Prepare mesh tensors (object in object space)
+    obj_verts = torch.tensor(mesh.vertices, dtype=torch.float32, device=device).unsqueeze(0)
+    obj_faces = torch.tensor(mesh.faces, dtype=torch.int32, device=device)
+
+    # Green color for silhouette rendering
+    color_obj = torch.zeros_like(obj_verts)
+    color_obj[..., 1] = 1.0  # Green channel
+
+    # Prepare hand mesh if available (hand is already in camera space, so we don't transform it with o2c)
+    hand_verts_t = None
+    hand_faces_t = None
+    hand_color = None
+    if hand_verts is not None and hand_faces is not None:
+        hand_verts_np = np.asarray(hand_verts)
+        hand_faces_np = np.asarray(hand_faces, dtype=np.int32)
+
+        # Seal hand mesh if possible
+        if seal_mano_mesh_np is not None:
+            try:
+                hand_verts_np, hand_faces_np = seal_mano_mesh_np(hand_verts_np[None], hand_faces_np, is_rhand=True)
+                hand_verts_np = np.asarray(hand_verts_np)[0]
+            except Exception:
+                pass
+
+        hand_verts_t = torch.tensor(hand_verts_np, dtype=torch.float32, device=device).unsqueeze(0)
+        hand_faces_t = torch.tensor(hand_faces_np, dtype=torch.int32, device=device)
+        hand_color = torch.zeros_like(hand_verts_t)
+        hand_color[..., 1] = 1.0  # Green channel
+
+    # Build projection matrix
+    K = intrinsic.astype(np.float64)
+    projection = torch.tensor(
+        projection_matrix_from_intrinsics(K, height=H, width=W, znear=0.01, zfar=100),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    # Prepare target mask
+    target_mask_t = torch.tensor(target_mask.astype(np.float32), device=device)
+
+    # Initialize o2c transform
+    o2c_t = torch.tensor(o2c_init, dtype=torch.float32, device=device)
+
+    # Decompose into axis-angle and translation for optimization
+    o2c_r_orig, o2c_t_orig, o2c_s_orig = matrix_to_axis_angle_t(o2c_t)
+
+    # Pose residual: [3 for rotation, 3 for translation]
+    pose_residual = torch.nn.Parameter(torch.zeros(6, device=device, dtype=torch.float32))
+
+    # Setup optimizer
+    optimizer = torch.optim.Adam([pose_residual], lr=lr)
+
+    # Create nvdiffrast context
+    glctx = dr.RasterizeCudaContext() if 'cuda' in device else dr.RasterizeGLContext()
+
+    # Identity transform for hand (already in camera space)
+    identity = torch.eye(4, dtype=torch.float32, device=device)
+
+    # Optimization loop
+    best_loss = float("inf")
+    best_pose_residual = None
+
+    for it in range(num_iters):
+        optimizer.zero_grad()
+
+        # Build o2c with residual
+        o2c_r = o2c_r_orig + pose_residual[:3] * 0.1  # Scale rotation step
+        o2c_t_new = o2c_t_orig + pose_residual[3:]
+        o2c_current = axis_angle_t_to_matrix(o2c_r, o2c_t_new, o2c_s_orig)
+
+        # Render object silhouette (transform object verts by o2c)
+        rgb_obj, _ = diff_renderer(
+            obj_verts, obj_faces, color_obj, projection, o2c_current, resolution, glctx
+        )
+        sil_pred = rgb_obj[..., 1]  # Green channel as silhouette
+
+        # Render hand silhouette if available (hand already in camera space, use identity)
+        if hand_verts_t is not None:
+            rgb_hand, _ = diff_renderer(
+                hand_verts_t, hand_faces_t, hand_color, projection, identity, resolution, glctx
+            )
+            sil_hand = rgb_hand[..., 1]
+            # Combine silhouettes (union)
+            sil_pred = torch.clamp(sil_pred + sil_hand, 0, 1)
+
+        # Compute IoU loss
+        inter = (sil_pred * target_mask_t).sum()
+        union = (sil_pred + target_mask_t).sum() - inter
+        iou = inter / (union + 1e-6)
+        loss = 1.0 - iou
+
+        # Save debug images periodically
+        if debug_dir and it % 50 == 0:
+            os.makedirs(debug_dir, exist_ok=True)
+            sil_np = sil_pred.detach().cpu().numpy()
+            Image.fromarray((sil_np * 255).astype(np.uint8)).save(
+                os.path.join(debug_dir, f"sil_{it:04d}.png")
+            )
+            if it == 0:
+                tgt_np = target_mask_t.detach().cpu().numpy()
+                Image.fromarray((tgt_np * 255).astype(np.uint8)).save(
+                    os.path.join(debug_dir, "target_mask.png")
+                )
+
+        # Track best
+        if loss.item() < best_loss:
+            best_loss = loss.item()
+            best_pose_residual = pose_residual.detach().clone()
+
+        # Backward and step
+        loss.backward()
+        optimizer.step()
+
+        if (it + 1) % 50 == 0:
+            print(f"[optimize_o2c] Iter {it+1:04d}: IoU loss={loss.item():.4f}, IoU={iou.item():.4f}")
+
+    # Reconstruct best o2c
+    if best_pose_residual is not None:
+        o2c_r_best = o2c_r_orig + best_pose_residual[:3] * 0.1
+        o2c_t_best = o2c_t_orig + best_pose_residual[3:]
+        o2c_optimized = axis_angle_t_to_matrix(o2c_r_best, o2c_t_best, o2c_s_orig)
+        o2c_optimized_np = o2c_optimized.detach().cpu().numpy()
+    else:
+        o2c_optimized_np = o2c_init
+
+    return o2c_optimized_np, best_loss
+
+
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     image_path = os.path.join(args.data_dir, "rgb", f"{args.cond_index:04d}.jpg")
-    mask_path = os.path.join(args.data_dir, "mask_object", f"{args.cond_index:04d}.png")
+    obj_mask_path = os.path.join(args.data_dir, "mask_object", f"{args.cond_index:04d}.png")
+    hand_mask_path = os.path.join(args.data_dir, "mask_hand", f"{args.cond_index:04d}.png")
     depth_file = os.path.join(args.data_dir, "depth", f"{args.cond_index:04d}.png")
     meta_file = os.path.join(args.data_dir, "meta", f"{args.cond_index:04d}.pkl")
     SAM3D_dir = os.path.join(args.data_dir, "SAM3D", f"{args.cond_index:04d}")
@@ -360,8 +551,8 @@ def main(args):
     if not os.path.exists(image_path):
         print(f"Image {image_path} not found.")
         return
-    if not os.path.exists(mask_path):
-        print(f"Mask {mask_path} not found.")
+    if not os.path.exists(obj_mask_path):
+        print(f"Mask {obj_mask_path} not found.")
         return
     if not os.path.exists(depth_file):
         print(f"Depth file {depth_file} not found.")
@@ -378,8 +569,8 @@ def main(args):
     # --- Load image, mask ---
     print(f"Loading image: {image_path}")
     image = load_image(image_path)
-    print(f"Loading mask: {mask_path}")
-    mask = load_mask(mask_path)
+    print(f"Loading obj mask: {obj_mask_path}")
+    obj_mask = load_mask(obj_mask_path)
     height, width = image.shape[:2]
 
     # --- Load depth and intrinsics to create pointmap ---
@@ -408,8 +599,86 @@ def main(args):
     cond_index = args.cond_index if args.cond_index is not None else 0
     hand_verts, hand_faces = load_hand_pose(hand_pose_dir, hand_pose_suffix, cond_index)
 
-    # Visualize camera frustum, pointmap, mesh, and hand in Rerun
-    visualize_alignment_rerun(image, mask, pointmap, mesh_in_cam, K, hand_verts, hand_faces)
+    # Load hand mask
+    print(f"Loading hand mask: {hand_mask_path}")
+    if os.path.exists(hand_mask_path):
+        hand_mask = load_mask(hand_mask_path)
+    else:
+        print(f"[WARNING] Hand mask not found: {hand_mask_path}, using empty mask")
+        hand_mask = np.zeros_like(obj_mask)
+
+    # Merge the object mask and hand mask to merged mask for optimization
+    merged_mask = obj_mask | hand_mask
+    print(f"Merged mask: obj={obj_mask.sum()} + hand={hand_mask.sum()} = merged={merged_mask.sum()} pixels")
+
+    # Merge the object mesh and hand mesh to merged mesh for optimization
+    merged_mesh = mesh_in_cam
+    if hand_verts is not None and hand_faces is not None:
+        hand_verts_np = np.asarray(hand_verts)
+        hand_faces_np = np.asarray(hand_faces, dtype=np.int32)
+
+        # Optionally seal the MANO mesh
+        if seal_mano_mesh_np is not None:
+            try:
+                hand_verts_np, hand_faces_np = seal_mano_mesh_np(hand_verts_np[None], hand_faces_np, is_rhand=True)
+                hand_verts_np = np.asarray(hand_verts_np)[0]
+            except Exception as e:
+                print(f"[WARNING] seal_mano_mesh_np failed: {e}")
+
+        hand_mesh = trimesh.Trimesh(vertices=hand_verts_np, faces=hand_faces_np)
+        merged_mesh = trimesh.util.concatenate([mesh_in_cam, hand_mesh])
+        print(f"Merged mesh: obj={len(mesh_in_cam.vertices)} + hand={len(hand_verts_np)} = {len(merged_mesh.vertices)} vertices")
+
+    # Visualize camera frustum, pointmap, mesh, and hand in Rerun (before optimization)
+    visualize_optimization_rerun(image, merged_mask, pointmap, mesh_in_cam, K, hand_verts, hand_faces,
+                                 app_name="align_SAM3D_before_optimized")
+
+    # Optimize the o2c to fit the rendered merged mesh to merged mask
+    print("=" * 50)
+    print("Starting mask-based pose optimization...")
+    print("=" * 50)
+
+    optimized_o2c, final_loss = optimize_o2c_with_mask(
+        mesh=mesh,  # Original mesh in object space
+        hand_verts=hand_verts,
+        hand_faces=hand_faces,
+        target_mask=merged_mask,
+        intrinsic=K,
+        o2c_init=o2c,
+        device=device,
+        num_iters=getattr(args, 'num_iters', 200),
+        lr=getattr(args, 'lr', 1e-2),
+        debug_dir=os.path.join(args.out_dir, "debug") if args.out_dir else None,
+    )
+
+    print(f"Optimization complete. Final IoU loss: {final_loss:.4f}")
+
+    # Transform mesh with optimized pose
+    mesh_in_cam_optimized = transform_mesh_to_camera(mesh, optimized_o2c)
+
+    # Save optimized results
+    if args.out_dir:
+        os.makedirs(args.out_dir, exist_ok=True)
+        # Save optimized o2c
+        optimized_camera_data = {
+            "K": K.tolist(),
+            "blw2cvc": optimized_o2c.tolist(),
+        }
+        with open(os.path.join(args.out_dir, "camera_optimized.json"), "w") as f:
+            json.dump(optimized_camera_data, f, indent=2)
+        print(f"Saved optimized camera to {args.out_dir}/camera_optimized.json")
+
+        # Save optimized mesh
+        mesh_in_cam_optimized.export(os.path.join(args.out_dir, "mesh_optimized.ply"))
+        print(f"Saved optimized mesh to {args.out_dir}/mesh_optimized.ply")
+
+    # Visualize after optimization
+    if args.vis:
+        visualize_optimization_rerun(
+            image, merged_mask, pointmap, mesh_in_cam_optimized, K, hand_verts, hand_faces,
+            app_name="align_SAM3D_after_optimized"
+        )
+
 
 
 if __name__ == "__main__":
@@ -438,6 +707,18 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="Directory to save optimized outputs.",
+    )
+    parser.add_argument(
+        "--num-iters",
+        type=int,
+        default=200,
+        help="Number of optimization iterations.",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=1e-2,
+        help="Learning rate for optimization.",
     )
     parser.add_argument(
         "--vis",
