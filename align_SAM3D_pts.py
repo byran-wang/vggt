@@ -457,7 +457,10 @@ def visualize_final_alignment_rerun(
     # Build blueprint
     blueprint = rrb.Horizontal(
         rrb.Spatial3DView(name="3D View", origin="world"),
-        rrb.Spatial2DView(name="Image", origin="world/camera"),
+        rrb.Horizontal(
+            rrb.Spatial2DView(name="Masked Image", origin="world/camera"),
+            rrb.Spatial2DView(name="Raw Image", origin="world/image_raw"),
+        )
     )
     rr.init(app_name, spawn=True, default_blueprint=blueprint)
 
@@ -472,6 +475,7 @@ def visualize_final_alignment_rerun(
     masked_image = image.copy()
     masked_image[~mask] = 0
     rr.log("world/camera/image", rr.Image(masked_image))
+    rr.log("world/image_raw", rr.Image(image))
 
     # Create pointcloud from depth
     fx, fy = K[0, 0], K[1, 1]
@@ -504,15 +508,16 @@ def visualize_final_alignment_rerun(
     # Log mesh points in blue
     blue_color = np.array([0, 0, 255], dtype=np.uint8)
     num_verts = len(mesh.vertices)
-    if num_verts > 5000:
-        sample_idx = np.random.choice(num_verts, 5000, replace=False)
+    max_verts = 10000
+    if num_verts > max_verts:
+        sample_idx = np.random.choice(num_verts, max_verts, replace=False)
         sampled_verts = mesh.vertices[sample_idx]
     else:
         sampled_verts = mesh.vertices
     rr.log("world/mesh_points", rr.Points3D(
         positions=sampled_verts,
         colors=np.tile(blue_color, (len(sampled_verts), 1)),
-        radii=0.001,
+        radii=0.0003,
     ), static=True)
 
     print(f"Launched Rerun visualization: {app_name}")
@@ -671,6 +676,10 @@ def main(args):
     cond_mask = load_mask(cond_mask_path) if os.path.exists(cond_mask_path) else np.ones(cond_image.shape[:2], dtype=bool)
     cond_depth = load_filtered_depth(cond_depth_file)
     K_cond = load_intrinsics_from_meta(cond_meta_file)
+    if K_cond.shape != (3, 3):
+        K_cond = load_intrinsics_from_meta(Path(cond_meta_file).parent / "0000.pkl")
+        if K_cond.shape != (3, 3):
+            raise ValueError(f"Invalid intrinsics shape in {cond_meta_file}: {K_cond.shape}")
     print(f"Condition image: {cond_image.shape}, depth: {cond_depth.shape}, K: {K_cond.shape}")
 
     # Load SAM3D depth and intrinsic
