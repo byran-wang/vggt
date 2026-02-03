@@ -63,6 +63,24 @@ def load_intrinsics_from_json(camera_json_path: str) -> Tuple[np.ndarray, np.nda
     return K, o2c
 
 
+def load_mesh_from_glb(glb_path: str) -> trimesh.Trimesh:
+    """Load mesh from GLB file.
+
+    Returns:
+        Combined trimesh mesh from all geometries in the GLB file.
+    """
+    loaded = trimesh.load(glb_path)
+
+    if isinstance(loaded, trimesh.Scene):
+        meshes = list(loaded.geometry.values())
+        if len(meshes) == 1:
+            return meshes[0]
+        else:
+            return trimesh.util.concatenate(meshes)
+    else:
+        return loaded
+
+
 def load_filtered_depth(
     depth_file: str,
     thresh_min: float = 0.01,
@@ -221,13 +239,46 @@ def rigid_transform_3d(A: np.ndarray, B: np.ndarray) -> Tuple[np.ndarray, np.nda
     return R, t
 
 
+def scale_translation_3d(A: np.ndarray, B: np.ndarray) -> Tuple[float, np.ndarray]:
+    """Compute scale and translation from A to B (no rotation).
+
+    Solves: B = s * A + t
+
+    Args:
+        A: (N, 3) source points
+        B: (N, 3) target points
+
+    Returns:
+        s: scale factor
+        t: (3,) translation vector
+    """
+    assert A.shape == B.shape
+
+    # Centroids
+    centroid_A = A.mean(axis=0)
+    centroid_B = B.mean(axis=0)
+
+    # Center the points
+    AA = A - centroid_A
+    BB = B - centroid_B
+
+    # Compute scale using least squares: s = sum(BB * AA) / sum(AA * AA)
+    # This minimizes ||s * AA - BB||^2
+    s = np.sum(BB * AA) / (np.sum(AA * AA) + 1e-8)
+
+    # Compute translation
+    t = centroid_B - s * centroid_A
+
+    return s, t
+
+
 def optimize_rigid_transform(
     pts_src: np.ndarray,
     pts_tgt: np.ndarray,
     num_iters: int = 100,
     inlier_thresh: float = 0.02,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """RANSAC-based rigid transform optimization.
+) -> Tuple[float, np.ndarray, np.ndarray]:
+    """RANSAC-based scale + translation optimization (no rotation).
 
     Args:
         pts_src: (N, 3) source points
@@ -236,27 +287,27 @@ def optimize_rigid_transform(
         inlier_thresh: Inlier distance threshold in meters
 
     Returns:
-        R: (3, 3) best rotation matrix
+        s: best scale factor
         t: (3,) best translation vector
         inlier_mask: (N,) boolean mask for inliers
     """
     N = len(pts_src)
     best_inliers = 0
-    best_R = np.eye(3)
+    best_s = 1.0
     best_t = np.zeros(3)
     best_mask = np.zeros(N, dtype=bool)
 
     for _ in range(num_iters):
-        # Sample 3 random points (minimum for rigid transform)
-        idx = np.random.choice(N, min(3, N), replace=False)
-        if len(idx) < 3:
+        # Sample 2 random points (minimum for scale + translation)
+        idx = np.random.choice(N, min(2, N), replace=False)
+        if len(idx) < 2:
             continue
 
         # Compute transform from sample
-        R, t = rigid_transform_3d(pts_src[idx], pts_tgt[idx])
+        s, t = scale_translation_3d(pts_src[idx], pts_tgt[idx])
 
         # Transform all source points
-        pts_transformed = (R @ pts_src.T).T + t
+        pts_transformed = s * pts_src + t
 
         # Compute distances
         dists = np.linalg.norm(pts_transformed - pts_tgt, axis=1)
@@ -265,17 +316,34 @@ def optimize_rigid_transform(
 
         if num_inliers > best_inliers:
             best_inliers = num_inliers
-            best_R = R
+            best_s = s
             best_t = t
             best_mask = inlier_mask
 
     # Refine using all inliers
-    if best_inliers >= 3:
-        best_R, best_t = rigid_transform_3d(pts_src[best_mask], pts_tgt[best_mask])
+    if best_inliers >= 2:
+        best_s, best_t = scale_translation_3d(pts_src[best_mask], pts_tgt[best_mask])
 
-    print(f"RANSAC: {best_inliers}/{N} inliers")
+    print(f"RANSAC: {best_inliers}/{N} inliers, scale={best_s:.4f}")
 
-    return best_R, best_t, best_mask
+    return best_s, best_t, best_mask
+
+
+def save_points_to_ply(
+    points: np.ndarray,
+    output_path: str,
+    color: Tuple[int, int, int, int] = (255, 255, 255, 255),
+):
+    """Save 3D points to PLY file.
+
+    Args:
+        points: (N, 3) array of 3D points
+        output_path: Path to save PLY file
+        color: RGBA color tuple for all points
+    """
+    pcd = trimesh.PointCloud(points, colors=np.tile(color, (len(points), 1)))
+    pcd.export(output_path)
+    print(f"Saved {len(points)} points to {output_path}")
 
 
 def visualize_correspondences_rerun(
@@ -288,7 +356,7 @@ def visualize_correspondences_rerun(
     valid_mask: np.ndarray,
     K_cond: np.ndarray,
     K_sam3d: np.ndarray,
-    R: Optional[np.ndarray] = None,
+    s: Optional[float] = None,
     t: Optional[np.ndarray] = None,
     inlier_mask: Optional[np.ndarray] = None,
     app_name: str = "align_SAM3D_pts",
@@ -305,7 +373,7 @@ def visualize_correspondences_rerun(
         valid_mask: Mask for points with valid depth in both views (N,)
         K_cond: Condition camera intrinsics (3, 3)
         K_sam3d: SAM3D camera intrinsics (3, 3)
-        R: Optional rotation matrix from SAM3D to condition space
+        s: Optional scale factor from SAM3D to condition space
         t: Optional translation vector
         inlier_mask: Optional inlier mask after optimization
         app_name: Rerun application name
@@ -332,13 +400,13 @@ def visualize_correspondences_rerun(
 
     # Log condition camera
     rr.log("world/cond_camera", rr.Transform3D(translation=[0, 0, 0], mat3x3=np.eye(3)))
-    rr.log("world/cond_camera", rr.Pinhole(image_from_camera=K_cond, resolution=[W_cond, H_cond]))
+    rr.log("world/cond_camera", rr.Pinhole(image_from_camera=K_cond, resolution=[W_cond, H_cond], image_plane_distance=1.0))
     rr.log("world/cond_camera/image", rr.Image(cond_image))
 
     # Log SAM3D camera (offset for visualization)
-    sam3d_offset = np.array([0.5, 0, 0])
+    sam3d_offset = np.array([0, 0, 0])
     rr.log("world/sam3d_camera", rr.Transform3D(translation=sam3d_offset, mat3x3=np.eye(3)))
-    rr.log("world/sam3d_camera", rr.Pinhole(image_from_camera=K_sam3d, resolution=[W_sam3d, H_sam3d]))
+    rr.log("world/sam3d_camera", rr.Pinhole(image_from_camera=K_sam3d, resolution=[W_sam3d, H_sam3d], image_plane_distance=1.0))
     rr.log("world/sam3d_camera/image", rr.Image(sam3d_image))
 
     # Log 2D keypoints on images
@@ -349,7 +417,7 @@ def visualize_correspondences_rerun(
     ))
     rr.log("world/sam3d_camera/keypoints", rr.Points2D(
         positions=sam3d_kpts[valid_mask],
-        colors=np.array([0, 255, 0]),
+        colors=np.array([0, 0, 255]),
         radii=3,
     ))
 
@@ -370,9 +438,9 @@ def visualize_correspondences_rerun(
     ))
 
     # SAM3D points (optionally transformed)
-    if R is not None and t is not None:
-        # Transform SAM3D points to condition space
-        sam3d_pts_transformed = (R @ valid_sam3d_pts.T).T + t
+    if s is not None and t is not None:
+        # Transform SAM3D points to condition space: B = s * A + t
+        sam3d_pts_transformed = s * valid_sam3d_pts + t
         rr.log("world/sam3d_pts_aligned", rr.Points3D(
             positions=sam3d_pts_transformed,
             colors=colors,
@@ -415,6 +483,7 @@ def main(args):
     SAM3D_mask_file = os.path.join(SAM3D_dir, "mask.png")
     SAM3D_depth_file = os.path.join(SAM3D_dir, "depth_aligned.png")
     SAM3D_camera_file = os.path.join(SAM3D_dir, "camera.json")
+    SAM3D_mesh_file = os.path.join(args.data_dir, "SAM3D", f"{args.SAM3D_index:04d}", "scene.glb")
 
     # Check required files
     for f in [cond_image_path, cond_depth_file, cond_meta_file, SAM3D_image_file, SAM3D_depth_file, SAM3D_camera_file]:
@@ -454,17 +523,25 @@ def main(args):
     print("=" * 50)
     cond_pts_3d, cond_valid = backproject_points(cond_kpts, cond_depth, K_cond)
     sam3d_pts_3d, sam3d_valid = backproject_points(sam3d_kpts, sam3d_depth, K_sam3d)
+    
 
     # Combined valid mask (valid in both views)
     valid_mask = cond_valid & sam3d_valid
     print(f"Valid 3D correspondences: {valid_mask.sum()}/{len(valid_mask)}")
 
-    if valid_mask.sum() < 3:
+    # Save the valid 3D points to PLY files for debugging
+    if args.out_dir:
+        os.makedirs(args.out_dir, exist_ok=True)
+        valid_cond_pts = cond_pts_3d[valid_mask]
+        valid_sam3d_pts = sam3d_pts_3d[valid_mask]
+        save_points_to_ply(valid_cond_pts, os.path.join(args.out_dir, "cond_pts_3d.ply"), color=(0, 255, 0, 255))
+        save_points_to_ply(valid_sam3d_pts, os.path.join(args.out_dir, "sam3d_pts_3d.ply"), color=(255, 0, 0, 255))
+    
+    if valid_mask.sum() < 20:
         print("Not enough valid correspondences for alignment")
         return
 
     # Visualize before optimization
-    breakpoint()
     if args.vis:
         print("=" * 50)
         print("Visualizing before optimization...")
@@ -477,18 +554,17 @@ def main(args):
             K_cond, K_sam3d,
             app_name="align_SAM3D_pts_before"
         )
-
     # Optimize alignment between SAM3D points and condition points
     print("=" * 50)
-    print("Optimizing rigid alignment (RANSAC)...")
+    print("Optimizing scale + translation alignment (RANSAC)...")
     print("=" * 50)
     valid_cond_pts = cond_pts_3d[valid_mask]
     valid_sam3d_pts = sam3d_pts_3d[valid_mask]
 
-    R, t, inlier_mask_valid = optimize_rigid_transform(
+    s, t, inlier_mask_valid = optimize_rigid_transform(
         valid_sam3d_pts, valid_cond_pts,
         num_iters=1000,
-        inlier_thresh=0.02,
+        inlier_thresh=0.01,
     )
 
     # Expand inlier mask back to full size
@@ -496,7 +572,7 @@ def main(args):
     inlier_mask[valid_mask] = inlier_mask_valid
 
     # Compute alignment error
-    aligned_pts = (R @ valid_sam3d_pts.T).T + t
+    aligned_pts = s * valid_sam3d_pts + t
     errors = np.linalg.norm(aligned_pts - valid_cond_pts, axis=1)
     print(f"Mean alignment error: {errors.mean():.4f} m")
     print(f"Median alignment error: {np.median(errors):.4f} m")
@@ -513,22 +589,25 @@ def main(args):
             cond_pts_3d, sam3d_pts_3d,
             valid_mask,
             K_cond, K_sam3d,
-            R=R, t=t,
+            s=s, t=t,
             inlier_mask=inlier_mask,
             app_name="align_SAM3D_pts_after"
         )
-
+    
     # Save results
     if args.out_dir:
         os.makedirs(args.out_dir, exist_ok=True)
 
-        # Build 4x4 transform matrix
+        # Build 4x4 transform matrix: B = s * A + t
+        # Represented as [s*I, t; 0, 1]
         T = np.eye(4)
-        T[:3, :3] = R
+        T[:3, :3] = s * np.eye(3)
         T[:3, 3] = t
+        transformed_sam3d_pts = s * sam3d_pts_3d + t
+        save_points_to_ply(transformed_sam3d_pts, os.path.join(args.out_dir, "sam3d_pts_3d_transformed.ply"), color=(0, 0, 255, 255))
 
         results = {
-            "R": R.tolist(),
+            "scale": float(s),
             "t": t.tolist(),
             "T_sam3d_to_cond": T.tolist(),
             "num_correspondences": int(len(cond_kpts)),
@@ -541,6 +620,33 @@ def main(args):
         with open(os.path.join(args.out_dir, "alignment.json"), "w") as f:
             json.dump(results, f, indent=2)
         print(f"Saved alignment to {args.out_dir}/alignment.json")
+
+        # Combine scale, T with original o2c_sam3d to get new camera pose
+        # The transformation chain is:
+        # p_cond = T @ p_sam3d = T @ o2c_sam3d @ p_obj
+        # So new_o2c = T @ o2c_sam3d
+        new_o2c = T @ o2c_sam3d
+
+        # Save to camera.json with K_cond (since we're now in condition camera space)
+        camera_data = {
+            "K": K_cond.tolist(),
+            "blw2cvc": new_o2c.tolist(),
+        }
+        with open(os.path.join(args.out_dir, "camera.json"), "w") as f:
+            json.dump(camera_data, f, indent=2)
+        print(f"Saved camera to {args.out_dir}/camera.json")
+
+        # Transform SAM3D mesh with new_o2c and save to mesh_aligned.ply
+        if os.path.exists(SAM3D_mesh_file):
+            sam3d_mesh = load_mesh_from_glb(SAM3D_mesh_file)
+            # Apply new_o2c transform to mesh vertices: p_cond = new_o2c @ p_obj
+            verts_homogeneous = np.hstack([sam3d_mesh.vertices, np.ones((len(sam3d_mesh.vertices), 1))])
+            verts_transformed = (new_o2c @ verts_homogeneous.T).T[:, :3]
+            sam3d_mesh.vertices = verts_transformed
+            sam3d_mesh.export(os.path.join(args.out_dir, "mesh_aligned.ply"))
+            print(f"Saved transformed mesh to {args.out_dir}/mesh_aligned.ply")
+        else:
+            print(f"SAM3D mesh file not found: {SAM3D_mesh_file}")
 
 
 if __name__ == "__main__":
