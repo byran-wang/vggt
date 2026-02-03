@@ -597,6 +597,11 @@ def main(args):
     print(f"Loading depth: {depth_file}")
     print(f"Loading intrinsics from: {meta_file}")
     K = load_intrinsics(meta_file)
+    if K.shape != (3, 3):
+        from pathlib import Path
+        K = load_intrinsics(Path(meta_file).parent / "0000.pkl")
+        if K.shape != (3, 3):
+            raise ValueError(f"Intrinsics K has invalid shape: {K.shape}")
     # pointmap = load_pointmap_from_depth(depth_file, K)
     pointmap = load_filtered_pointmap(depth_file, K, device).cpu().numpy()
  
