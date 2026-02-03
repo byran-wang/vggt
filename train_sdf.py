@@ -34,7 +34,7 @@ def parse_args():
         type=str,
         default="sphere",
         choices=["sphere", "mesh"],
-        help="SDF initialization method: 'sphere' (default) or 'mesh' (use gen3d_omni mesh)",
+        help="SDF initialization method: 'sphere' (default) or 'mesh' (use gen3d mesh)",
     )
     return parser.parse_args()
 
@@ -53,13 +53,13 @@ def main(args):
     launch_script = instant_nsr_dir / "launch.py"
     # Determine init mesh path
     if args.sdf_init == "mesh":
-        init_mesh_path = obj_data.gen3d_aligned["gen3d_omni"]
+        init_mesh_path = obj_data.gen3d_aligned["gen3d_mesh"]
         if init_mesh_path.exists():
             init_mesh_path = str(init_mesh_path)
-            print(f"Using gen3d_omni mesh (object coords): {init_mesh_path}")
+            print(f"Using gen3d_mesh (object coords): {init_mesh_path}")
         else:  
             print(
-                f"Warning: gen3d_omni mesh not found at {init_mesh_path}. Please provide a valid init_mesh_path or use 'sphere' initialization."
+                f"Warning: gen3d_mesh not found at {init_mesh_path}. Please provide a valid init_mesh_path or use 'sphere' initialization."
             )
             return
 

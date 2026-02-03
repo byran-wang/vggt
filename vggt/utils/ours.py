@@ -35,7 +35,7 @@ def load_data(args):
 
     img_fs = obj_provider.origin_images
     seq_name = obj_provider.get_seq_name() 
-    mesh_file = obj_provider.gen3d_aligned["gen3d_omni"]
+    mesh_file = obj_provider.gen3d_aligned["gen3d_mesh"]
 
 
     hand_fit_mode = args.hand_fit_mode
