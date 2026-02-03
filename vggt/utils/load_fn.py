@@ -17,7 +17,7 @@ from tqdm import tqdm
 _THIRD_PARTY_UTILS_SIMBA = str(Path(__file__).resolve().parents[2] / "third_party" / "utils_simba")
 if _THIRD_PARTY_UTILS_SIMBA not in sys.path:
     sys.path.insert(0, _THIRD_PARTY_UTILS_SIMBA)
-from utils_simba.depth import get_depth, erode_depth_map_torch, bilateral_filter_depth, remove_depth_outliers
+from utils_simba.depth import get_depth, load_filtered_depth
 
 
 
@@ -246,7 +246,7 @@ def load_and_preprocess_images_square_ZED(image_path_list, args, target_size=102
 
         # If a depth map exists, use it to further refine the mask (drop pixels with invalid depth).
         if depth_path.exists():
-            depth_np = get_depth(str(depth_path))  # (H, W) float
+            depth_np = load_filtered_depth(str(depth_path))  # (H, W) float
             depth_np = depth_np * mask.astype(depth_np.dtype)
 
             depth_img = Image.fromarray(depth_np.astype(np.float32), mode="F")
@@ -257,8 +257,6 @@ def load_and_preprocess_images_square_ZED(image_path_list, args, target_size=102
             )
             depth_square = torch.frombuffer(bytearray(square_depth_img.tobytes()), dtype=torch.float32)
             depth_square = depth_square.view(target_size, target_size)
-            depth_square = erode_depth_map_torch(depth_square, structure_size=2, d_thresh=0.01, frac_req=0.6)
-            depth_square = erode_depth_map_torch(depth_square, structure_size=2, d_thresh=0.01, frac_req=0.6)
 
             square_mask_tensor = square_mask_tensor & (depth_square > 0.0).unsqueeze(0)
 
@@ -439,7 +437,7 @@ def load_and_preprocess_images_square_HO3D(image_path_list, args, target_size=10
 
         # If a depth map exists, use it to further refine the mask (drop pixels with invalid depth).
         if depth_path.exists():
-            depth_np = get_depth(str(depth_path))  # (H, W) float
+            depth_np = load_filtered_depth(str(depth_path))  # (H, W) float
             depth_np = depth_np * mask.astype(depth_np.dtype)
 
             depth_img = Image.fromarray(depth_np.astype(np.float32), mode="F")
@@ -450,11 +448,6 @@ def load_and_preprocess_images_square_HO3D(image_path_list, args, target_size=10
             )
             depth_square = torch.frombuffer(bytearray(square_depth_img.tobytes()), dtype=torch.float32)
             depth_square = depth_square.view(target_size, target_size)
-            depth_square = erode_depth_map_torch(depth_square, structure_size=2, d_thresh=0.003, frac_req=0.5)
-
-            # Apply bilateral filter and remove outliers
-            depth_square = bilateral_filter_depth(depth_square, d=5, sigma_color=0.2, sigma_space=15)
-            depth_square = remove_depth_outliers(depth_square, num_std=4.0, num_iterations=3)
 
             square_mask_tensor = square_mask_tensor & (depth_square > 0.0).unsqueeze(0)
 

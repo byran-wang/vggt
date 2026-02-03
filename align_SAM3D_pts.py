@@ -17,10 +17,6 @@ from lightglue.utils import match_pair
 
 from third_party.utils_simba.utils_simba.depth import (
     get_depth,
-    depth2xyzmap,
-    erode_depth_map_torch,
-    bilateral_filter_depth,
-    remove_depth_outliers,
 )
 
 
@@ -81,34 +77,7 @@ def load_mesh_from_glb(glb_path: str) -> trimesh.Trimesh:
         return loaded
 
 
-def load_filtered_depth(
-    depth_file: str,
-    thresh_min: float = 0.01,
-    thresh_max: float = 1.5,
-) -> np.ndarray:
-    """Load depth and apply filtering.
 
-    Args:
-        depth_file: Path to the depth file (PNG encoded)
-        thresh_min: Minimum depth threshold (meters)
-        thresh_max: Maximum depth threshold (meters)
-
-    Returns:
-        depth: (H, W) filtered depth in meters
-    """
-    depth = get_depth(depth_file)
-    depth_tensor = torch.from_numpy(depth).float()
-
-    # Filter the depth
-    depth_tensor = erode_depth_map_torch(depth_tensor, structure_size=2, d_thresh=0.003, frac_req=0.5)
-    depth_tensor = bilateral_filter_depth(depth_tensor, d=5, sigma_color=0.2, sigma_space=15)
-    depth_tensor = remove_depth_outliers(depth_tensor, num_std=4.0, num_iterations=3)
-
-    depth_filtered = depth_tensor.numpy()
-    # Apply depth thresholds
-    depth_filtered[(depth_filtered <= thresh_min) | (depth_filtered >= thresh_max)] = 0
-
-    return depth_filtered
 
 
 def backproject_points(

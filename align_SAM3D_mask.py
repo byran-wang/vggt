@@ -19,9 +19,6 @@ sys.path.append("viewer")
 from third_party.utils_simba.utils_simba.depth import (
     get_depth,
     depth2xyzmap,
-    erode_depth_map_torch,
-    bilateral_filter_depth,
-    remove_depth_outliers,
     save_depth,
 )
 
@@ -100,48 +97,6 @@ def load_pointmap_from_depth(depth_file, K, thresh_min=0.01, thresh_max=1.5):
 
     return pointmap
 
-def load_filtered_pointmap(
-    depth_file: str,
-    K: np.ndarray,
-    device: str,
-    thresh_min: float = 0.01,
-    thresh_max: float = 1.5,
-) -> torch.Tensor:
-    """Load depth, apply filtering, and convert to pointmap tensor.
-
-    Args:
-        depth_file: Path to the depth file (PNG encoded)
-        K: Camera intrinsics matrix (3x3)
-        device: torch device
-        thresh_min: Minimum depth threshold (meters)
-        thresh_max: Maximum depth threshold (meters)
-
-    Returns:
-        pointmap_tensor: (H, W, 3) tensor in pytorch3d coordinate system
-    """
-    # Load raw depth
-    depth = get_depth(depth_file)
-    depth_tensor = torch.from_numpy(depth).float()
-
-    # Filter the depth
-    print("Filtering depth...")
-    depth_tensor = erode_depth_map_torch(depth_tensor, structure_size=2, d_thresh=0.003, frac_req=0.5)
-    depth_tensor = bilateral_filter_depth(depth_tensor, d=5, sigma_color=0.2, sigma_space=15)
-    depth_tensor = remove_depth_outliers(depth_tensor, num_std=4.0, num_iterations=3)
-
-    # Convert filtered depth to pointmap
-    depth_filtered = depth_tensor.numpy()
-    pointmap_filtered = depth2xyzmap(depth_filtered, K)
-
-    # Apply depth thresholds and convert to pytorch3d coords
-    pointmap_filtered[(pointmap_filtered[..., 2] <= thresh_min) | (pointmap_filtered[..., 2] >= thresh_max)] = np.nan
-    pointmap_filtered[..., 0] = -pointmap_filtered[..., 0]  # Flip x for pytorch3d
-    pointmap_filtered[..., 1] = -pointmap_filtered[..., 1]  # Flip y for pytorch3d
-
-    pointmap_tensor = torch.from_numpy(pointmap_filtered).float().to(device)
-    print(f"Filtered pointmap shape: {pointmap_tensor.shape}")
-
-    return pointmap_tensor
 
 def _load_camera_data(camera_json_path: str) -> tuple[np.ndarray, np.ndarray]:
     """Load camera intrinsics (K) and object-to-camera transform (o2c) from JSON."""
@@ -340,49 +295,6 @@ def load_hand_pose(
         print(f"[load_hand_pose] No hand vertices found for mode={hand_pose_suffix}, index={hand_index}")
 
     return hand_verts, hand_faces
-
-
-def load_filtered_pointmap(
-    depth_file: str,
-    K: np.ndarray,
-    device: str,
-    thresh_min: float = 0.01,
-    thresh_max: float = 1.5,
-) -> torch.Tensor:
-    """Load depth, apply filtering, and convert to pointmap tensor.
-
-    Args:
-        depth_file: Path to the depth file (PNG encoded)
-        K: Camera intrinsics matrix (3x3)
-        device: torch device
-        thresh_min: Minimum depth threshold (meters)
-        thresh_max: Maximum depth threshold (meters)
-
-    Returns:
-        pointmap_tensor: (H, W, 3) tensor in pytorch3d coordinate system
-    """
-    # Load raw depth
-    depth = get_depth(depth_file)
-    depth_tensor = torch.from_numpy(depth).float()
-
-    # Filter the depth
-    print("Filtering depth...")
-    depth_tensor = erode_depth_map_torch(depth_tensor, structure_size=2, d_thresh=0.003, frac_req=0.5)
-    depth_tensor = bilateral_filter_depth(depth_tensor, d=5, sigma_color=0.2, sigma_space=15)
-    depth_tensor = remove_depth_outliers(depth_tensor, num_std=4.0, num_iterations=3)
-
-    # Convert filtered depth to pointmap
-    depth_filtered = depth_tensor.numpy()
-    pointmap_filtered = depth2xyzmap(depth_filtered, K)
-
-    # Apply depth thresholds and convert to pytorch3d coords
-    pointmap_filtered[(pointmap_filtered[..., 2] <= thresh_min) | (pointmap_filtered[..., 2] >= thresh_max)] = np.nan
-
-    pointmap_tensor = torch.from_numpy(pointmap_filtered).float().to(device)
-    print(f"Filtered pointmap shape: {pointmap_tensor.shape}")
-
-    return pointmap_tensor
-
 
 
 def optimize_o2c_with_mask(
