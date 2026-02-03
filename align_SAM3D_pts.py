@@ -346,6 +346,178 @@ def save_points_to_ply(
     print(f"Saved {len(points)} points to {output_path}")
 
 
+def save_alignment_results(
+    out_dir: str,
+    s: float,
+    t: np.ndarray,
+    o2c_sam3d: np.ndarray,
+    K_cond: np.ndarray,
+    sam3d_pts_3d: np.ndarray,
+    cond_kpts: np.ndarray,
+    valid_mask: np.ndarray,
+    inlier_mask: np.ndarray,
+    errors: np.ndarray,
+    SAM3D_mesh_file: str,
+):
+    """Save alignment results including transform, camera, and mesh.
+
+    Args:
+        out_dir: Output directory path
+        s: Scale factor
+        t: Translation vector (3,)
+        o2c_sam3d: Original SAM3D object-to-camera transform (4, 4)
+        K_cond: Condition camera intrinsics (3, 3)
+        sam3d_pts_3d: SAM3D 3D points (N, 3)
+        cond_kpts: Condition keypoints (M, 2)
+        valid_mask: Valid mask (M,)
+        inlier_mask: Inlier mask (M,)
+        errors: Alignment errors for valid points
+        SAM3D_mesh_file: Path to SAM3D mesh file
+    """
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Build 4x4 transform matrix: B = s * A + t
+    # Represented as [s*I, t; 0, 1]
+    T = np.eye(4)
+    T[:3, :3] = s * np.eye(3)
+    T[:3, 3] = t
+
+    # Save transformed points
+    transformed_sam3d_pts = s * sam3d_pts_3d + t
+    save_points_to_ply(transformed_sam3d_pts, os.path.join(out_dir, "sam3d_pts_3d_transformed.ply"), color=(0, 0, 255, 255))
+
+    # Save alignment results
+    results = {
+        "scale": float(s),
+        "t": t.tolist(),
+        "T_sam3d_to_cond": T.tolist(),
+        "num_correspondences": int(len(cond_kpts)),
+        "num_valid_3d": int(valid_mask.sum()),
+        "num_inliers": int(inlier_mask.sum()),
+        "mean_error": float(errors.mean()),
+        "median_error": float(np.median(errors)),
+    }
+    with open(os.path.join(out_dir, "alignment.json"), "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"Saved alignment to {out_dir}/alignment.json")
+
+    # Combine scale, T with original o2c_sam3d to get new camera pose
+    # The transformation chain is:
+    # p_cond = T @ p_sam3d = T @ o2c_sam3d @ p_obj
+    # So new_o2c = T @ o2c_sam3d
+    new_o2c = T @ o2c_sam3d
+
+    # Save to camera.json with K_cond (since we're now in condition camera space)
+    camera_data = {
+        "K": K_cond.tolist(),
+        "blw2cvc": new_o2c.tolist(),
+    }
+    with open(os.path.join(out_dir, "camera.json"), "w") as f:
+        json.dump(camera_data, f, indent=2)
+    print(f"Saved camera to {out_dir}/camera.json")
+
+    # Transform SAM3D mesh with new_o2c and save to mesh_aligned.ply
+    if os.path.exists(SAM3D_mesh_file):
+        sam3d_mesh = load_mesh_from_glb(SAM3D_mesh_file)
+        # Apply new_o2c transform to mesh vertices: p_cond = new_o2c @ p_obj
+        verts_homogeneous = np.hstack([sam3d_mesh.vertices, np.ones((len(sam3d_mesh.vertices), 1))])
+        verts_transformed = (new_o2c @ verts_homogeneous.T).T[:, :3]
+        sam3d_mesh.vertices = verts_transformed
+        sam3d_mesh.export(os.path.join(out_dir, "mesh_aligned.ply"))
+        print(f"Saved transformed mesh to {out_dir}/mesh_aligned.ply")
+    else:
+        print(f"SAM3D mesh file not found: {SAM3D_mesh_file}")
+
+    return new_o2c
+
+
+def visualize_final_alignment_rerun(
+    image: np.ndarray,
+    mask: np.ndarray,
+    depth: np.ndarray,
+    mesh: trimesh.Trimesh,
+    K: np.ndarray,
+    app_name: str = "align_SAM3D_final",
+):
+    """Visualize final alignment: image, depth pointcloud, and aligned mesh.
+
+    Args:
+        image: RGB image (H, W, 3) uint8.
+        mask: Binary mask (H, W) bool.
+        depth: Depth map (H, W) in meters.
+        mesh: Trimesh mesh in camera coordinate system.
+        K: Camera intrinsic matrix (3, 3).
+        app_name: Name for the Rerun application.
+    """
+    import rerun as rr
+    import rerun.blueprint as rrb
+
+    height, width = image.shape[:2]
+
+    # Build blueprint
+    blueprint = rrb.Horizontal(
+        rrb.Spatial3DView(name="3D View", origin="world"),
+        rrb.Spatial2DView(name="Image", origin="world/camera"),
+    )
+    rr.init(app_name, spawn=True, default_blueprint=blueprint)
+
+    # Log world coordinate system
+    rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
+
+    # Log camera frustum at origin
+    rr.log("world/camera", rr.Transform3D(translation=[0, 0, 0], mat3x3=np.eye(3)))
+    rr.log("world/camera", rr.Pinhole(image_from_camera=K, resolution=[width, height], image_plane_distance=1.0))
+
+    # Mask the image
+    masked_image = image.copy()
+    masked_image[~mask] = 0
+    rr.log("world/camera/image", rr.Image(masked_image))
+
+    # Create pointcloud from depth
+    fx, fy = K[0, 0], K[1, 1]
+    cx, cy = K[0, 2], K[1, 2]
+    u, v = np.meshgrid(np.arange(width), np.arange(height))
+    z = depth
+    valid = (z > 0) & mask
+    x = (u - cx) * z / fx
+    y = (v - cy) * z / fy
+    points = np.stack([x[valid], y[valid], z[valid]], axis=1)
+    colors = image[valid]
+
+    rr.log("world/pointcloud", rr.Points3D(
+        positions=points,
+        colors=colors,
+        radii=0.002,
+    ), static=True)
+
+    # Log mesh
+    mesh_colors = None
+    if hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
+        mesh_colors = np.asarray(mesh.visual.vertex_colors)[:, :3]
+    rr.log("world/mesh", rr.Mesh3D(
+        vertex_positions=mesh.vertices,
+        triangle_indices=mesh.faces,
+        vertex_normals=mesh.vertex_normals if mesh.vertex_normals is not None else None,
+        vertex_colors=mesh_colors,
+    ), static=True)
+
+    # Log mesh points in blue
+    blue_color = np.array([0, 0, 255], dtype=np.uint8)
+    num_verts = len(mesh.vertices)
+    if num_verts > 5000:
+        sample_idx = np.random.choice(num_verts, 5000, replace=False)
+        sampled_verts = mesh.vertices[sample_idx]
+    else:
+        sampled_verts = mesh.vertices
+    rr.log("world/mesh_points", rr.Points3D(
+        positions=sampled_verts,
+        colors=np.tile(blue_color, (len(sampled_verts), 1)),
+        radii=0.001,
+    ), static=True)
+
+    print(f"Launched Rerun visualization: {app_name}")
+
+
 def visualize_correspondences_rerun(
     cond_image: np.ndarray,
     sam3d_image: np.ndarray,
@@ -552,7 +724,7 @@ def main(args):
             cond_pts_3d, sam3d_pts_3d,
             valid_mask,
             K_cond, K_sam3d,
-            app_name="align_SAM3D_pts_before"
+            app_name="align_SAM3D_corres_before"
         )
     # Optimize alignment between SAM3D points and condition points
     print("=" * 50)
@@ -591,62 +763,38 @@ def main(args):
             K_cond, K_sam3d,
             s=s, t=t,
             inlier_mask=inlier_mask,
-            app_name="align_SAM3D_pts_after"
+            app_name="align_SAM3D_corres_after"
         )
     
     # Save results
     if args.out_dir:
-        os.makedirs(args.out_dir, exist_ok=True)
+        save_alignment_results(
+            out_dir=args.out_dir,
+            s=s,
+            t=t,
+            o2c_sam3d=o2c_sam3d,
+            K_cond=K_cond,
+            sam3d_pts_3d=sam3d_pts_3d,
+            cond_kpts=cond_kpts,
+            valid_mask=valid_mask,
+            inlier_mask=inlier_mask,
+            errors=errors,
+            SAM3D_mesh_file=SAM3D_mesh_file,
+        )
 
-        # Build 4x4 transform matrix: B = s * A + t
-        # Represented as [s*I, t; 0, 1]
-        T = np.eye(4)
-        T[:3, :3] = s * np.eye(3)
-        T[:3, 3] = t
-        transformed_sam3d_pts = s * sam3d_pts_3d + t
-        save_points_to_ply(transformed_sam3d_pts, os.path.join(args.out_dir, "sam3d_pts_3d_transformed.ply"), color=(0, 0, 255, 255))
-
-        results = {
-            "scale": float(s),
-            "t": t.tolist(),
-            "T_sam3d_to_cond": T.tolist(),
-            "num_correspondences": int(len(cond_kpts)),
-            "num_valid_3d": int(valid_mask.sum()),
-            "num_inliers": int(inlier_mask.sum()),
-            "mean_error": float(errors.mean()),
-            "median_error": float(np.median(errors)),
-        }
-
-        with open(os.path.join(args.out_dir, "alignment.json"), "w") as f:
-            json.dump(results, f, indent=2)
-        print(f"Saved alignment to {args.out_dir}/alignment.json")
-
-        # Combine scale, T with original o2c_sam3d to get new camera pose
-        # The transformation chain is:
-        # p_cond = T @ p_sam3d = T @ o2c_sam3d @ p_obj
-        # So new_o2c = T @ o2c_sam3d
-        new_o2c = T @ o2c_sam3d
-
-        # Save to camera.json with K_cond (since we're now in condition camera space)
-        camera_data = {
-            "K": K_cond.tolist(),
-            "blw2cvc": new_o2c.tolist(),
-        }
-        with open(os.path.join(args.out_dir, "camera.json"), "w") as f:
-            json.dump(camera_data, f, indent=2)
-        print(f"Saved camera to {args.out_dir}/camera.json")
-
-        # Transform SAM3D mesh with new_o2c and save to mesh_aligned.ply
-        if os.path.exists(SAM3D_mesh_file):
-            sam3d_mesh = load_mesh_from_glb(SAM3D_mesh_file)
-            # Apply new_o2c transform to mesh vertices: p_cond = new_o2c @ p_obj
-            verts_homogeneous = np.hstack([sam3d_mesh.vertices, np.ones((len(sam3d_mesh.vertices), 1))])
-            verts_transformed = (new_o2c @ verts_homogeneous.T).T[:, :3]
-            sam3d_mesh.vertices = verts_transformed
-            sam3d_mesh.export(os.path.join(args.out_dir, "mesh_aligned.ply"))
-            print(f"Saved transformed mesh to {args.out_dir}/mesh_aligned.ply")
-        else:
-            print(f"SAM3D mesh file not found: {SAM3D_mesh_file}")
+    # Visualize final results in rerun
+    if args.vis and args.out_dir:
+        mesh_aligned_path = os.path.join(args.out_dir, "mesh_aligned.ply")
+        if os.path.exists(mesh_aligned_path):
+            aligned_mesh = trimesh.load(mesh_aligned_path)
+            visualize_final_alignment_rerun(
+                image=cond_image,
+                mask=cond_mask,
+                depth=cond_depth,
+                mesh=aligned_mesh,
+                K=K_cond,
+                app_name="align_SAM3D_final",
+            )
 
 
 if __name__ == "__main__":
