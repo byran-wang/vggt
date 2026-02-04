@@ -274,118 +274,6 @@ def save_meta_pickle(
         pickle.dump(meta, f)
 
 
-def visualize_rendered_views_rerun(
-    mesh: trimesh.Trimesh,
-    camera_poses: list,
-    K: np.ndarray,
-    colors: list,
-    depths: list,
-    height: int,
-    width: int,
-    distance: float,
-    app_name: str = "rendered_views",
-):
-    """Visualize rendered views with camera frustums and point clouds in Rerun.
-
-    Args:
-        mesh: Trimesh mesh in object coordinates
-        camera_poses: List of (elevation, azimuth) tuples in degrees
-        K: 3x3 intrinsic matrix
-        colors: List of RGB images (H, W, 3)
-        depths: List of depth maps (H, W)
-        height: Image height
-        width: Image width
-        distance: Camera distance from origin
-        app_name: Rerun application name
-    """
-    import rerun as rr
-    import rerun.blueprint as rrb
-
-    # Build blueprint
-    blueprint = rrb.Horizontal(
-        rrb.Spatial3DView(name="3D View", origin="world"),
-        rrb.Vertical(
-            rrb.Spatial2DView(name="Current Image", origin="world/current_camera"),
-        ),
-    )
-    rr.init(app_name, spawn=True, default_blueprint=blueprint)
-
-    # Log world coordinate system
-    rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_UP, static=True)
-
-    # Log mesh
-    mesh_colors = None
-    if hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
-        mesh_colors = np.asarray(mesh.visual.vertex_colors)[:, :3]
-    rr.log("world/mesh", rr.Mesh3D(
-        vertex_positions=mesh.vertices,
-        triangle_indices=mesh.faces,
-        vertex_normals=mesh.vertex_normals if mesh.vertex_normals is not None else None,
-        vertex_colors=mesh_colors,
-    ), static=True)
-
-    # Log each camera pose and rendered view
-    for i, (elev, azim) in enumerate(camera_poses):
-        rr.set_time_sequence("frame", i)
-
-        # Get camera pose
-        w2c = spherical_to_camera_pose(elev, azim, distance)
-        c2w = np.linalg.inv(w2c)
-
-        # Log camera frustum
-        translation = c2w[:3, 3]
-        mat3x3 = c2w[:3, :3]
-
-        rr.log(f"world/camera_{i}", rr.Transform3D(translation=translation, mat3x3=mat3x3))
-        rr.log(f"world/camera_{i}", rr.Pinhole(
-            image_from_camera=K,
-            resolution=[width, height],
-            image_plane_distance=0.1,
-        ))
-
-        # Log current camera for 2D view
-        rr.log("world/current_camera", rr.Transform3D(translation=translation, mat3x3=mat3x3))
-        rr.log("world/current_camera", rr.Pinhole(
-            image_from_camera=K,
-            resolution=[width, height],
-            image_plane_distance=0.1,
-        ))
-        rr.log("world/current_camera/image", rr.Image(colors[i]))
-
-        # Create point cloud from depth
-        depth = depths[i]
-        fx, fy = K[0, 0], K[1, 1]
-        cx, cy = K[0, 2], K[1, 2]
-        u, v = np.meshgrid(np.arange(width), np.arange(height))
-        z = depth
-        valid = z > 0
-
-        x = (u - cx) * z / fx
-        y = (v - cy) * z / fy
-        pts_cam = np.stack([x[valid], y[valid], z[valid]], axis=1)
-
-        # Transform to world coordinates
-        pts_cam_h = np.hstack([pts_cam, np.ones((len(pts_cam), 1))])
-        pts_world = (c2w @ pts_cam_h.T).T[:, :3]
-
-        # Subsample for visualization
-        max_points = 5000
-        if len(pts_world) > max_points:
-            idx = np.random.choice(len(pts_world), max_points, replace=False)
-            pts_world = pts_world[idx]
-            pts_colors = colors[i][valid][idx]
-        else:
-            pts_colors = colors[i][valid]
-
-        rr.log(f"world/pointcloud_{i}", rr.Points3D(
-            positions=pts_world,
-            colors=pts_colors,
-            radii=0.002,
-        ))
-
-    print(f"Launched Rerun visualization: {app_name}")
-
-
 def main(args):
     src_dir = args.src_dir  # Path to the output of align_SAM3D_pts.py
     dst_dir = args.dst_dir  # Path to save converted results
@@ -458,18 +346,12 @@ def main(args):
 
     # Render from each camera pose
     print(f"Rendering {num_views} views...")
-    all_colors = []
-    all_depths = []
     for i, (elev, azim) in tqdm(enumerate(camera_poses), total=num_views, desc="Rendering"):
         # Get camera pose (world to camera)
         w2c = spherical_to_camera_pose(elev, azim, distance)
 
         # Render mesh
         color, depth, mask = render_mesh(mesh_object, K, w2c, height, width, device)
-
-        # Store for visualization
-        all_colors.append(color)
-        all_depths.append(depth)
 
         # Save RGB image
         rgb_path = os.path.join(rgb_dir, f"{i:04d}.jpg")
@@ -494,20 +376,6 @@ def main(args):
     print(f"  - Depth maps: {depth_dir}")
     print(f"  - Camera parameters: {meta_dir}")
     print("Done!")
-
-    # Visualize in Rerun if requested
-    if args.vis:
-        visualize_rendered_views_rerun(
-            mesh=mesh_object,
-            camera_poses=camera_poses,
-            K=K,
-            colors=all_colors,
-            depths=all_depths,
-            height=height,
-            width=width,
-            distance=distance,
-            app_name="rendered_views",
-        )
 
 
 if __name__ == "__main__":
@@ -562,11 +430,6 @@ if __name__ == "__main__":
         type=int,
         default=100,
         help="Number of views to render",
-    )
-    parser.add_argument(
-        "--vis",
-        action="store_true",
-        help="Visualize rendered views in Rerun",
     )
 
     args = parser.parse_args()
