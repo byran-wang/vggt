@@ -21,11 +21,39 @@ from utils_simba.depth import load_filtered_depth, depth2xyzmap, get_depth, save
 from robust_hoi_pipeline.geometry_utils import compute_normals_from_depth
 
 
+def _normalize_intrinsics_array(raw_value) -> np.ndarray:
+    """Convert metadata intrinsics to a strict (3, 3) float32 matrix."""
+    K = np.asarray(raw_value, dtype=np.float32)
+
+    # Handle scalar object wrappers from some pickle formats.
+    if K.ndim == 0:
+        K = np.asarray(K.item(), dtype=np.float32)
+
+    if K.shape == (1, 3, 3):
+        K = K[0]
+    elif K.shape == (9,):
+        K = K.reshape(3, 3)
+    elif K.shape == (4,):
+        fx, fy, cx, cy = K.tolist()
+        K = np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float32)
+
+    if K.shape != (3, 3):
+        raise ValueError(f"Invalid intrinsics shape: {K.shape} (expected (3, 3))")
+    return K
+
+
 def load_intrinsics_from_meta(meta_file: str) -> np.ndarray:
-    """Load camera intrinsics from meta pickle file."""
+    """Load camera intrinsics from a meta pickle file."""
     with open(meta_file, "rb") as f:
         meta_data = pickle.load(f)
-    return np.array(meta_data["camMat"], dtype=np.float32)
+
+    if isinstance(meta_data, dict):
+        for key in ("camMat", "intrinsics", "K", "camera_matrix"):
+            if key in meta_data:
+                return _normalize_intrinsics_array(meta_data[key])
+        raise KeyError(f"No intrinsics key found. Available keys: {list(meta_data.keys())}")
+
+    return _normalize_intrinsics_array(meta_data)
 
 
 def prepare_image_list(
@@ -171,6 +199,7 @@ def pipeline_data_preprocess(args):
 
     # 3. Process each frame
     preprocessed_data = []
+    fallback_intrinsics = None
 
     for idx, frame_idx in enumerate(frame_indices):
         print(f"Processing frame {frame_idx} ({idx+1}/{len(frame_indices)})...")
@@ -205,7 +234,25 @@ def pipeline_data_preprocess(args):
         mask_hand = load_mask(mask_hand_path)
 
         # Load intrinsics
-        intrinsics = load_intrinsics_from_meta(str(meta_path))
+        try:
+            intrinsics = load_intrinsics_from_meta(str(meta_path))
+        except Exception as e:
+            if fallback_intrinsics is None:
+                # Try to recover intrinsics from the first valid meta file in this sequence.
+                for fallback_meta_path in sorted(intrinsic_dir.glob("*.pkl")):
+                    try:
+                        fallback_intrinsics = load_intrinsics_from_meta(str(fallback_meta_path))
+                        print(f"  Using fallback intrinsics from {fallback_meta_path}")
+                        break
+                    except Exception:
+                        continue
+
+            if fallback_intrinsics is None:
+                print(f"  Warning: Failed to load intrinsics from {meta_path}: {e}")
+                continue
+
+            print(f"  Warning: Failed to load intrinsics from {meta_path}: {e}. Using fallback intrinsics.")
+            intrinsics = fallback_intrinsics.copy()
 
         # Load raw depth first (before filtering)
         raw_depth = get_depth(str(depth_path))
