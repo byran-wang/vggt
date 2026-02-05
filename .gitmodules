@@ -10,3 +10,6 @@
 [submodule "third_party/KinectFusion"]
 	path = third_party/KinectFusion
 	url = https://github.com/JingwenWang95/KinectFusion
+[submodule "third_party/mast3r"]
+	path = third_party/mast3r
+	url = https://github.com/naver/mast3r
