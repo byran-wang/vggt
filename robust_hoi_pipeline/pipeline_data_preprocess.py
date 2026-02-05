@@ -15,7 +15,7 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
 # Import depth filtering utilities
-from utils_simba.depth import load_filtered_depth, depth2xyzmap, get_depth, save_depth
+from utils_simba.depth import load_filtered_depth, depth2xyzmap, get_depth, save_depth, save_normal, get_normal
 
 # Import normal computation
 from robust_hoi_pipeline.geometry_utils import compute_normals_from_depth
@@ -280,8 +280,7 @@ def pipeline_data_preprocess(args):
                 cv2.imwrite(str(debug_dir / f"depth_filtered_{frame_idx:04d}.png"), depth_vis)
 
             # Save normal map visualization
-            normal_vis = ((normal_map + 1) / 2 * 255).astype(np.uint8)
-            cv2.imwrite(str(debug_dir / f"normal_{frame_idx:04d}.png"), cv2.cvtColor(normal_vis, cv2.COLOR_RGB2BGR))
+            save_normal(normal_map, str(debug_dir / f"normal_{frame_idx:04d}.png"))
 
         # Store preprocessed data
         frame_data = {
@@ -321,10 +320,9 @@ def pipeline_data_preprocess(args):
 
         # Save filtered depth using utils_simba format (compatible with get_depth)
         save_depth(frame_data['depth_filtered'], str(out_dir / "depth_filtered" / f"{frame_idx:04d}.png"))
-
-        # Save normal map
-        normal_uint8 = ((frame_data['normal_map'] + 1) / 2 * 255).astype(np.uint8)
-        cv2.imwrite(str(out_dir / "normal" / f"{frame_idx:04d}.png"), cv2.cvtColor(normal_uint8, cv2.COLOR_RGB2BGR))
+        
+        # Save normal map using utils_simba format (compatible with get_normal)
+        save_normal(frame_data['normal_map'], str(out_dir / "normal" / f"{frame_idx:04d}.png"))
 
         # Save metadata (intrinsics + hand pose)
         meta = {
