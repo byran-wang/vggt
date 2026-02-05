@@ -202,8 +202,24 @@ def _draw_correspondences(
     cv2.imwrite(str(out_path), canvas)
 
 
-def _load_vggsfm_sequence_images(image_paths: Sequence[Path], device: str) -> torch.Tensor:
+def _load_vggsfm_sequence_images(
+    image_paths: Sequence[Path],
+    device: str,
+    mask_dir: Path = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Load images for VGGSfM tracking, optionally masking with black background.
+
+    Args:
+        image_paths: Sequence of image file paths
+        device: Torch device string
+        mask_dir: Optional directory containing masks (same stem as images, .png format)
+
+    Returns:
+        images: (S, 3, H, W) tensor of images
+        masks: (S, 1, H, W) tensor of binary masks (1 for foreground, 0 for background)
+    """
     images = []
+    masks = []
     ref_hw = None
     for path in image_paths:
         img = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
@@ -214,8 +230,54 @@ def _load_vggsfm_sequence_images(image_paths: Sequence[Path], device: str) -> to
                 f"VGGSfM sequence requires same resolution, got {ref_hw} and {img.shape[:2]} "
                 f"for {path.name}"
             )
+
+        # Load and apply mask if mask_dir is provided
+        if mask_dir is not None:
+            mask_path = mask_dir / f"{path.stem}.png"
+            if mask_path.exists():
+                mask = np.asarray(Image.open(mask_path).convert("L"), dtype=np.float32) / 255.0
+                # Ensure mask has same resolution as image
+                if mask.shape[:2] != ref_hw:
+                    mask = cv2.resize(mask, (ref_hw[1], ref_hw[0]), interpolation=cv2.INTER_NEAREST)
+                # Apply mask: set background to black
+                img = img * mask[..., None]
+                masks.append(torch.from_numpy(mask).unsqueeze(0))  # (1, H, W)
+            else:
+                print(f"Warning: Mask not found for {path.name}, using full image")
+                masks.append(torch.ones((1, ref_hw[0], ref_hw[1]), dtype=torch.float32))
+        else:
+            masks.append(torch.ones((1, ref_hw[0], ref_hw[1]), dtype=torch.float32))
+
         images.append(torch.from_numpy(img).permute(2, 0, 1))
-    return torch.stack(images, dim=0).to(device)
+
+    images_tensor = torch.stack(images, dim=0).to(device)
+    masks_tensor = torch.stack(masks, dim=0).to(device)
+    return images_tensor, masks_tensor
+
+
+def _compute_vggsfm_foreground_mask(
+    pred_tracks: np.ndarray,
+    image_paths: Sequence[Path],
+    mask_dir: Path,
+) -> np.ndarray:
+    """Return per-frame/per-track foreground validity from object masks."""
+    num_frames, num_tracks = pred_tracks.shape[:2]
+    in_foreground = np.ones((num_frames, num_tracks), dtype=bool)
+
+    for frame_idx, img_path in enumerate(image_paths):
+        mask_path = mask_dir / f"{img_path.stem}.png"
+        if not mask_path.exists():
+            continue
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            continue
+        h, w = mask.shape[:2]
+        track_coords = pred_tracks[frame_idx]  # (N, 2)
+        x_coords = np.clip(np.round(track_coords[:, 0]).astype(np.int32), 0, w - 1)
+        y_coords = np.clip(np.round(track_coords[:, 1]).astype(np.int32), 0, h - 1)
+        in_foreground[frame_idx] = mask[y_coords, x_coords] > 0
+
+    return in_foreground
 
 
 def main(args):
@@ -355,93 +417,74 @@ def main(args):
         if args.pair_mode != "condition_to_all":
             print("VGGSfM backend uses one query (condition image). Overriding pair_mode to condition_to_all.")
         vggsfm_pairs = [(cond_pos, j) for j in range(len(image_paths)) if j != cond_pos]
-
-        print("Running VGGSfM tracking once on all images...")
-        images_all = _load_vggsfm_sequence_images(image_paths, args.device)
+        print("Running VGGSfM tracking once on all images (with masked background)...")
+        images_all, image_masks = _load_vggsfm_sequence_images(image_paths, args.device, mask_dir)
         with torch.inference_mode():
             pred_tracks, pred_vis_scores, _, _, _ = predict_tracks(
                 images_all,
+                image_masks=image_masks,
                 max_query_pts=args.vggsfm_max_query_pts,
                 query_frame_num=1,
                 keypoint_extractor=args.vggsfm_keypoint_extractor,
                 max_points_num=args.vggsfm_max_points_num,
                 fine_tracking=args.vggsfm_fine_tracking,
-                complete_non_vis=False,
+                complete_non_vis=True,
                 query_frame_indexes=[cond_pos],
             )
 
+        # Create validity mask: visibility > threshold AND not in background
         vis = pred_vis_scores > args.vggsfm_vis_thresh
+
+        # Check if each track point is in foreground (mask > 0)
+        in_foreground = _compute_vggsfm_foreground_mask(pred_tracks, image_paths, mask_dir)
+
+        # Combined validity: visible AND in foreground
+        # pred_tracks_mask = vis & in_foreground
+        pred_tracks_mask = in_foreground
+
+        print(f"Track validity stats: {pred_tracks_mask.sum()} / {pred_tracks_mask.size} valid track-frame pairs")
+        # print track number
+        min_tracks = 5
+        num_tracks = (pred_tracks_mask.sum(axis=0) >= min_tracks).sum()
+        print(f"Number of tracks with at least {min_tracks} valid observation: {num_tracks} / {pred_tracks.shape[1]}")
+
+        # Save tracking results
+        tracks_path = corres_dir / "vggsfm_tracks.npz"
+        np.savez_compressed(
+            tracks_path,
+            tracks=pred_tracks,
+            vis_scores=pred_vis_scores,
+            tracks_mask=pred_tracks_mask,
+            image_paths=[str(p) for p in image_paths],
+        )
+        print(f"Saved VGGSfM tracking results to {tracks_path}")
+
         print("Exporting VGGSfM correspondences...")
+        
         for i, j in tqdm(vggsfm_pairs, desc="VGGSfM matching"):
             image0_path = image_paths[i]
             image1_path = image_paths[j]
-            keep = vis[i] & vis[j]
+            # Use combined validity mask (visibility + foreground)
+            keep = pred_tracks_mask[i] & pred_tracks_mask[j]
             if int(keep.sum()) == 0:
+                print(f"No matches between {image0_path.name} and {image1_path.name}, skipping.")
                 continue
 
             xy1_orig = pred_tracks[i][keep].astype(np.float32)
             xy2_orig = pred_tracks[j][keep].astype(np.float32)
             conf_np = np.minimum(pred_vis_scores[i][keep], pred_vis_scores[j][keep]).astype(np.float32)
             if len(conf_np) == 0:
+                print("No matches after filtering, skipping.")
                 continue
 
             name0 = image0_path.stem
             name1 = image1_path.stem
-            mask0_path = mask_dir / f"{name0}.png"
-            mask1_path = mask_dir / f"{name1}.png"
-            mask0 = _load_mask(mask0_path)
-            mask1 = _load_mask(mask1_path)
-            xy1_orig, xy2_orig, conf_np = _filter_background_matches(
-                xy1_orig, xy2_orig, conf_np, mask0, mask1
-            )
-            if len(conf_np) == 0:
-                continue
 
             pair_name = f"{name0}_{name1}"
-            corres_path = corres_dir / f"{pair_name}.npz"
             vis_path = corres_vis_dir / f"{pair_name}.png"
-            np.savez_compressed(
-                corres_path,
-                image0=str(image0_path),
-                image1=str(image1_path),
-                points0=xy1_orig,
-                points1=xy2_orig,
-                confidence=conf_np,
-            )
             _draw_correspondences(image0_path, image1_path, xy1_orig, xy2_orig, vis_path, args.max_vis_matches)
 
-            num_match = int(len(conf_np))
-            total_matches += num_match
-            saved_pairs += 1
-            pair_meta.append(
-                {
-                    "pair_name": pair_name,
-                    "image0": str(image0_path),
-                    "image1": str(image1_path),
-                    "num_matches": num_match,
-                    "corres_file": str(corres_path.relative_to(out_dir)),
-                    "vis_file": str(vis_path.relative_to(out_dir)),
-                }
-            )
 
-    summary = {
-        "data_dir": str(data_dir),
-        "num_images": len(image_paths),
-        "pair_mode": args.pair_mode,
-        "matching_backend": args.matching_backend,
-        "num_candidate_pairs": len(pair_indices),
-        "num_saved_pairs": saved_pairs,
-        "total_matches": total_matches,
-        "mean_matches_per_saved_pair": (float(total_matches) / max(saved_pairs, 1)),
-        "pairs": pair_meta,
-    }
-    summary_path = out_dir / "correspondences_summary.json"
-    with open(summary_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
-
-    print(f"Saved correspondences for {saved_pairs}/{len(pair_indices)} pairs to {corres_dir}")
-    print(f"Saved visualizations to {corres_vis_dir}")
-    print(f"Summary: {summary_path}")
 
 
 if __name__ == "__main__":

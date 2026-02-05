@@ -56,13 +56,15 @@ def predict_tracks(
     dtype = images.dtype
     tracker = build_vggsfm_tracker().to(device, dtype)
 
-    # # Find query frames
-    # query_frame_indexes = generate_rank_by_dino(images, query_frame_num=query_frame_num, device=device)
+    if query_frame_num > 1:
+        # Find query frames using DINO ranking
+        query_frame_indexes_gen = generate_rank_by_dino(images, query_frame_num=query_frame_num, device=device)
 
-    # # Add the first image to the front if not already present
-    # if 0 in query_frame_indexes:
-    #     query_frame_indexes.remove(0)
-    # query_frame_indexes = [0, *query_frame_indexes]
+        # Remove duplicates: filter out frames already in the input query_frame_indexes
+        query_frame_indexes_gen = [idx for idx in query_frame_indexes_gen if idx not in query_frame_indexes]
+
+        # Put input query_frame_indexes at the front, followed by generated ones
+        query_frame_indexes = list(query_frame_indexes) + query_frame_indexes_gen
 
     # TODO: add the functionality to handle the masks
     keypoint_extractors = initialize_feature_extractors(
@@ -357,9 +359,11 @@ def _augment_non_visible_frames(
             )
             pred_tracks.append(new_track)
             pred_vis_scores.append(new_vis)
-            pred_confs.append(new_conf)
-            pred_points_3d.append(new_point_3d)
             pred_colors.append(new_color)
+            if new_conf is not None:
+                pred_confs.append(new_conf)
+            if new_point_3d is not None:
+                pred_points_3d.append(new_point_3d)
 
         if final_trial:
             break  # Stop after final attempt
