@@ -8,10 +8,14 @@ import numpy as np
 import torch
 from PIL import Image
 
-# Import depth filtering utilities
+# Add project root to path
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent / "third_party" / "utils_simba"))
-from utils_simba.depth import load_filtered_depth, depth2xyzmap, get_depth
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
+
+# Import depth filtering utilities
+from utils_simba.depth import load_filtered_depth, depth2xyzmap, get_depth, save_depth
 
 # Import normal computation
 from robust_hoi_pipeline.geometry_utils import compute_normals_from_depth
@@ -152,8 +156,18 @@ def pipeline_data_preprocess(args):
     hand_poses = None
     if hand_pose_file.exists():
         print(f"Loading hand poses from {hand_pose_file}")
-        hand_poses = np.load(hand_pose_file, allow_pickle=True)
-        print(f"Loaded hand poses shape: {hand_poses.shape}")
+        hand_poses_raw = np.load(hand_pose_file, allow_pickle=True)
+        # Handle different numpy array formats (0-dim arrays contain the actual data)
+        if hand_poses_raw.ndim == 0:
+            hand_poses = hand_poses_raw.item()  # Extract the actual object
+        else:
+            hand_poses = hand_poses_raw
+        if isinstance(hand_poses, np.ndarray):
+            print(f"Loaded hand poses shape: {hand_poses.shape}")
+        elif isinstance(hand_poses, dict):
+            print(f"Loaded hand poses as dict with {len(hand_poses)} keys")
+        else:
+            print(f"Loaded hand poses type: {type(hand_poses)}")
 
     # 3. Process each frame
     preprocessed_data = []
@@ -193,6 +207,10 @@ def pipeline_data_preprocess(args):
         # Load intrinsics
         intrinsics = load_intrinsics_from_meta(str(meta_path))
 
+        # Load raw depth first (before filtering)
+        raw_depth = get_depth(str(depth_path))
+        raw_xyz_map = depth2xyzmap(raw_depth, intrinsics)
+
         # Load and filter depth
         filtered_depth = load_filtered_depth(
             str(depth_path),
@@ -200,12 +218,13 @@ def pipeline_data_preprocess(args):
             thresh_max=args.dpeth_max if hasattr(args, 'dpeth_max') else 1.5,
         )
 
-        # Compute point cloud from filtered depth
+        # Compute point clouds
         intrinsics_tensor = torch.from_numpy(intrinsics).float()
-        depth_tensor = torch.from_numpy(filtered_depth).float()
-        xyz_map = depth2xyzmap(depth_tensor.numpy(), intrinsics)
+        
+        filtered_xyz_map = depth2xyzmap(filtered_depth, intrinsics)
 
-        # Compute normal map
+        # Compute normal map from filtered depth
+        depth_tensor = torch.from_numpy(filtered_depth).float()
         depth_batch = depth_tensor.unsqueeze(0)  # (1, H, W)
         intrinsics_batch = intrinsics_tensor.unsqueeze(0)  # (1, 3, 3)
         normal_map = compute_normals_from_depth(depth_batch, intrinsics_batch)
@@ -213,23 +232,52 @@ def pipeline_data_preprocess(args):
 
         # Get hand pose for this frame
         hand_pose = None
-        if hand_poses is not None and frame_idx < len(hand_poses):
-            hand_pose = hand_poses[frame_idx]
+        if hand_poses is not None:
+            try:
+                if isinstance(hand_poses, dict):
+                    # Dict format: keys might be frame indices or strings
+                    key = frame_idx if frame_idx in hand_poses else str(frame_idx)
+                    hand_pose = hand_poses.get(key, None)
+                elif isinstance(hand_poses, np.ndarray) and hand_poses.ndim >= 1:
+                    if frame_idx < len(hand_poses):
+                        hand_pose = hand_poses[frame_idx]
+                elif isinstance(hand_poses, list):
+                    if frame_idx < len(hand_poses):
+                        hand_pose = hand_poses[frame_idx]
+            except Exception as e:
+                print(f"  Warning: Could not get hand pose for frame {frame_idx}: {e}")
 
-        # Save debug point cloud for first few frames
+        # Save debug point clouds for first few frames
         if idx < 5:
-            valid_mask = filtered_depth > 0
-            points = xyz_map[valid_mask]
-            colors = image[valid_mask]
+            # Save raw point cloud (before filtering)
+            valid_mask_raw = raw_depth > 0
+            points_raw = raw_xyz_map[valid_mask_raw]
+            colors_raw = image[valid_mask_raw]
 
-            if len(points) > 0:
-                debug_ply_path = debug_dir / f"pointcloud_{frame_idx:04d}.ply"
-                save_point_cloud_ply(points, colors, debug_ply_path)
-                print(f"  Saved debug point cloud: {debug_ply_path}")
+            if len(points_raw) > 0:
+                debug_ply_path_raw = debug_dir / f"pointcloud_raw_{frame_idx:04d}.ply"
+                save_point_cloud_ply(points_raw, colors_raw, debug_ply_path_raw)
+                print(f"  Saved raw point cloud: {debug_ply_path_raw}")
+
+            # Save filtered point cloud
+            valid_mask_filtered = filtered_depth > 0
+            points_filtered = filtered_xyz_map[valid_mask_filtered]
+            colors_filtered = image[valid_mask_filtered]
+
+            if len(points_filtered) > 0:
+                debug_ply_path_filtered = debug_dir / f"pointcloud_filtered_{frame_idx:04d}.ply"
+                save_point_cloud_ply(points_filtered, colors_filtered, debug_ply_path_filtered)
+                print(f"  Saved filtered point cloud: {debug_ply_path_filtered}")
+
+            # Save raw depth visualization
+            if raw_depth.max() > 0:
+                depth_vis_raw = (raw_depth / raw_depth.max() * 255).astype(np.uint8)
+                cv2.imwrite(str(debug_dir / f"depth_raw_{frame_idx:04d}.png"), depth_vis_raw)
 
             # Save filtered depth visualization
-            depth_vis = (filtered_depth / filtered_depth.max() * 255).astype(np.uint8)
-            cv2.imwrite(str(debug_dir / f"depth_filtered_{frame_idx:04d}.png"), depth_vis)
+            if filtered_depth.max() > 0:
+                depth_vis = (filtered_depth / filtered_depth.max() * 255).astype(np.uint8)
+                cv2.imwrite(str(debug_dir / f"depth_filtered_{frame_idx:04d}.png"), depth_vis)
 
             # Save normal map visualization
             normal_vis = ((normal_map + 1) / 2 * 255).astype(np.uint8)
@@ -250,7 +298,6 @@ def pipeline_data_preprocess(args):
 
     # 4. Save preprocessed data to output directory
     print(f"\nSaving preprocessed data to {out_dir}...")
-
     # Create output subdirectories
     (out_dir / "rgb").mkdir(exist_ok=True)
     (out_dir / "mask_obj").mkdir(exist_ok=True)
@@ -272,9 +319,8 @@ def pipeline_data_preprocess(args):
         if frame_data['mask_hand'] is not None:
             Image.fromarray(frame_data['mask_hand']).save(out_dir / "mask_hand" / f"{frame_idx:04d}.png")
 
-        # Save filtered depth (as 16-bit PNG, scale for precision)
-        depth_scaled = (frame_data['depth_filtered'] * 10000).astype(np.uint16)
-        cv2.imwrite(str(out_dir / "depth_filtered" / f"{frame_idx:04d}.png"), depth_scaled)
+        # Save filtered depth using utils_simba format (compatible with get_depth)
+        save_depth(frame_data['depth_filtered'], str(out_dir / "depth_filtered" / f"{frame_idx:04d}.png"))
 
         # Save normal map
         normal_uint8 = ((frame_data['normal_map'] + 1) / 2 * 255).astype(np.uint8)
