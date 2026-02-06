@@ -40,7 +40,7 @@ def get_frame_image_info(image_info: Dict, frame_idx: int) -> Optional[Dict]:
         "tracks": image_info["tracks"][local_idx],
         "vis_scores": image_info["vis_scores"][local_idx],
         "tracks_mask": image_info["tracks_mask"][local_idx],
-        "points_3d": image_info["points_3d"][local_idx],
+        "points_3d": image_info["points_3d"],
         "is_keyframe": image_info.get("keyframe", [False] * len(frame_indices))[local_idx],
         "is_register": image_info.get("register", [False] * len(frame_indices))[local_idx],
         "is_invalid": image_info.get("invalid", [False] * len(frame_indices))[local_idx],
@@ -175,7 +175,7 @@ def visualize_frame(
                 resolution=[W, H],
                 focal_length=[fx, fy],
                 principal_point=[cx, cy],
-                image_plane_distance=3.0,
+                image_plane_distance=0.2,
             ),
         )
         rr.log(

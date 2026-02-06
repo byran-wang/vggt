@@ -3,6 +3,7 @@ import json
 import pickle
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -244,7 +245,6 @@ def register_first_frame(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Lift condition-frame tracks and initialize per-frame poses/keyframes."""
     print("Lifting tracks to 3D (condition frame only)...")
-    points_3d = np.full(tracks.shape[:2] + (3,), np.nan, dtype=np.float32)
     cond_points_3d = lift_tracks_to_3d(
         tracks[cond_local_idx:cond_local_idx + 1],
         tracks_mask[cond_local_idx:cond_local_idx + 1],
@@ -252,8 +252,8 @@ def register_first_frame(
         [preprocessed['intrinsics'][cond_local_idx]],
         cond_cam_to_obj,
     )
-    points_3d[cond_local_idx] = cond_points_3d[0]
-    valid_3d_count = np.isfinite(points_3d[cond_local_idx]).all(axis=-1).sum()
+    points_3d = cond_points_3d[0]
+    valid_3d_count = np.isfinite(points_3d).all(axis=-1).sum()
     cond_mask_count = int(tracks_mask[cond_local_idx].sum())
     print(f"Lifted {valid_3d_count} valid 3D points out of {cond_mask_count} masked track observations")
 
@@ -278,8 +278,185 @@ def save_results(image_info: Dict, results_dir: Path
     
 
 
-def register_remaining_frames(image_info, preprocessed_data):
-    pass
+def _build_default_joint_opt_args(output_dir: Path, cond_index: int) -> SimpleNamespace:
+    """Create a minimal args namespace for frame management helpers."""
+    return SimpleNamespace(
+        output_dir=str(output_dir),
+        cond_index=cond_index,
+        max_query_pts=512,
+        query_frame_num=0,
+        fine_tracking=True,
+        # thresholds
+        vis_thresh=0.4,
+        max_reproj_error=3.0,
+        min_inlier_per_frame=50,
+        min_inlier_per_track=4,
+        min_depth_pixels=500,
+        min_track_number=5,
+        kf_rot_thresh=5.0,
+        kf_trans_thresh=0.02,
+        kf_depth_thresh=500,
+        kf_inlier_thresh=10,
+        run_ba_on_keyframe=0,
+        unc_thresh=4.0,
+        duplicate_track_thresh=3.0,
+        pnp_reproj_thresh=3.0,
+    )
+
+
+def _stack_intrinsics(intrinsics_list: List[np.ndarray]) -> np.ndarray:
+    """Stack intrinsics, filling missing entries with the first valid matrix."""
+    valid = [K for K in intrinsics_list if K is not None]
+    if not valid:
+        raise ValueError("No valid intrinsics found.")
+    fallback = valid[0]
+    stacked = [K if K is not None else fallback for K in intrinsics_list]
+    return np.stack(stacked, axis=0)
+
+
+def mask_track_for_outliers(image_info, frame_idx, reproj_thresh):
+    """Mask tracks whose reprojection error exceeds a threshold for a given frame.
+
+    After a frame is registered via PnP, this reprojects 3D points onto the frame
+    and sets track_mask to 0 for tracks with reprojection error > reproj_thresh.
+    """
+    track_mask = image_info["track_mask"]
+    pred_tracks = image_info["pred_tracks"]
+    points_3d = image_info.get("points_3d")
+
+    frame_mask = np.asarray(track_mask[frame_idx]).astype(bool)
+    if points_3d is None or not frame_mask.any():
+        return
+
+    ext = image_info["extrinsics"][frame_idx]
+    K = image_info["intrinsics"][frame_idx] if image_info["intrinsics"].ndim == 3 else image_info["intrinsics"]
+
+    pts_3d = np.asarray(points_3d)[frame_mask].astype(np.float64)
+    pts_2d = np.asarray(pred_tracks[frame_idx])[frame_mask].astype(np.float64)
+
+    finite = np.isfinite(pts_3d).all(axis=1)
+    if not finite.any():
+        return
+
+    cam = (ext[:3, :3] @ pts_3d[finite].T).T + ext[:3, 3]
+    in_front = cam[:, 2] > 0
+
+    errs = np.zeros(finite.sum(), dtype=np.float64)
+    if in_front.any():
+        proj_x = K[0, 0] * cam[in_front, 0] / cam[in_front, 2] + K[0, 2]
+        proj_y = K[1, 1] * cam[in_front, 1] / cam[in_front, 2] + K[1, 2]
+        proj_2d = np.stack([proj_x, proj_y], axis=1)
+        errs[in_front] = np.linalg.norm(proj_2d - pts_2d[finite][in_front], axis=1)
+
+    visible_idx = np.where(frame_mask)[0]
+    finite_idx = visible_idx[finite]
+    outlier_idx = finite_idx[errs > reproj_thresh]
+    if len(outlier_idx) > 0:
+        track_mask[frame_idx][outlier_idx] = 0
+        print(f"[mask_reproj_outliers] Frame {frame_idx}: masked {len(outlier_idx)} tracks "
+              f"with reproj error > {reproj_thresh}px")
+
+
+def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, cond_idx: int):
+
+    from robust_hoi_pipeline.frame_management import (
+        find_next_frame,
+        check_frame_invalid,
+        check_reprojection_error,
+        check_key_frame,
+        process_key_frame,
+        _refine_frame_pose_3d,
+        save_keyframe_indices,
+    )
+    from robust_hoi_pipeline.optimization import register_new_frame_by_PnP
+
+    args = _build_default_joint_opt_args(output_dir, cond_idx)
+
+    frame_indices = image_info["frame_indices"]
+    cond_local_idx = frame_indices.index(cond_idx)
+    c2o = image_info.get("c2o")
+    if c2o is None:
+        c2o = np.tile(np.eye(4, dtype=np.float32), (len(frame_indices), 1, 1))
+    extrinsics = np.linalg.inv(c2o).astype(np.float32)
+
+    intrinsics = _stack_intrinsics(preprocessed_data["intrinsics"])
+    depth_priors = preprocessed_data["depths"]
+    points_3d_global = image_info["points_3d"].astype(np.float32)
+
+    image_info_work = {
+        "pred_tracks": image_info["tracks"],
+        "track_mask": image_info["tracks_mask"],
+        "points_3d": points_3d_global,
+        "extrinsics": extrinsics,
+        "intrinsics": intrinsics,
+        "depth_priors": depth_priors,
+        "images": preprocessed_data["images"],
+        "image_masks": preprocessed_data.get("masks_obj"),
+        "keyframe": np.array(image_info["keyframe"], dtype=bool),
+        "registered": np.array(image_info["register"], dtype=bool),
+        "invalid": np.array(image_info["invalid"], dtype=bool),
+    }
+
+    num_frames = len(frame_indices)
+
+    while image_info_work["registered"].sum() + image_info_work["invalid"].sum() < num_frames:
+        next_frame_idx = find_next_frame(image_info_work)
+        if next_frame_idx is None:
+            break
+
+        print("+" * 50)
+        print(f"Next frame to register: {next_frame_idx}")
+
+        if check_frame_invalid(
+            image_info_work,
+            next_frame_idx,
+            min_inlier_per_frame=args.min_inlier_per_frame,
+            min_depth_pixels=args.min_depth_pixels,
+        ):
+            image_info_work["invalid"][next_frame_idx] = True
+            continue
+
+        register_new_frame_by_PnP(image_info_work, next_frame_idx, args)
+
+        mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh)
+
+        if image_info_work["keyframe"].sum() > args.min_track_number:
+            if _refine_frame_pose_3d(image_info_work, next_frame_idx, args):
+                if check_reprojection_error(image_info_work, next_frame_idx, args):
+                    image_info_work["invalid"][next_frame_idx] = True
+                else:
+                    image_info_work["registered"][next_frame_idx] = True
+            else:
+                image_info_work["invalid"][next_frame_idx] = True
+        else:
+            image_info_work["registered"][next_frame_idx] = True
+
+        if not image_info_work["invalid"][next_frame_idx]:
+            if check_key_frame(
+                image_info_work,
+                next_frame_idx,
+                rot_thresh=args.kf_rot_thresh,
+                trans_thresh=args.kf_trans_thresh,
+                depth_thresh=args.kf_depth_thresh,
+                frame_inliner_thresh=args.kf_inlier_thresh,
+            ):
+                try:
+                    image_info_work = process_key_frame(image_info_work, next_frame_idx, args)
+                except Exception as exc:
+                    print(f"[register_remaining_frames] process_key_frame failed: {exc}")
+                save_keyframe_indices(output_dir / "pipeline_joint_opt", next_frame_idx)
+
+        print(
+            f"registered: {image_info_work['registered'].sum()}, "
+            f"keyframes: {image_info_work['keyframe'].sum()}, "
+            f"invalid: {image_info_work['invalid'].sum()}"
+        )
+
+        image_info["register"] = image_info_work["registered"].tolist()
+        image_info["invalid"] = image_info_work["invalid"].tolist()
+        image_info["keyframe"] = image_info_work["keyframe"].tolist()
+        image_info["c2o"] = np.linalg.inv(image_info_work["extrinsics"]).astype(np.float32)
+        save_results(image_info=image_info, results_dir=output_dir / "pipeline_joint_opt" / f"{image_info['frame_indices'][next_frame_idx]:04d}")
 
 def main(args):
     data_dir = Path(args.data_dir)
@@ -339,10 +516,11 @@ def main(args):
     print("Building and saving image info...")
     results_dir = out_dir / "pipeline_joint_opt" / f"{cond_idx:04d}" 
     save_results(image_info=image_info, results_dir=results_dir)
-    
 
-    # TODO: register remaining frames and optimize jointly
-    register_remaining_frames(image_info, preprocessed_data)
+    from robust_hoi_pipeline.frame_management import save_keyframe_indices
+    save_keyframe_indices(out_dir / "pipeline_joint_opt" , cond_idx)
+    
+    register_remaining_frames(image_info, preprocessed_data, out_dir, cond_idx)
 
 
 

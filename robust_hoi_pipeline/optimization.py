@@ -970,7 +970,7 @@ def build_reconstruction_from_tracks(
     )
 
 
-def register_new_frame(image_info, frame_idx, args, iters=100):
+def register_new_frame_by_PnP(image_info, frame_idx, args, iters=100):
     """Estimate pose of frame `frame_idx` using PnP with existing 3D points and 2D tracks.
 
     Uses RANSAC-based PnP to robustly estimate the camera pose from 2D-3D correspondences.
@@ -1022,16 +1022,38 @@ def register_new_frame(image_info, frame_idx, args, iters=100):
     pts_3d = points_3d[visible_mask].astype(np.float64)  # [M, 3]
     pts_2d = tracks_2d[visible_mask].astype(np.float64)  # [M, 2]
 
-    if len(pts_3d) < 4:
-        print(f"[register_new_frame] Frame {frame_idx}: Only {len(pts_3d)} visible points (need >= 4), skipping.")
+    # Filter out invalid 3D points (NaN/Inf) and align 2D points accordingly
+    finite_mask = np.isfinite(pts_3d).all(axis=1)
+    if not finite_mask.all():
+        pts_3d = pts_3d[finite_mask]
+        pts_2d = pts_2d[finite_mask]
+
+    if len(pts_3d) < 10:
+        print(f"[register_new_frame] Frame {frame_idx}: Only {len(pts_3d)} visible points (need >= 10), skipping.")
         return image_info
 
     # Get intrinsic matrix for this frame
     K = intrinsics[frame_idx].astype(np.float64)
 
-    # Use existing extrinsic as initial guess
+    # Use nearest registered frame as initial guess when available.
     R_init = extrinsics[frame_idx, :3, :3].astype(np.float64)
     t_init = extrinsics[frame_idx, :3, 3].astype(np.float64)
+    registered = image_info.get("registered")
+    invalid = image_info.get("invalid")
+
+    if registered is not None:
+        registered = np.asarray(registered).astype(bool)
+        if invalid is not None:
+            invalid = np.asarray(invalid).astype(bool)
+            if invalid.shape == registered.shape:
+                registered = registered & (~invalid)
+        reg_idx = np.where(registered)[0]
+        if reg_idx.size > 0:
+            nearest_idx = reg_idx[np.argmin(np.abs(reg_idx - frame_idx))]
+            if nearest_idx != frame_idx:
+                R_init = extrinsics[nearest_idx, :3, :3].astype(np.float64)
+                t_init = extrinsics[nearest_idx, :3, 3].astype(np.float64)
+
     rvec_init, _ = cv2.Rodrigues(R_init)
 
     # Solve PnP with RANSAC
@@ -1040,11 +1062,11 @@ def register_new_frame(image_info, frame_idx, args, iters=100):
         imagePoints=pts_2d,
         cameraMatrix=K,
         distCoeffs=None,
-        rvec=rvec_init,
-        tvec=t_init.reshape(3, 1),
+        rvec=rvec_init.copy(),
+        tvec=t_init.reshape(3, 1).copy(),
         useExtrinsicGuess=True,
         iterationsCount=iters,
-        reprojectionError=getattr(args, 'pnp_reproj_thresh', 8.0),
+        reprojectionError=args.pnp_reproj_thresh,
         flags=cv2.SOLVEPNP_ITERATIVE,
     )
 

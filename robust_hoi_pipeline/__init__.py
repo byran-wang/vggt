@@ -29,7 +29,7 @@ from .optimization import (
     propagate_uncertainties,
     bundle_adjust_keyframes,
     build_reconstruction_from_tracks,
-    register_new_frame,
+    register_new_frame_by_PnP,
     propagate_uncertainty_and_build_image_info,
 )
 from .correspondence_alignment import (
@@ -95,7 +95,7 @@ __all__ = [
     "propagate_uncertainties",
     "bundle_adjust_keyframes",
     "build_reconstruction_from_tracks",
-    "register_new_frame",
+    "register_new_frame_by_PnP",
     "propagate_uncertainty_and_build_image_info",
     # correspondence_alignment
     "get_3D_correspondences",

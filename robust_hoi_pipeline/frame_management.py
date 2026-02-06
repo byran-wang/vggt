@@ -21,7 +21,7 @@ def save_keyframe_indices(output_dir, frame_idx):
         output_dir: Output directory path
         frame_idx: Keyframe index to append
     """
-    results_dir = os.path.join(output_dir, "results")
+    results_dir = os.path.join(output_dir)
     os.makedirs(results_dir, exist_ok=True)
 
     filepath = os.path.join(results_dir, "key_frame_idx.txt")
@@ -630,6 +630,9 @@ def _refine_frame_pose_3d(image_info, frame_idx, args):
     print(f"[_refine_frame_pose_3d] Refined pose: {best_inlier_count}/{N} inliers, "
           f"mean 3D error: {mean_error:.4f}m, rotation change: {angle_change:.3f}°, "
           f"translation change: {trans_change:.4f}m")
+    
+    if best_inlier_count < 50:
+        return False
 
     return True
 
@@ -775,7 +778,7 @@ def register_key_frames(image_info, args):
     """
     # Import here to avoid circular dependency
     from .visualization_io import save_results
-    from .optimization import register_new_frame
+    from .optimization import register_new_frame_by_PnP
     
     image_info = register_condition_frame_as_keyframe(image_info, args)
     num_images = len(image_info["images"])
@@ -793,7 +796,7 @@ def register_key_frames(image_info, args):
             continue
 
         # Register the frame
-        register_new_frame(
+        register_new_frame_by_PnP(
             image_info, next_frame_idx, args,
         )
 
