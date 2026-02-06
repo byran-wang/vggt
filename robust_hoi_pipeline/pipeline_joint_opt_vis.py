@@ -15,6 +15,7 @@ sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
 from utils_simba.depth import depth2xyzmap
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_preprocessed_frame
+from robust_hoi_pipeline.frame_management import load_keyframe_indices
 
 
 def load_image_info(results_dir: Path) -> Optional[Dict]:
@@ -208,7 +209,9 @@ def main(args):
 
     # Load frame list
     print("Loading frame list...")
-    frame_indices = load_frame_list(data_preprocess_dir)
+    # frame_indices = load_frame_list(data_preprocess_dir)
+    frame_indices = load_keyframe_indices(results_dir)
+    breakpoint()
     print(f"Found {len(frame_indices)} frames")
 
     # Load and visualize SAM3D mesh

@@ -444,7 +444,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                     image_info_work = process_key_frame(image_info_work, next_frame_idx, args)
                 except Exception as exc:
                     print(f"[register_remaining_frames] process_key_frame failed: {exc}")
-                save_keyframe_indices(output_dir / "pipeline_joint_opt", next_frame_idx)
+                save_keyframe_indices(output_dir / "pipeline_joint_opt", image_info["frame_indices"][next_frame_idx])
 
         print(
             f"registered: {image_info_work['registered'].sum()}, "
