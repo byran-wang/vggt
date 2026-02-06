@@ -2,7 +2,7 @@ import argparse
 import json
 import pickle
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -12,21 +12,7 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
 from utils_simba.depth import get_depth, depth2xyzmap
-
-
-def load_frame_list(data_preprocess_dir: Path) -> List[int]:
-    """Load frame list from preprocessed data directory."""
-    frame_list_path = data_preprocess_dir / "frame_list.txt"
-    if not frame_list_path.exists():
-        raise FileNotFoundError(f"Frame list not found: {frame_list_path}")
-
-    frames = []
-    with open(frame_list_path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                frames.append(int(line))
-    return frames
+from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_sam3d_transform
 
 
 def load_preprocessed_data(data_preprocess_dir: Path, frame_indices: List[int]) -> Dict:
@@ -141,43 +127,47 @@ def load_tracks(tracks_dir: Path) -> Dict:
     }
 
 
-def load_sam3d_transform(sam3d_dir: Path, cond_idx: int) -> Dict:
-    """Load transformation from SAM3D post-processing.
+def prepare_joint_opt_inputs(
+    data_preprocess_dir: Path,
+    tracks_dir: Path,
+    sam3d_dir: Path,
+    cond_idx: int,
+) -> Tuple[List[int], Dict, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
+    """Load preprocessing, tracks, and SAM3D transform for joint optimization."""
+    print("Loading preprocessed data...")
+    frame_indices = load_frame_list(data_preprocess_dir)
+    preprocessed = load_preprocessed_data(data_preprocess_dir, frame_indices)
+    print(f"Loaded {len(frame_indices)} frames: {frame_indices[:5]}{'...' if len(frame_indices) > 5 else ''}")
 
-    Args:
-        sam3d_dir: Path to SAM3D_aligned_post_process directory
-        cond_idx: Condition frame index
+    print("Loading VGGSfM tracks...")
+    track_data = load_tracks(tracks_dir)
+    tracks = track_data['tracks']
+    vis_scores = track_data['vis_scores']
+    tracks_mask = track_data['tracks_mask']
+    print(f"Loaded tracks: {tracks.shape[0]} frames, {tracks.shape[1]} tracks")
 
-    Returns:
-        Dictionary containing:
-        - scale: scalar scale factor
-        - rotation: (3, 3) rotation matrix
-        - translation: (3,) translation vector
-        - matrix: (4, 4) full transformation matrix
-        - obj2cam: (4, 4) object-to-camera transformation
-        - cam2obj: (4, 4) camera-to-object transformation
-    """
-    transform_path = sam3d_dir / f"{cond_idx:04d}" / "aligned_transform.json"
-    if not transform_path.exists():
-        raise FileNotFoundError(f"SAM3D transform not found: {transform_path}")
+    print("Loading SAM3D transformation...")
+    sam3d_transform = load_sam3d_transform(sam3d_dir, cond_idx)
+    cond_cam_to_obj = np.eye(4, dtype=np.float32)
+    cond_cam_to_obj[:3, :3] = sam3d_transform['scale'] * sam3d_transform['cond_cam_to_sam3d'][:3, :3]
+    cond_cam_to_obj[:3, 3] = sam3d_transform['cond_cam_to_sam3d'][:3, 3]
 
-    with open(transform_path, "r") as f:
-        transform_data = json.load(f)
+    try:
+        cond_local_idx = frame_indices.index(cond_idx)
+    except ValueError:
+        raise ValueError(f"Condition index {cond_idx} not found in frame list: {frame_indices}")
+    print(f"Condition frame {cond_idx} is at local index {cond_local_idx}")
 
-    rotation = np.array(transform_data["rotation"], dtype=np.float32)  # (3, 3)
-    translation = np.array(transform_data["translation"], dtype=np.float32)  # (3,)
-    scale = float(transform_data["scale"])
-    sam3d_to_cond_cam = np.array(transform_data["matrix"], dtype=np.float32)  # (4, 4)
-    cond_cam_to_sam3d = np.linalg.inv(sam3d_to_cond_cam)
+    return (
+        frame_indices,
+        preprocessed,
+        tracks,
+        vis_scores,
+        tracks_mask,
+        cond_cam_to_obj,
+        cond_local_idx,
+    )
 
-
-    return {
-        'scale': scale,
-        'rotation': rotation,
-        'translation': translation,
-        'sam3d_to_cond_cam': sam3d_to_cond_cam,
-        "cond_cam_to_sam3d": cond_cam_to_sam3d,
-    }
 
 
 def lift_tracks_to_3d(
@@ -244,45 +234,52 @@ def lift_tracks_to_3d(
     return points_3d
 
 
-def build_image_info(
-    frame_idx: int,
-    local_idx: int,
+def register_first_frame(
     tracks: np.ndarray,
-    vis_scores: np.ndarray,
     tracks_mask: np.ndarray,
-    points_3d: np.ndarray,
-    intrinsics: np.ndarray,
-    o2c: np.ndarray,
-    is_keyframe: bool,
-) -> Dict:
-    """Build image info structure for a single frame.
+    preprocessed: Dict,
+    frame_indices: List[int],
+    cond_local_idx: int,
+    cond_cam_to_obj: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Lift condition-frame tracks and initialize per-frame poses/keyframes."""
+    print("Lifting tracks to 3D (condition frame only)...")
+    points_3d = np.full(tracks.shape[:2] + (3,), np.nan, dtype=np.float32)
+    cond_points_3d = lift_tracks_to_3d(
+        tracks[cond_local_idx:cond_local_idx + 1],
+        tracks_mask[cond_local_idx:cond_local_idx + 1],
+        [preprocessed['depths'][cond_local_idx]],
+        [preprocessed['intrinsics'][cond_local_idx]],
+        cond_cam_to_obj,
+    )
+    points_3d[cond_local_idx] = cond_points_3d[0]
+    valid_3d_count = np.isfinite(points_3d[cond_local_idx]).all(axis=-1).sum()
+    cond_mask_count = int(tracks_mask[cond_local_idx].sum())
+    print(f"Lifted {valid_3d_count} valid 3D points out of {cond_mask_count} masked track observations")
 
-    Args:
-        frame_idx: Original frame index
-        local_idx: Local index in the sequence
-        tracks: (N, 2) track coordinates for this frame
-        vis_scores: (N,) visibility scores for this frame
-        tracks_mask: (N,) validity mask for this frame
-        points_3d: (N, 3) 3D points for this frame
-        intrinsics: (3, 3) camera intrinsic matrix
-        o2c: (4, 4) object-to-camera transformation
-        is_keyframe: Whether this frame is a keyframe
+    c2o_per_frame = []
+    for i in range(len(frame_indices)):
+        if i == cond_local_idx:
+            c2o_per_frame.append(cond_cam_to_obj)
+        else:
+            c2o_per_frame.append(np.eye(4, dtype=np.float32))
+    c2o_per_frame = np.stack(c2o_per_frame, axis=0)
 
-    Returns:
-        Dictionary with image info
-    """
-    return {
-        'frame_idx': frame_idx,
-        'local_idx': local_idx,
-        'tracks': tracks.astype(np.float32),  # (N, 2)
-        'vis_scores': vis_scores.astype(np.float32),  # (N,)
-        'tracks_mask': tracks_mask.astype(bool),  # (N,)
-        'points_3d': points_3d.astype(np.float32),  # (N, 3)
-        'intrinsics': intrinsics.astype(np.float32),  # (3, 3)
-        'o2c': o2c.astype(np.float32),  # (4, 4)
-        'is_keyframe': is_keyframe,
-    }
+    return points_3d, c2o_per_frame
 
+
+def save_results(image_info: Dict, results_dir: Path
+) -> None:
+    """Save image info for joint optimization outputs."""
+    results_dir.mkdir(parents=True, exist_ok=True)
+    info_path = results_dir / "image_info.npy"
+    np.save(info_path, image_info)
+    print(f"Saved image info to {results_dir}")
+    
+
+
+def register_remaining_frames(image_info, preprocessed_data):
+    pass
 
 def main(args):
     data_dir = Path(args.data_dir)
@@ -293,107 +290,61 @@ def main(args):
     data_preprocess_dir = out_dir / "pipeline_preprocess"
     tracks_dir = out_dir / "pipeline_corres"
 
-    # 1. Load the preprocessed data from data_preprocess_dir
-    print("Loading preprocessed data...")
-    frame_indices = load_frame_list(data_preprocess_dir)
-    preprocessed = load_preprocessed_data(data_preprocess_dir, frame_indices)
-    print(f"Loaded {len(frame_indices)} frames: {frame_indices[:5]}{'...' if len(frame_indices) > 5 else ''}")
-
-    # 2. Load the tracks from tracks_dir
-    print("Loading VGGSfM tracks...")
-    track_data = load_tracks(tracks_dir)
-    tracks = track_data['tracks']  # (S, N, 2)
-    vis_scores = track_data['vis_scores']  # (S, N)
-    tracks_mask = track_data['tracks_mask']  # (S, N)
-    print(f"Loaded tracks: {tracks.shape[0]} frames, {tracks.shape[1]} tracks")
-
-    # 3. Load the transformation from SAM3D_dir
-    print("Loading SAM3D transformation...")
-    sam3d_transform = load_sam3d_transform(SAM3D_dir, cond_idx)
-    cond_cam_to_obj = np.eye(4, dtype=np.float32)
-    cond_cam_to_obj[:3, :3] = sam3d_transform['scale'] * sam3d_transform['cond_cam_to_sam3d'][:3, :3] # Scale rotation to be SO3
-    cond_cam_to_obj[:3, 3] = sam3d_transform['cond_cam_to_sam3d'][:3, 3]
-
-
-    scale = sam3d_transform['scale']
-    print(f"SAM3D scale: {scale}")
-
-    # 4. Find condition frame position
-    try:
-        cond_local_idx = frame_indices.index(cond_idx)
-    except ValueError:
-        raise ValueError(f"Condition index {cond_idx} not found in frame list: {frame_indices}")
-    print(f"Condition frame {cond_idx} is at local index {cond_local_idx}")
+    (
+        frame_indices,
+        preprocessed_data,
+        tracks,
+        vis_scores,
+        tracks_mask,
+        cond_cam_to_obj,
+        cond_local_idx,
+    ) = prepare_joint_opt_inputs(
+        data_preprocess_dir=data_preprocess_dir,
+        tracks_dir=tracks_dir,
+        sam3d_dir=SAM3D_dir,
+        cond_idx=cond_idx,
+    )
 
     # 5. Lift 2D tracks to 3D points using depth and transformation
-    print("Lifting tracks to 3D (condition frame only)...")
-    points_3d = np.full(tracks.shape[:2] + (3,), np.nan, dtype=np.float32)
-    cond_points_3d = lift_tracks_to_3d(
-        tracks[cond_local_idx:cond_local_idx + 1],
-        tracks_mask[cond_local_idx:cond_local_idx + 1],
-        [preprocessed['depths'][cond_local_idx]],
-        [preprocessed['intrinsics'][cond_local_idx]],
-        cond_cam_to_obj,  # Use condition frame's camera-to-object transform
+    points_3d, c2o_per_frame = register_first_frame(
+        tracks=tracks,
+        tracks_mask=tracks_mask,
+        preprocessed=preprocessed_data,
+        frame_indices=frame_indices,
+        cond_local_idx=cond_local_idx,
+        cond_cam_to_obj=cond_cam_to_obj,
     )
-    points_3d[cond_local_idx] = cond_points_3d[0]
-    valid_3d_count = np.isfinite(points_3d[cond_local_idx]).all(axis=-1).sum()
-    cond_mask_count = int(tracks_mask[cond_local_idx].sum())
-    print(f"Lifted {valid_3d_count} valid 3D points out of {cond_mask_count} masked track observations")
-    
 
-    # 6. Build image info for each frame and save
-    print("Building and saving image info...")
-    results_dir = out_dir / "pipeline_joint_opt"
-    results_dir.mkdir(parents=True, exist_ok=True)
-
-    # Initialize o2c for each frame
-    # The condition frame has known o2c from SAM3D
-    # Other frames will be initialized to identity (to be optimized later)
-    c2o_per_frame = []
-    for i, frame_idx in enumerate(frame_indices):
-        if i == cond_local_idx:
-            # Condition frame: use SAM3D transformation
-            c2o_per_frame.append(cond_cam_to_obj)
-        else:
-            # Other frames: initialize to identity (to be optimized later)
-            c2o_per_frame.append(np.eye(4, dtype=np.float32))
-
-    c2o_per_frame = np.stack(c2o_per_frame, axis=0)  # (S, 4, 4)
-
-    # Determine keyframes (for now, only condition frame is keyframe)
+    # mark the condition frame as keyframe and register frame
     keyframe_flags = [i == cond_local_idx for i in range(len(frame_indices))]
-    # Save image info for each frame
+    register_flags = keyframe_flags.copy()
+    invalid_flags = [False] * len(frame_indices)
+
+
+    # 6. Build image info
     image_info = {
         'frame_indices': frame_indices,
         'cond_idx': cond_idx,
         "tracks": tracks.astype(np.float32),
         "vis_scores": vis_scores.astype(np.float32),
         "tracks_mask": tracks_mask.astype(bool),
-        "keyframes": keyframe_flags,
+        "keyframe": keyframe_flags,
+        "register": register_flags,
+        "invalid": invalid_flags,
         "points_3d": points_3d.astype(np.float32),
         "c2o": c2o_per_frame.astype(np.float32),
     }
 
+    # 6. Save image info
+    print("Building and saving image info...")
+    results_dir = out_dir / "pipeline_joint_opt" / f"{cond_idx:04d}" 
+    save_results(image_info=image_info, results_dir=results_dir)
+    
 
-    # Save image info
-    info_path = results_dir / "image_info.npy"
-    np.save(info_path, image_info)
+    # TODO: register remaining frames and optimize jointly
+    register_remaining_frames(image_info, preprocessed_data)
 
-    print(f"Saved image info for {len(frame_indices)} frames to {results_dir}")
 
-    # Also save a summary file
-    summary = {
-        'frame_indices': frame_indices,
-        'cond_idx': cond_idx,
-        'cond_local_idx': cond_local_idx,
-        'num_tracks': tracks.shape[1],
-        'points_3d_valid_count': int(np.isfinite(points_3d).all(axis=-1).sum()),
-        'keyframe_indices': [frame_indices[i] for i, is_kf in enumerate(keyframe_flags) if is_kf],
-    }
-    summary_path = results_dir / "summary.json"
-    with open(summary_path, "w") as f:
-        json.dump(summary, f, indent=2)
-    print(f"Saved summary to {summary_path}")
 
 
 if __name__ == "__main__":

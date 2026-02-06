@@ -29,7 +29,11 @@ from dust3r.datasets.utils.transforms import ImgNorm
 from dust3r.inference import inference
 from dust3r_visloc.datasets.utils import get_resize_function
 from vggt.dependency.track_predict import predict_tracks
-from utils_simba.depth import get_depth
+from robust_hoi_pipeline.pipeline_utils import (
+    load_mask,
+    compute_vggsfm_foreground_mask,
+    compute_vggsfm_depth_mask,
+)
 
 
 def _load_image_paths(image_dir: Path, frame_list_path: Path) -> List[Path]:
@@ -97,13 +101,6 @@ def _to_original_coords(points_xy: np.ndarray, to_orig: np.ndarray) -> np.ndarra
     homo = np.concatenate([points_xy, np.ones((len(points_xy), 1), dtype=np.float32)], axis=1)
     out = (to_orig @ homo.T).T
     return out[:, :2]
-
-
-def _load_mask(mask_path: Path) -> np.ndarray:
-    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-    if mask is None:
-        raise FileNotFoundError(f"Mask not found: {mask_path}")
-    return mask
 
 
 def _filter_background_matches(
@@ -257,54 +254,6 @@ def _load_vggsfm_sequence_images(
     return images_tensor, masks_tensor
 
 
-def _compute_vggsfm_foreground_mask(
-    pred_tracks: np.ndarray,
-    image_paths: Sequence[Path],
-    mask_dir: Path,
-) -> np.ndarray:
-    """Return per-frame/per-track foreground validity from object masks."""
-    num_frames, num_tracks = pred_tracks.shape[:2]
-    in_foreground = np.ones((num_frames, num_tracks), dtype=bool)
-
-    for frame_idx, img_path in enumerate(image_paths):
-        mask_path = mask_dir / f"{img_path.stem}.png"
-        if not mask_path.exists():
-            continue
-        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-        if mask is None:
-            continue
-        h, w = mask.shape[:2]
-        track_coords = pred_tracks[frame_idx]  # (N, 2)
-        x_coords = np.clip(np.round(track_coords[:, 0]).astype(np.int32), 0, w - 1)
-        y_coords = np.clip(np.round(track_coords[:, 1]).astype(np.int32), 0, h - 1)
-        in_foreground[frame_idx] = mask[y_coords, x_coords] > 0
-
-    return in_foreground
-
-
-def _compute_vggsfm_depth_mask(
-    pred_tracks: np.ndarray,
-    image_paths: Sequence[Path],
-    depth_dir: Path,
-) -> np.ndarray:
-    """Return per-frame/per-track validity from depth > 0."""
-    num_frames, num_tracks = pred_tracks.shape[:2]
-    depth_valid = np.ones((num_frames, num_tracks), dtype=bool)
-
-    for frame_idx, img_path in enumerate(image_paths):
-        depth_path = depth_dir / f"{img_path.stem}.png"
-        if not depth_path.exists():
-            continue
-        depth = get_depth(str(depth_path))
-        h, w = depth.shape[:2]
-        track_coords = pred_tracks[frame_idx]
-        x_coords = np.clip(np.round(track_coords[:, 0]).astype(np.int32), 0, w - 1)
-        y_coords = np.clip(np.round(track_coords[:, 1]).astype(np.int32), 0, h - 1)
-        depth_valid[frame_idx] = depth[y_coords, x_coords] > 0
-
-    return depth_valid
-
-
 def main(args):
     data_dir = Path(args.data_dir)  # the out_dir of pipeline_data_preprocess.py
     out_dir = Path(args.out_dir)
@@ -383,8 +332,8 @@ def main(args):
                 name1 = image1_path.stem
                 mask0_path = mask_dir / f"{name0}.png"
                 mask1_path = mask_dir / f"{name1}.png"
-                mask0 = _load_mask(mask0_path)
-                mask1 = _load_mask(mask1_path)
+                mask0 = load_mask(mask0_path)
+                mask1 = load_mask(mask1_path)
                 xy1_orig, xy2_orig, conf_np = _filter_background_matches(
                     xy1_orig, xy2_orig, conf_np, mask0, mask1
                 )
@@ -459,9 +408,9 @@ def main(args):
 
 
         # Check if each track point is in foreground (mask > 0)
-        in_foreground = _compute_vggsfm_foreground_mask(pred_tracks, image_paths, mask_dir)
+        in_foreground = compute_vggsfm_foreground_mask(pred_tracks, image_paths, mask_dir)
         depth_dir = data_dir / "depth_filtered"
-        depth_valid = _compute_vggsfm_depth_mask(pred_tracks, image_paths, depth_dir)
+        depth_valid = compute_vggsfm_depth_mask(pred_tracks, image_paths, depth_dir)
 
         vis_valid = pred_vis_scores > args.vggsfm_vis_thresh
         pred_tracks_mask = in_foreground & depth_valid & vis_valid

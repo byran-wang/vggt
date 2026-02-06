@@ -13,77 +13,8 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
-from utils_simba.depth import get_depth, get_normal, depth2xyzmap
-
-
-def load_frame_list(data_preprocess_dir: Path) -> List[int]:
-    """Load frame list from preprocessed data directory."""
-    frame_list_path = data_preprocess_dir / "frame_list.txt"
-    if not frame_list_path.exists():
-        raise FileNotFoundError(f"Frame list not found: {frame_list_path}")
-
-    frames = []
-    with open(frame_list_path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                frames.append(int(line))
-    return frames
-
-
-def load_preprocessed_frame(data_preprocess_dir: Path, frame_idx: int) -> Dict:
-    """Load preprocessed data for a single frame."""
-    from PIL import Image
-
-    data = {}
-
-    # Load RGB image
-    rgb_path = data_preprocess_dir / "rgb" / f"{frame_idx:04d}.png"
-    if rgb_path.exists():
-        data['image'] = np.array(Image.open(rgb_path).convert("RGB"))
-    else:
-        data['image'] = None
-
-    # Load object mask
-    mask_obj_path = data_preprocess_dir / "mask_obj" / f"{frame_idx:04d}.png"
-    if mask_obj_path.exists():
-        data['mask_obj'] = np.array(Image.open(mask_obj_path).convert("L"))
-    else:
-        data['mask_obj'] = None
-
-    # Load hand mask
-    mask_hand_path = data_preprocess_dir / "mask_hand" / f"{frame_idx:04d}.png"
-    if mask_hand_path.exists():
-        data['mask_hand'] = np.array(Image.open(mask_hand_path).convert("L"))
-    else:
-        data['mask_hand'] = None
-
-    # Load filtered depth
-    depth_path = data_preprocess_dir / "depth_filtered" / f"{frame_idx:04d}.png"
-    if depth_path.exists():
-        data['depth'] = get_depth(str(depth_path))
-    else:
-        data['depth'] = None
-
-    # Load normal map
-    normal_path = data_preprocess_dir / "normal" / f"{frame_idx:04d}.png"
-    if normal_path.exists():
-        data['normal'] = get_normal(str(normal_path))
-    else:
-        data['normal'] = None
-
-    # Load metadata (intrinsics + hand pose)
-    meta_path = data_preprocess_dir / "meta" / f"{frame_idx:04d}.pkl"
-    if meta_path.exists():
-        with open(meta_path, "rb") as f:
-            meta = pickle.load(f)
-        data['intrinsics'] = meta.get('intrinsics')
-        data['hand_pose'] = meta.get('hand_pose')
-    else:
-        data['intrinsics'] = None
-        data['hand_pose'] = None
-
-    return data
+from utils_simba.depth import depth2xyzmap
+from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_preprocessed_frame
 
 
 def load_image_info(results_dir: Path) -> Optional[Dict]:
@@ -110,7 +41,9 @@ def get_frame_image_info(image_info: Dict, frame_idx: int) -> Optional[Dict]:
         "vis_scores": image_info["vis_scores"][local_idx],
         "tracks_mask": image_info["tracks_mask"][local_idx],
         "points_3d": image_info["points_3d"][local_idx],
-        "is_keyframe": image_info.get("keyframes", [False] * len(frame_indices))[local_idx],
+        "is_keyframe": image_info.get("keyframe", [False] * len(frame_indices))[local_idx],
+        "is_register": image_info.get("register", [False] * len(frame_indices))[local_idx],
+        "is_invalid": image_info.get("invalid", [False] * len(frame_indices))[local_idx],
         "c2o": image_info["c2o"][local_idx],
     }
 
@@ -140,32 +73,6 @@ def load_sam3d_mesh(sam3d_dir: Path, cond_idx: int) -> Optional[trimesh.Trimesh]
     return None
 
 
-def load_sam3d_transform(sam3d_dir: Path, cond_idx: int) -> Optional[Dict]:
-    """Load SAM3D transformation."""
-    transform_path = sam3d_dir / f"{cond_idx:04d}" / "aligned_transform.json"
-    if not transform_path.exists():
-        return None
-
-    with open(transform_path, "r") as f:
-        transform_data = json.load(f)
-
-    rotation = np.array(transform_data["rotation"], dtype=np.float32)
-    translation = np.array(transform_data["translation"], dtype=np.float32)
-    scale = float(transform_data["scale"])
-
-    obj2cam = np.eye(4, dtype=np.float32)
-    obj2cam[:3, :3] = scale * rotation
-    obj2cam[:3, 3] = translation
-
-    cam2obj = np.linalg.inv(obj2cam).astype(np.float32)
-
-    return {
-        'scale': scale,
-        'rotation': rotation,
-        'translation': translation,
-        'obj2cam': obj2cam,
-        'cam2obj': cam2obj,
-    }
 
 
 def visualize_frame(
@@ -304,25 +211,6 @@ def main(args):
     frame_indices = load_frame_list(data_preprocess_dir)
     print(f"Found {len(frame_indices)} frames")
 
-    # Load summary to get keyframe info
-    print("Loading summary...")
-    try:
-        summary = load_summary(results_dir)
-        keyframe_indices = set(summary.get('keyframe_indices', [cond_idx]))
-    except FileNotFoundError:
-        print("Warning: Summary not found, using cond_idx as only keyframe")
-        keyframe_indices = {cond_idx}
-
-    sam3d_transform = load_sam3d_transform(SAM3D_dir, cond_idx)
-    if sam3d_transform is None:
-        print("Warning: SAM3D transform not found, using identity camera pose.")
-        cond_c2o = np.eye(4, dtype=np.float32)
-    else:
-        cond_c2o = sam3d_transform['cam2obj']
-
-    image_info_all = load_image_info(results_dir)
-
-
     # Load and visualize SAM3D mesh
     print("Loading SAM3D mesh...")
     mesh = load_sam3d_mesh(SAM3D_dir, cond_idx)
@@ -348,18 +236,19 @@ def main(args):
 
     # Visualize only keyframes
     print("Visualizing keyframes...")
-    keyframe_list = [f for f in frame_indices if f in keyframe_indices]
-    max_frames = args.max_frames if args.max_frames > 0 else len(keyframe_list)
 
-    for i, frame_idx in enumerate(keyframe_list[:max_frames]):
-        print(f"Processing keyframe {frame_idx} ({i+1}/{min(max_frames, len(keyframe_list))})")
 
-        # Load preprocessed data
-        preprocess_data = load_preprocessed_frame(data_preprocess_dir, frame_idx)
-
+    for i, frame_idx in enumerate(frame_indices):
         # Load image info (from joint opt)
+        image_info_all = load_image_info(results_dir / f"{frame_idx:04d}")
+        if image_info_all is None:
+            continue
         image_info = get_frame_image_info(image_info_all, frame_idx)
 
+        if image_info.get("is_keyframe", False) is False:
+            continue
+        # Load preprocessed data
+        preprocess_data = load_preprocessed_frame(data_preprocess_dir, frame_idx)
         # Visualize
         c2o = image_info['c2o']
 
@@ -370,7 +259,6 @@ def main(args):
             c2o=c2o,
         )
 
-    print(f"Visualization complete! Visualized {len(keyframe_list[:max_frames])} keyframes.")
 
 
 if __name__ == "__main__":

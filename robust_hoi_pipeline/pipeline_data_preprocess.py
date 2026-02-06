@@ -20,41 +20,9 @@ from utils_simba.depth import load_filtered_depth, depth2xyzmap, get_depth, save
 
 # Import normal computation
 from robust_hoi_pipeline.geometry_utils import compute_normals_from_depth
+from robust_hoi_pipeline.pipeline_utils import load_intrinsics_from_meta
 
 
-def _normalize_intrinsics_array(raw_value) -> np.ndarray:
-    """Convert metadata intrinsics to a strict (3, 3) float32 matrix."""
-    K = np.asarray(raw_value, dtype=np.float32)
-
-    # Handle scalar object wrappers from some pickle formats.
-    if K.ndim == 0:
-        K = np.asarray(K.item(), dtype=np.float32)
-
-    if K.shape == (1, 3, 3):
-        K = K[0]
-    elif K.shape == (9,):
-        K = K.reshape(3, 3)
-    elif K.shape == (4,):
-        fx, fy, cx, cy = K.tolist()
-        K = np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype=np.float32)
-
-    if K.shape != (3, 3):
-        raise ValueError(f"Invalid intrinsics shape: {K.shape} (expected (3, 3))")
-    return K
-
-
-def load_intrinsics_from_meta(meta_file: str) -> np.ndarray:
-    """Load camera intrinsics from a meta pickle file."""
-    with open(meta_file, "rb") as f:
-        meta_data = pickle.load(f)
-
-    if isinstance(meta_data, dict):
-        for key in ("camMat", "intrinsics", "K", "camera_matrix"):
-            if key in meta_data:
-                return _normalize_intrinsics_array(meta_data[key])
-        raise KeyError(f"No intrinsics key found. Available keys: {list(meta_data.keys())}")
-
-    return _normalize_intrinsics_array(meta_data)
 
 
 def prepare_image_list(
