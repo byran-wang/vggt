@@ -371,6 +371,7 @@ def main(args):
         "tracks_mask": tracks_mask.astype(bool),
         "keyframes": keyframe_flags,
         "points_3d": points_3d.astype(np.float32),
+        "c2o": c2o_per_frame.astype(np.float32),
     }
 
 

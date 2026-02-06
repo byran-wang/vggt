@@ -86,12 +86,33 @@ def load_preprocessed_frame(data_preprocess_dir: Path, frame_idx: int) -> Dict:
     return data
 
 
-def load_image_info(results_dir: Path, frame_idx: int) -> Optional[Dict]:
+def load_image_info(results_dir: Path) -> Optional[Dict]:
     """Load image info from pipeline_joint_opt.py output."""
-    info_path = results_dir / f"{frame_idx:04d}" / "image_info.npy"
+    info_path = results_dir / "image_info.npy"
     if not info_path.exists():
         return None
     return np.load(info_path, allow_pickle=True).item()
+
+
+def get_frame_image_info(image_info: Dict, frame_idx: int) -> Optional[Dict]:
+    """Extract per-frame data from the aggregated image_info dict."""
+    if image_info is None:
+        return None
+    frame_indices = image_info.get("frame_indices")
+    if frame_indices is None:
+        return None
+    try:
+        local_idx = frame_indices.index(frame_idx)
+    except ValueError:
+        return None
+    return {
+        "tracks": image_info["tracks"][local_idx],
+        "vis_scores": image_info["vis_scores"][local_idx],
+        "tracks_mask": image_info["tracks_mask"][local_idx],
+        "points_3d": image_info["points_3d"][local_idx],
+        "is_keyframe": image_info.get("keyframes", [False] * len(frame_indices))[local_idx],
+        "c2o": image_info["c2o"][local_idx],
+    }
 
 
 def load_summary(results_dir: Path) -> Dict:
@@ -151,67 +172,40 @@ def visualize_frame(
     frame_idx: int,
     preprocess_data: Dict,
     image_info: Optional[Dict],
-    sam3d_transform: Optional[Dict],
-    is_keyframe: bool,
+    c2o: Optional[np.ndarray],
 ):
     """Visualize a single frame in Rerun."""
     rr.set_time_sequence("frame", frame_idx)
 
-    frame_entity = f"frames/{frame_idx:04d}"
+    frame_entity = f"world/frames/{frame_idx:04d}"
 
     # Log image
     if preprocess_data['image'] is not None:
-        rr.log(f"{frame_entity}/image", rr.Image(preprocess_data['image']))
+        rr.log(f"{frame_entity}/camera", rr.Image(preprocess_data['image']))
 
-    # Log object mask
-    if preprocess_data['mask_obj'] is not None:
-        rr.log(f"{frame_entity}/mask_obj", rr.Image(preprocess_data['mask_obj']))
+    # # Log object mask
+    # if preprocess_data['mask_obj'] is not None:
+    #     rr.log(f"{frame_entity}/mask_obj", rr.Image(preprocess_data['mask_obj']))
 
-    # Log hand mask
-    if preprocess_data['mask_hand'] is not None:
-        rr.log(f"{frame_entity}/mask_hand", rr.Image(preprocess_data['mask_hand']))
+    # # Log hand mask
+    # if preprocess_data['mask_hand'] is not None:
+    #     rr.log(f"{frame_entity}/mask_hand", rr.Image(preprocess_data['mask_hand']))
 
-    # Log depth as image
-    if preprocess_data['depth'] is not None:
-        depth = preprocess_data['depth']
-        # Normalize for visualization
-        valid_mask = depth > 0
-        if valid_mask.any():
-            depth_vis = np.zeros_like(depth)
-            depth_vis[valid_mask] = depth[valid_mask]
-            depth_min = depth[valid_mask].min()
-            depth_max = depth[valid_mask].max()
-            if depth_max > depth_min:
-                depth_vis = (depth_vis - depth_min) / (depth_max - depth_min)
-            rr.log(f"{frame_entity}/depth", rr.Image(depth_vis))
+    # # Log depth as image
+    # if preprocess_data['depth'] is not None:
+    #     depth = preprocess_data['depth']
+    #     # Normalize for visualization
+    #     valid_mask = depth > 0
+    #     if valid_mask.any():
+    #         depth_vis = np.zeros_like(depth)
+    #         depth_vis[valid_mask] = depth[valid_mask]
+    #         depth_min = depth[valid_mask].min()
+    #         depth_max = depth[valid_mask].max()
+    #         if depth_max > depth_min:
+    #             depth_vis = (depth_vis - depth_min) / (depth_max - depth_min)
+    #         rr.log(f"{frame_entity}/depth", rr.Image(depth_vis))
 
-    # Log depth point cloud in world/object space
-    if preprocess_data['depth'] is not None and preprocess_data['intrinsics'] is not None:
-        depth = preprocess_data['depth']
-        K = preprocess_data['intrinsics']
-        xyz_map = depth2xyzmap(depth, K)
 
-        valid_mask = depth > 0
-        points_cam = xyz_map[valid_mask]
-
-        # Transform to object space if we have the transform
-        if sam3d_transform is not None:
-            cam2obj = sam3d_transform['cam2obj']
-            points_homo = np.hstack([points_cam, np.ones((len(points_cam), 1))])
-            points_obj = (cam2obj @ points_homo.T).T[:, :3]
-        else:
-            points_obj = points_cam
-
-        # Get colors from image
-        if preprocess_data['image'] is not None:
-            colors = preprocess_data['image'][valid_mask] / 255.0
-        else:
-            colors = np.ones((len(points_obj), 3)) * 0.5
-
-        rr.log(
-            f"{frame_entity}/depth_pointcloud",
-            rr.Points3D(points_obj, colors=colors, radii=0.001),
-        )
 
     # Log tracks and 3D points from image_info
     if image_info is not None:
@@ -220,37 +214,10 @@ def visualize_frame(
         points_3d = image_info['points_3d']  # (N, 3)
         vis_scores = image_info['vis_scores']  # (N,)
 
-        # Valid tracks (in mask)
-        valid_2d = tracks_mask
-        if valid_2d.any():
-            valid_tracks = tracks[valid_2d]
-            rr.log(
-                f"{frame_entity}/tracks_valid",
-                rr.Points2D(
-                    valid_tracks,
-                    colors=np.array([[0, 255, 0]]),  # Green for valid
-                    radii=3.0,
-                ),
-            )
-
-        # Invalid tracks (not in mask)
-        invalid_2d = ~tracks_mask
-        if invalid_2d.any():
-            invalid_tracks = tracks[invalid_2d]
-            rr.log(
-                f"{frame_entity}/tracks_invalid",
-                rr.Points2D(
-                    invalid_tracks,
-                    colors=np.array([[255, 0, 0]]),  # Red for invalid
-                    radii=2.0,
-                ),
-            )
-
-        # 3D points (only those with valid depth)
-        valid_3d_mask = np.isfinite(points_3d).all(axis=-1) & tracks_mask
+        # Log valid 3D points (finite + track mask)
+        valid_3d_mask = np.isfinite(points_3d).all(axis=-1)
         if valid_3d_mask.any():
             valid_points_3d = points_3d[valid_3d_mask]
-            # Color by visibility score
             vis = vis_scores[valid_3d_mask]
             colors_3d = np.zeros((len(valid_points_3d), 3))
             colors_3d[:, 1] = vis  # Green channel = visibility
@@ -261,20 +228,37 @@ def visualize_frame(
                 rr.Points3D(valid_points_3d, colors=colors_3d, radii=0.003),
             )
 
-    # Log camera pose
-    if preprocess_data['intrinsics'] is not None and image_info is not None:
+        # # Valid tracks (in mask)
+        # valid_2d = tracks_mask
+        # if valid_2d.any():
+        #     valid_tracks = tracks[valid_2d]
+        #     rr.log(
+        #         f"{frame_entity}/tracks_valid",
+        #         rr.Points2D(
+        #             valid_tracks,
+        #             colors=np.array([[0, 255, 0]]),  # Green for valid
+        #             radii=3.0,
+        #         ),
+        #     )
+
+        # # Invalid tracks (not in mask)
+        # invalid_2d = ~tracks_mask
+        # if invalid_2d.any():
+        #     invalid_tracks = tracks[invalid_2d]
+        #     rr.log(
+        #         f"{frame_entity}/tracks_invalid",
+        #         rr.Points2D(
+        #             invalid_tracks,
+        #             colors=np.array([[255, 0, 0]]),  # Red for invalid
+        #             radii=2.0,
+        #         ),
+        #     )
+
+
+    # Log camera pose and intrinsics
+    if preprocess_data.get('intrinsics') is not None and preprocess_data.get('image') is not None and c2o is not None:
         K = preprocess_data['intrinsics']
-        o2c = image_info['o2c']  # (4, 4) object-to-camera
-
-        # Camera pose is the inverse of o2c (camera-to-object)
-        c2o = np.linalg.inv(o2c)
-
-        # Extract rotation and translation
-        rotation = c2o[:3, :3]
-        translation = c2o[:3, 3]
-
-        # Log camera
-        H, W = preprocess_data['image'].shape[:2] if preprocess_data['image'] is not None else (480, 640)
+        H, W = preprocess_data['image'].shape[:2]
         fx, fy = K[0, 0], K[1, 1]
         cx, cy = K[0, 2], K[1, 2]
 
@@ -284,19 +268,20 @@ def visualize_frame(
                 resolution=[W, H],
                 focal_length=[fx, fy],
                 principal_point=[cx, cy],
+                image_plane_distance=3.0,
             ),
         )
         rr.log(
             f"{frame_entity}/camera",
             rr.Transform3D(
-                translation=translation,
-                mat3x3=rotation,
+                translation=c2o[:3, 3],
+                mat3x3=c2o[:3, :3],
             ),
         )
 
-    # Mark keyframes
-    if is_keyframe:
-        rr.log(f"{frame_entity}/keyframe", rr.TextLog(f"KEYFRAME {frame_idx}"))
+    # # Mark keyframes
+    # if image_info is not None and image_info.get("is_keyframe", False):
+    #     rr.log(f"{frame_entity}/keyframe", rr.TextLog(f"KEYFRAME {frame_idx}"))
 
 
 def main(args):
@@ -307,10 +292,12 @@ def main(args):
     SAM3D_dir = data_dir / "SAM3D_aligned_post_process"
     data_preprocess_dir = out_dir / "pipeline_preprocess"
     tracks_dir = out_dir / "pipeline_corres"
-    results_dir = out_dir / "results"
+    results_dir = out_dir / "pipeline_joint_opt"
 
     # Initialize Rerun
     rr.init("pipeline_joint_opt_vis", spawn=True)
+        # Log world coordinate system
+    rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_UP, static=True)
 
     # Load frame list
     print("Loading frame list...")
@@ -326,11 +313,15 @@ def main(args):
         print("Warning: Summary not found, using cond_idx as only keyframe")
         keyframe_indices = {cond_idx}
 
-    # Load SAM3D transform
-    print("Loading SAM3D transform...")
     sam3d_transform = load_sam3d_transform(SAM3D_dir, cond_idx)
-    if sam3d_transform is not None:
-        print(f"SAM3D scale: {sam3d_transform['scale']}")
+    if sam3d_transform is None:
+        print("Warning: SAM3D transform not found, using identity camera pose.")
+        cond_c2o = np.eye(4, dtype=np.float32)
+    else:
+        cond_c2o = sam3d_transform['cam2obj']
+
+    image_info_all = load_image_info(results_dir)
+
 
     # Load and visualize SAM3D mesh
     print("Loading SAM3D mesh...")
@@ -355,32 +346,31 @@ def main(args):
             static=True,
         )
 
-    # Visualize each frame
-    print("Visualizing frames...")
-    max_frames = args.max_frames if args.max_frames > 0 else len(frame_indices)
+    # Visualize only keyframes
+    print("Visualizing keyframes...")
+    keyframe_list = [f for f in frame_indices if f in keyframe_indices]
+    max_frames = args.max_frames if args.max_frames > 0 else len(keyframe_list)
 
-    for i, frame_idx in enumerate(frame_indices[:max_frames]):
-        print(f"Processing frame {frame_idx} ({i+1}/{min(max_frames, len(frame_indices))})")
+    for i, frame_idx in enumerate(keyframe_list[:max_frames]):
+        print(f"Processing keyframe {frame_idx} ({i+1}/{min(max_frames, len(keyframe_list))})")
 
         # Load preprocessed data
         preprocess_data = load_preprocessed_frame(data_preprocess_dir, frame_idx)
 
         # Load image info (from joint opt)
-        image_info = load_image_info(results_dir, frame_idx)
-
-        # Check if keyframe
-        is_keyframe = frame_idx in keyframe_indices
+        image_info = get_frame_image_info(image_info_all, frame_idx)
 
         # Visualize
+        c2o = image_info['c2o']
+
         visualize_frame(
             frame_idx=frame_idx,
             preprocess_data=preprocess_data,
             image_info=image_info,
-            sam3d_transform=sam3d_transform,
-            is_keyframe=is_keyframe,
+            c2o=c2o,
         )
 
-    print("Visualization complete!")
+    print(f"Visualization complete! Visualized {len(keyframe_list[:max_frames])} keyframes.")
 
 
 if __name__ == "__main__":
