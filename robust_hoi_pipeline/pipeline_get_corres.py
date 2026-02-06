@@ -16,6 +16,7 @@ def _setup_paths() -> Path:
     project_root = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(project_root))
     sys.path.insert(0, str(project_root / "third_party" / "mast3r"))
+    sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
     return project_root
 
 
@@ -28,6 +29,7 @@ from dust3r.datasets.utils.transforms import ImgNorm
 from dust3r.inference import inference
 from dust3r_visloc.datasets.utils import get_resize_function
 from vggt.dependency.track_predict import predict_tracks
+from utils_simba.depth import get_depth
 
 
 def _load_image_paths(image_dir: Path, frame_list_path: Path) -> List[Path]:
@@ -280,6 +282,29 @@ def _compute_vggsfm_foreground_mask(
     return in_foreground
 
 
+def _compute_vggsfm_depth_mask(
+    pred_tracks: np.ndarray,
+    image_paths: Sequence[Path],
+    depth_dir: Path,
+) -> np.ndarray:
+    """Return per-frame/per-track validity from depth > 0."""
+    num_frames, num_tracks = pred_tracks.shape[:2]
+    depth_valid = np.ones((num_frames, num_tracks), dtype=bool)
+
+    for frame_idx, img_path in enumerate(image_paths):
+        depth_path = depth_dir / f"{img_path.stem}.png"
+        if not depth_path.exists():
+            continue
+        depth = get_depth(str(depth_path))
+        h, w = depth.shape[:2]
+        track_coords = pred_tracks[frame_idx]
+        x_coords = np.clip(np.round(track_coords[:, 0]).astype(np.int32), 0, w - 1)
+        y_coords = np.clip(np.round(track_coords[:, 1]).astype(np.int32), 0, h - 1)
+        depth_valid[frame_idx] = depth[y_coords, x_coords] > 0
+
+    return depth_valid
+
+
 def main(args):
     data_dir = Path(args.data_dir)  # the out_dir of pipeline_data_preprocess.py
     out_dir = Path(args.out_dir)
@@ -432,15 +457,14 @@ def main(args):
                 query_frame_indexes=[cond_pos],
             )
 
-        # Create validity mask: visibility > threshold AND not in background
-        vis = pred_vis_scores > args.vggsfm_vis_thresh
 
         # Check if each track point is in foreground (mask > 0)
         in_foreground = _compute_vggsfm_foreground_mask(pred_tracks, image_paths, mask_dir)
+        depth_dir = data_dir / "depth_filtered"
+        depth_valid = _compute_vggsfm_depth_mask(pred_tracks, image_paths, depth_dir)
 
-        # Combined validity: visible AND in foreground
-        # pred_tracks_mask = vis & in_foreground
-        pred_tracks_mask = in_foreground
+        vis_valid = pred_vis_scores > args.vggsfm_vis_thresh
+        pred_tracks_mask = in_foreground & depth_valid & vis_valid
 
         print(f"Track validity stats: {pred_tracks_mask.sum()} / {pred_tracks_mask.size} valid track-frame pairs")
         # print track number
