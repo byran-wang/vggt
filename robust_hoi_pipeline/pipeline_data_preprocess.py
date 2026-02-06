@@ -1,3 +1,4 @@
+import json
 import os
 import pickle
 from pathlib import Path
@@ -163,6 +164,7 @@ def pipeline_data_preprocess(args):
     intrinsic_dir = data_dir / "meta"
     depth_dir = data_dir / "depth"
     hand_pose_file = data_dir / "hands" / "hold_fit.init.npy"
+    sam3d_transform_file = data_dir/ "SAM3D_aligned_post_process" /f"{args.cond_index:04d}" / "aligned_transform.json" # such as output/SM2/gen_3d_aligned_SAM3D/aligned_transform.json
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -196,6 +198,16 @@ def pipeline_data_preprocess(args):
             print(f"Loaded hand poses as dict with {len(hand_poses)} keys")
         else:
             print(f"Loaded hand poses type: {type(hand_poses)}")
+
+    # Load SAM3D scale for transforming depth to object space
+    obj_scale = None
+    if sam3d_transform_file is not None and sam3d_transform_file.exists():
+        with open(sam3d_transform_file, "r") as f:
+            transform_data = json.load(f)
+        obj_scale = transform_data["scale"]
+        print(f"Loaded SAM3D scale: {obj_scale} from {sam3d_transform_file}")
+    elif sam3d_transform_file is not None:
+        print(f"Warning: SAM3D transform file not found: {sam3d_transform_file}")
 
     # 3. Process each frame
     preprocessed_data = []
@@ -264,6 +276,11 @@ def pipeline_data_preprocess(args):
             thresh_min=args.dpeth_min if hasattr(args, 'dpeth_min') else 0.1,
             thresh_max=args.dpeth_max if hasattr(args, 'dpeth_max') else 1.5,
         )
+
+        # Scale depth to object space using SAM3D scale
+        if obj_scale is not None:
+            raw_depth = raw_depth / obj_scale
+            filtered_depth = filtered_depth / obj_scale
 
         # Compute point clouds
         intrinsics_tensor = torch.from_numpy(intrinsics).float()
