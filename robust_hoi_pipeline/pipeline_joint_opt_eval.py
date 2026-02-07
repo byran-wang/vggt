@@ -67,14 +67,16 @@ def main():
     register_flags = np.array(image_info["register"], dtype=bool)
     invalid_flags = np.array(image_info["invalid"], dtype=bool)
     valid_flags = register_flags & ~invalid_flags
-
     c2o = np.array(image_info["c2o"])  # (N, 4, 4) camera-to-object (SAM3D scaled)
+    extrinsics = c2o.copy()
+    extrinsics[:, :3, 3] *= scale
+    extrinsics = np.linalg.inv(extrinsics) # object-to-camera
     # Transform from SAM3D object space to scene space (condition camera frame)
-    R_s2c = sam3d_to_cond_cam[:3, :3]  # (3, 3)
-    t_s2c = sam3d_to_cond_cam[:3, 3]   # (3,)
-    extrinsics = np.zeros_like(c2o)
-    extrinsics[:, :3, 3] = (R_s2c @ c2o[:, :3, 3, None]).squeeze(-1) + t_s2c
-    extrinsics[:, :3, :3] = (R_s2c / scale) @ c2o[:, :3, :3]
+    # R_s2c = sam3d_to_cond_cam[:3, :3]  # (3, 3)
+    # t_s2c = sam3d_to_cond_cam[:3, 3]   # (3,)
+    # extrinsics = np.tile(np.eye(4, dtype=c2o.dtype), (len(c2o), 1, 1))
+    # extrinsics[:, :3, 3] = (R_s2c @ c2o[:, :3, 3, None]).squeeze(-1) + t_s2c
+    # extrinsics[:, :3, :3] = (R_s2c / scale) @ c2o[:, :3, :3]
 
     valid_extrinsics = extrinsics[valid_flags]
     valid_frame_indices = frame_indices[valid_flags]
