@@ -14,6 +14,7 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
 from utils_simba.depth import depth2xyzmap
+from utils_simba.rerun import log_mesh
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_preprocessed_frame
 from robust_hoi_pipeline.frame_management import load_register_indices
 
@@ -74,6 +75,37 @@ def load_sam3d_mesh(sam3d_dir: Path, cond_idx: int) -> Optional[trimesh.Trimesh]
     return None
 
 
+
+
+def visualize_gt_frame(
+    frame_idx: int,
+    gt_o2c: np.ndarray,
+    preprocess_data: Dict,
+):
+    """Visualize GT camera pose and image for a single frame."""
+    gt_frame_entity = f"world/gt_frames/{frame_idx:04d}"
+    # Log GT camera pose (o2c inverted to c2o for transform)
+    gt_c2o = np.linalg.inv(gt_o2c).astype(np.float32)
+    rr.log(
+        f"{gt_frame_entity}/camera",
+        rr.Transform3D(
+            translation=gt_c2o[:3, 3],
+            mat3x3=gt_c2o[:3, :3],
+        ),
+    )
+    if preprocess_data.get('intrinsics') is not None and preprocess_data.get('image') is not None:
+        K = preprocess_data['intrinsics']
+        H, W = preprocess_data['image'].shape[:2]
+        rr.log(
+            f"{gt_frame_entity}/camera",
+            rr.Pinhole(
+                resolution=[W, H],
+                focal_length=[K[0, 0], K[1, 1]],
+                principal_point=[K[0, 2], K[1, 2]],
+                image_plane_distance=0.03,
+            ),
+        )
+        rr.log(f"{gt_frame_entity}/camera", rr.Image(preprocess_data['image']))
 
 
 def visualize_frame(
@@ -214,6 +246,25 @@ def main(args):
     # Load and visualize SAM3D mesh
     print("Loading SAM3D mesh...")
     mesh = load_sam3d_mesh(SAM3D_dir, cond_idx)
+
+    # Load GT data if requested
+    data_gt = None
+    if args.vis_gt:
+        print("Loading GT data...")
+        import vggt.utils.gt as gt
+        seq_name = out_dir.name
+        def get_image_fids():
+            return frame_indices
+        data_gt = gt.load_data(seq_name, get_image_fids)
+        # Convert to numpy for visualization
+        gt_o2c = data_gt["o2c"].numpy()
+        
+        gt_is_valid = data_gt["is_valid"].numpy()
+        print(f"Loaded GT data: {len(gt_o2c)} frames")
+        gt_mesh_path = data_gt["mesh_name.object"]
+        log_mesh("world/gt_mesh", gt_mesh_path, static=True)
+
+
     if mesh is not None:
         vertices = np.array(mesh.vertices, dtype=np.float32)
         faces = np.array(mesh.faces, dtype=np.uint32)
@@ -236,7 +287,7 @@ def main(args):
 
     # Visualize only keyframes
     print("Visualizing keyframes...")
-
+    breakpoint()
     for i, frame_idx in enumerate(frame_indices):
         # Load image info (from joint opt)
         image_info_all = load_image_info(results_dir / f"{frame_idx:04d}")
@@ -261,6 +312,10 @@ def main(args):
             c2o=c2o,
         )
 
+        # Visualize GT camera pose
+        if data_gt is not None and i < len(gt_o2c) and bool(gt_is_valid[i]):
+            visualize_gt_frame(frame_idx, gt_o2c[i], preprocess_data)
+
 
 
 if __name__ == "__main__":
@@ -275,6 +330,8 @@ if __name__ == "__main__":
                         help="Maximum number of frames to visualize (-1 for all)")
     parser.add_argument("--vis_type", type=str, default="registered", choices=["registered", "registered_valid", "keyframes"],
                         help="Type of frames to visualize")
+    parser.add_argument("--vis_gt", action="store_true", default=True,
+                        help="Visualize ground truth mesh and camera poses")
 
     args = parser.parse_args()
     main(args)
