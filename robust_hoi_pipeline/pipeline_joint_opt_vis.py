@@ -17,6 +17,7 @@ from utils_simba.depth import depth2xyzmap
 from utils_simba.rerun import log_mesh
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_preprocessed_frame
 from robust_hoi_pipeline.frame_management import load_register_indices
+from robust_hoi_pipeline.pipeline_utils import load_sam3d_transform
 
 
 def load_image_info(results_dir: Path) -> Optional[Dict]:
@@ -83,7 +84,7 @@ def visualize_gt_frame(
     preprocess_data: Dict,
 ):
     """Visualize GT camera pose and image for a single frame."""
-    gt_frame_entity = f"world/gt_frames/{frame_idx:04d}"
+    gt_frame_entity = "world/gt_current_frame"
     # Log GT camera pose (o2c inverted to c2o for transform)
     gt_c2o = np.linalg.inv(gt_o2c).astype(np.float32)
     rr.log(
@@ -102,10 +103,11 @@ def visualize_gt_frame(
                 resolution=[W, H],
                 focal_length=[K[0, 0], K[1, 1]],
                 principal_point=[K[0, 2], K[1, 2]],
-                image_plane_distance=0.03,
+                image_plane_distance=1.0,
             ),
+            static=False,
         )
-        rr.log(f"{gt_frame_entity}/camera", rr.Image(preprocess_data['image']))
+        rr.log(f"{gt_frame_entity}/camera", rr.Image(preprocess_data['image']), static=False)
 
 
 def visualize_frame(
@@ -113,13 +115,14 @@ def visualize_frame(
     preprocess_data: Dict,
     image_info: Optional[Dict],
     c2o: Optional[np.ndarray],
+    scale: float = 1.0,
 ):
 
-    frame_entity = f"world/frames/{frame_idx:04d}"
+    frame_entity = "world/current_frame"
 
     # Log image
     if preprocess_data['image'] is not None:
-        rr.log(f"{frame_entity}/camera", rr.Image(preprocess_data['image']))
+        rr.log(f"{frame_entity}/camera", rr.Image(preprocess_data['image']), static=False)
 
     # # Log object mask
     # if preprocess_data['mask_obj'] is not None:
@@ -149,7 +152,7 @@ def visualize_frame(
     if image_info is not None:
         tracks = image_info['tracks']  # (N, 2)
         tracks_mask = image_info['tracks_mask']  # (N,)
-        points_3d = image_info['points_3d']  # (N, 3)
+        points_3d = image_info['points_3d'] * scale  # (N, 3)
         vis_scores = image_info['vis_scores']  # (N,)
 
         # Log valid 3D points (finite + track mask)
@@ -161,10 +164,10 @@ def visualize_frame(
             colors_3d[:, 1] = vis  # Green channel = visibility
             colors_3d[:, 0] = 1 - vis  # Red channel = 1 - visibility
 
-            rr.log(
-                f"{frame_entity}/points_3d",
-                rr.Points3D(valid_points_3d, colors=colors_3d, radii=0.003),
-            )
+            # rr.log(
+            #     f"{frame_entity}/points_3d",
+            #     rr.Points3D(valid_points_3d, colors=colors_3d, radii=0.003),
+            # )
 
         # # Valid tracks (in mask)
         # valid_2d = tracks_mask
@@ -192,7 +195,7 @@ def visualize_frame(
         #         ),
         #     )
 
-
+    
     # Log camera pose and intrinsics
     if preprocess_data.get('intrinsics') is not None and preprocess_data.get('image') is not None and c2o is not None:
         K = preprocess_data['intrinsics']
@@ -206,8 +209,9 @@ def visualize_frame(
                 resolution=[W, H],
                 focal_length=[fx, fy],
                 principal_point=[cx, cy],
-                image_plane_distance=0.2,
+                image_plane_distance=1.0,
             ),
+            static=False,
         )
         rr.log(
             f"{frame_entity}/camera",
@@ -215,6 +219,7 @@ def visualize_frame(
                 translation=c2o[:3, 3],
                 mat3x3=c2o[:3, :3],
             ),
+            static=False,
         )
 
     # # Mark keyframes
@@ -246,6 +251,9 @@ def main(args):
     # Load and visualize SAM3D mesh
     print("Loading SAM3D mesh...")
     mesh = load_sam3d_mesh(SAM3D_dir, cond_idx)
+    sam3d_transform = load_sam3d_transform(SAM3D_dir, args.cond_index)
+    sam3d_to_cond_cam = sam3d_transform['sam3d_to_cond_cam']
+    scale = sam3d_transform['scale']
 
     # Load GT data if requested
     data_gt = None
@@ -265,9 +273,28 @@ def main(args):
         log_mesh("world/gt_mesh", gt_mesh_path, static=True)
 
 
+    # Compute alignment transform from pred object space to GT object space
+    # using the condition frame as the reference
+
+    align_pred_to_gt = None
+
+    if data_gt is not None and len(gt_o2c) > 0:
+        image_info = load_image_info(results_dir / f"{frame_indices[-1]:04d}")
+        pred_frame_indices = image_info["frame_indices"]
+        cond_local = pred_frame_indices.index(cond_idx)
+        gt_cond_idx = frame_indices.index(cond_idx)        
+        first_c2o = np.array(image_info["c2o"])
+        first_c2o[:, :3, 3] *= scale
+        align_pred_to_gt = np.linalg.inv(gt_o2c[gt_cond_idx]) @ np.linalg.inv(first_c2o[cond_local])
+
     if mesh is not None:
-        vertices = np.array(mesh.vertices, dtype=np.float32)
+        vertices = np.array(mesh.vertices, dtype=np.float32) * scale
         faces = np.array(mesh.faces, dtype=np.uint32)
+
+        # Align SAM3D mesh to GT space if alignment is available
+        if align_pred_to_gt is not None:
+            verts_homo = np.hstack([vertices, np.ones((len(vertices), 1), dtype=np.float32)])
+            vertices = (align_pred_to_gt @ verts_homo.T).T[:, :3].astype(np.float32)
 
         # Get vertex colors if available
         if mesh.visual is not None and hasattr(mesh.visual, 'vertex_colors'):
@@ -287,10 +314,13 @@ def main(args):
 
     # Visualize only keyframes
     print("Visualizing keyframes...")
-    breakpoint()
+
     for i, frame_idx in enumerate(frame_indices):
         # Load image info (from joint opt)
         image_info_all = load_image_info(results_dir / f"{frame_idx:04d}")
+        image_info_all["c2o"][:, :3, 3] *= scale
+        if align_pred_to_gt is not None:
+            image_info_all["c2o"] = (align_pred_to_gt @ image_info_all["c2o"]).astype(np.float32)
         if image_info_all is None:
             continue
         image_info = get_frame_image_info(image_info_all, frame_idx)
@@ -310,6 +340,7 @@ def main(args):
             preprocess_data=preprocess_data,
             image_info=image_info,
             c2o=c2o,
+            scale=scale,
         )
 
         # Visualize GT camera pose
@@ -328,7 +359,7 @@ if __name__ == "__main__":
                         help="Condition frame index")
     parser.add_argument("--max_frames", type=int, default=-1,
                         help="Maximum number of frames to visualize (-1 for all)")
-    parser.add_argument("--vis_type", type=str, default="registered", choices=["registered", "registered_valid", "keyframes"],
+    parser.add_argument("--vis_type", type=str, default="keyframes", choices=["registered", "registered_valid", "keyframes"],
                         help="Type of frames to visualize")
     parser.add_argument("--vis_gt", action="store_true", default=True,
                         help="Visualize ground truth mesh and camera poses")
