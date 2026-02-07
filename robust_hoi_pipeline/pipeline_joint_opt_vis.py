@@ -82,8 +82,6 @@ def visualize_frame(
     image_info: Optional[Dict],
     c2o: Optional[np.ndarray],
 ):
-    """Visualize a single frame in Rerun."""
-    rr.set_time_sequence("frame", frame_idx)
 
     frame_entity = f"world/frames/{frame_idx:04d}"
 
@@ -211,7 +209,6 @@ def main(args):
     print("Loading frame list...")
     # frame_indices = load_frame_list(data_preprocess_dir)
     frame_indices = load_keyframe_indices(results_dir)
-    breakpoint()
     print(f"Found {len(frame_indices)} frames")
 
     # Load and visualize SAM3D mesh
@@ -255,6 +252,7 @@ def main(args):
         # Visualize
         c2o = image_info['c2o']
 
+        rr.set_time_sequence("frame", i)
         visualize_frame(
             frame_idx=frame_idx,
             preprocess_data=preprocess_data,
