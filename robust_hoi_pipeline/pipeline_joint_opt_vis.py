@@ -15,7 +15,7 @@ sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
 from utils_simba.depth import depth2xyzmap
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_preprocessed_frame
-from robust_hoi_pipeline.frame_management import load_keyframe_indices
+from robust_hoi_pipeline.frame_management import load_register_indices
 
 
 def load_image_info(results_dir: Path) -> Optional[Dict]:
@@ -121,7 +121,7 @@ def visualize_frame(
         vis_scores = image_info['vis_scores']  # (N,)
 
         # Log valid 3D points (finite + track mask)
-        valid_3d_mask = np.isfinite(points_3d).all(axis=-1)
+        valid_3d_mask = np.isfinite(points_3d).all(axis=-1) & tracks_mask.astype(bool)
         if valid_3d_mask.any():
             valid_points_3d = points_3d[valid_3d_mask]
             vis = vis_scores[valid_3d_mask]
@@ -208,7 +208,7 @@ def main(args):
     # Load frame list
     print("Loading frame list...")
     # frame_indices = load_frame_list(data_preprocess_dir)
-    frame_indices = load_keyframe_indices(results_dir)
+    frame_indices = load_register_indices(results_dir)
     print(f"Found {len(frame_indices)} frames")
 
     # Load and visualize SAM3D mesh
@@ -237,7 +237,6 @@ def main(args):
     # Visualize only keyframes
     print("Visualizing keyframes...")
 
-
     for i, frame_idx in enumerate(frame_indices):
         # Load image info (from joint opt)
         image_info_all = load_image_info(results_dir / f"{frame_idx:04d}")
@@ -245,9 +244,11 @@ def main(args):
             continue
         image_info = get_frame_image_info(image_info_all, frame_idx)
 
-        if image_info.get("is_keyframe", False) is False:
+        if args.vis_type == "registered_valid" and image_info.get("is_invalid", False):
             continue
-        # Load preprocessed data
+        if args.vis_type == "keyframes" and image_info.get("is_invalid", False) and not image_info.get("is_keyframe", False):
+            continue
+
         preprocess_data = load_preprocessed_frame(data_preprocess_dir, frame_idx)
         # Visualize
         c2o = image_info['c2o']
@@ -272,6 +273,8 @@ if __name__ == "__main__":
                         help="Condition frame index")
     parser.add_argument("--max_frames", type=int, default=-1,
                         help="Maximum number of frames to visualize (-1 for all)")
+    parser.add_argument("--vis_type", type=str, default="registered", choices=["registered", "registered_valid", "keyframes"],
+                        help="Type of frames to visualize")
 
     args = parser.parse_args()
     main(args)

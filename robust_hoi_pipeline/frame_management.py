@@ -29,7 +29,22 @@ def save_keyframe_indices(output_dir, frame_idx):
         f.write(f"{frame_idx}\n")
 
 
-def load_keyframe_indices(output_dir):
+def save_register_order(output_dir, frame_idx):
+    """Append a keyframe index to the keyframe indices file.
+
+    Args:
+        output_dir: Output directory path
+        frame_idx: Keyframe index to append
+    """
+    results_dir = os.path.join(output_dir)
+    os.makedirs(results_dir, exist_ok=True)
+
+    filepath = os.path.join(results_dir, "register_order.txt")
+    with open(filepath, "a") as f:
+        f.write(f"{frame_idx}\n")        
+
+
+def load_register_indices(output_dir):
     """Load keyframe indices from the keyframe indices file.
 
     Args:
@@ -38,7 +53,7 @@ def load_keyframe_indices(output_dir):
     Returns:
         List of keyframe indices (integers)
     """
-    filepath = os.path.join(output_dir, "key_frame_idx.txt")
+    filepath = os.path.join(output_dir, "register_order.txt")
     with open(filepath, "r") as f:
         return [int(line.strip()) for line in f if line.strip()]
 

@@ -268,13 +268,17 @@ def register_first_frame(
     return points_3d, c2o_per_frame
 
 
-def save_results(image_info: Dict, results_dir: Path
+def save_results(image_info: Dict, register_idx, results_dir: Path
 ) -> None:
     """Save image info for joint optimization outputs."""
+    results_dir = results_dir / f"{register_idx:04d}"
     results_dir.mkdir(parents=True, exist_ok=True)
     info_path = results_dir / "image_info.npy"
     np.save(info_path, image_info)
     print(f"Saved image info to {results_dir}")
+
+    from robust_hoi_pipeline.frame_management import save_register_order
+    save_register_order(results_dir / "../" , register_idx)
     
 
 
@@ -405,7 +409,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             break
 
         print("+" * 50)
-        print(f"Next frame to register: {next_frame_idx}")
+        print(f"Next frame to register: {image_info['frame_indices'][next_frame_idx]} (local idx {next_frame_idx})")
 
         if check_frame_invalid(
             image_info_work,
@@ -417,19 +421,17 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             continue
 
         register_new_frame_by_PnP(image_info_work, next_frame_idx, args)
-
         mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh)
+        image_info_work["registered"][next_frame_idx] = True
 
-        if image_info_work["keyframe"].sum() > args.min_track_number:
-            if _refine_frame_pose_3d(image_info_work, next_frame_idx, args):
-                if check_reprojection_error(image_info_work, next_frame_idx, args):
-                    image_info_work["invalid"][next_frame_idx] = True
-                else:
-                    image_info_work["registered"][next_frame_idx] = True
-            else:
-                image_info_work["invalid"][next_frame_idx] = True
-        else:
-            image_info_work["registered"][next_frame_idx] = True
+        if not _refine_frame_pose_3d(image_info_work, next_frame_idx, args):
+            image_info_work["invalid"][next_frame_idx] = True
+            print(f"[register_remaining_frames] Pose refinement failed for frame {next_frame_idx}")
+        
+        if check_reprojection_error(image_info_work, next_frame_idx, args):
+            image_info_work["invalid"][next_frame_idx] = True
+            print(f"[register_remaining_frames] High reprojection error, marking frame {next_frame_idx} as invalid")
+
 
         if not image_info_work["invalid"][next_frame_idx]:
             if check_key_frame(
@@ -444,7 +446,6 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                     image_info_work = process_key_frame(image_info_work, next_frame_idx, args)
                 except Exception as exc:
                     print(f"[register_remaining_frames] process_key_frame failed: {exc}")
-                save_keyframe_indices(output_dir / "pipeline_joint_opt", image_info["frame_indices"][next_frame_idx])
 
         print(
             f"registered: {image_info_work['registered'].sum()}, "
@@ -456,7 +457,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         image_info["invalid"] = image_info_work["invalid"].tolist()
         image_info["keyframe"] = image_info_work["keyframe"].tolist()
         image_info["c2o"] = np.linalg.inv(image_info_work["extrinsics"]).astype(np.float32)
-        save_results(image_info=image_info, results_dir=output_dir / "pipeline_joint_opt" / f"{image_info['frame_indices'][next_frame_idx]:04d}")
+        save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], results_dir=output_dir / "pipeline_joint_opt")
 
 def main(args):
     data_dir = Path(args.data_dir)
@@ -514,11 +515,7 @@ def main(args):
 
     # 6. Save image info
     print("Building and saving image info...")
-    results_dir = out_dir / "pipeline_joint_opt" / f"{cond_idx:04d}" 
-    save_results(image_info=image_info, results_dir=results_dir)
-
-    from robust_hoi_pipeline.frame_management import save_keyframe_indices
-    save_keyframe_indices(out_dir / "pipeline_joint_opt" , cond_idx)
+    save_results(image_info=image_info, register_idx=cond_idx, results_dir=out_dir / "pipeline_joint_opt")
     
     register_remaining_frames(image_info, preprocessed_data, out_dir, cond_idx)
 
