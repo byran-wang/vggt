@@ -390,7 +390,7 @@ def main(args):
     else:
         if args.pair_mode != "condition_to_all":
             print("VGGSfM backend uses one query (condition image). Overriding pair_mode to condition_to_all.")
-        vggsfm_pairs = [(cond_pos, j) for j in range(len(image_paths)) if j != cond_pos]
+
         print("Running VGGSfM tracking once on all images (with masked background)...")
         images_all, image_masks = _load_vggsfm_sequence_images(image_paths, args.device, mask_dir)
         with torch.inference_mode():
@@ -433,7 +433,11 @@ def main(args):
         print(f"Saved VGGSfM tracking results to {tracks_path}")
 
         print("Exporting VGGSfM correspondences...")
-        
+        if 1:
+            vggsfm_pairs = [(cond_pos, j) for j in range(len(image_paths)) if j != cond_pos]
+        else:
+            vggsfm_pairs = [(i, j) for i in range(len(image_paths)) for j in range(i + 1, len(image_paths))]
+         
         for i, j in tqdm(vggsfm_pairs, desc="VGGSfM matching"):
             image0_path = image_paths[i]
             image1_path = image_paths[j]
