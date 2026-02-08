@@ -710,18 +710,61 @@ def _compute_rigid_transform(src, dst):
     return R, t
 
 
+def _lift_3d_points_for_new_keyframe(image_info, frame_idx):
+    """Lift 3D points from depth for tracks visible in this keyframe but lacking valid 3D coordinates."""
+    points_3d = image_info["points_3d"]
+    pred_tracks = image_info["pred_tracks"]
+    track_mask = image_info["track_mask"]
+    extrinsics = image_info["extrinsics"]
+    intrinsics = image_info["intrinsics"]
+    depth_priors = image_info.get("depth_priors")
+
+    if depth_priors is None:
+        return
+
+    depth = depth_priors[frame_idx]
+    if depth is None:
+        return
+    if torch.is_tensor(depth):
+        depth = depth.cpu().numpy()
+
+    # Tracks visible in this frame but without valid 3D points
+    frame_visible = np.asarray(track_mask[frame_idx]).astype(bool)
+    nan_mask = ~np.isfinite(points_3d).all(axis=-1)
+    candidates = np.where(frame_visible & nan_mask)[0]
+    if len(candidates) == 0:
+        return
+
+    K = intrinsics[frame_idx] if intrinsics.ndim == 3 else intrinsics
+    c2o = np.linalg.inv(extrinsics[frame_idx])
+    H, W = depth.shape[:2]
+    fx, fy = K[0, 0], K[1, 1]
+    cx, cy = K[0, 2], K[1, 2]
+
+    lifted_count = 0
+    for track_idx in candidates:
+        x, y = pred_tracks[frame_idx, track_idx]
+        u, v = int(round(x)), int(round(y))
+        if u < 0 or u >= W or v < 0 or v >= H:
+            continue
+
+        z = depth[v, u]
+        if z <= 0:
+            continue
+
+        x_cam = (x - cx) * z / fx
+        y_cam = (y - cy) * z / fy
+        pt_cam = np.array([x_cam, y_cam, z, 1.0], dtype=np.float32)
+        pt_obj = c2o @ pt_cam
+        points_3d[track_idx] = pt_obj[:3]
+        lifted_count += 1
+
+    if lifted_count > 0:
+        print(f"[_lift_3d_points_for_new_keyframe] Frame {frame_idx}: lifted {lifted_count} new 3D points from depth")
+
+
 def process_key_frame(image_info, frame_idx, args):
     """Process frame designated as keyframe with multi-step workflow.
-
-    Pipeline steps:
-        1. Predict new tracks using the keyframe as query frame
-        2. Sample 3D points at track locations
-        3. Estimate camera poses from the new tracks
-        4. Filter and verify the new tracks
-        5. Merge the new tracks with existing tracks
-        6. Propagate uncertainties using all keyframes
-        7. (Optional) Run bundle adjustment on keyframes
-        8. Refine keyframe pose using 3D-3D correspondences with valid (low-uncertainty) points
 
     Args:
         image_info: Dictionary containing reconstruction data
@@ -741,44 +784,33 @@ def process_key_frame(image_info, frame_idx, args):
         print(f"[process_key_frame] Missing images or depth_priors, skipping")
         return image_info
 
-    # Setup
-    dtype = getattr(args, 'dtype', torch.float16)
-    original_cond_index = args.cond_index
-    args.cond_index = frame_idx
+    # Skip bundle adjustment if not enough keyframes
+    keyframe_indices = np.where(image_info["keyframe"])[0]
+    BA_min_keyframes = getattr(args, 'min_track_number', 5)
+    # if len(keyframe_indices) < BA_min_keyframes:
+    #     print(f"[process_key_frame] Only {len(keyframe_indices)} keyframes (need {BA_min_keyframes}), skipping BA")
+    # else:
+    #     # Run Bundle Adjustment on 3D points and keyframe poses.
+    #     # The condition frame pose is fixed (not optimized) via ref_frame_idx.
+    #     from .optimization import bundle_adjust_keyframes
+    #     if "uncertainties" not in image_info:
+    #         image_info["uncertainties"] = {}
+    #     cond_index = getattr(args, 'cond_index', 0)
+    #     print(f"[process_key_frame] Running BA on {len(keyframe_indices)} keyframes (ref={cond_index})")
+    #     image_info = bundle_adjust_keyframes(
+    #         image_info,
+    #         ref_frame_idx=cond_index,
+    #         iters=30,
+    #         lr=1e-3,
+    #         unc_thresh=getattr(args, 'unc_thresh', 2.0),
+    #     )
 
-    try:
-        # Step 1: Predict new tracks
-        result = _predict_new_tracks(images, image_info.get("image_masks"), frame_idx, args, dtype)
-        if result is None:
-            return image_info
-        new_pred_tracks, new_pred_vis_scores, new_points_rgb = result
+    # After BA, lift 3D points for tracks that don't yet have valid 3D coordinates
+    _lift_3d_points_for_new_keyframe(image_info, frame_idx)
+    
+    valid_3d = np.isfinite(image_info['points_3d']).all(axis=-1).sum()
+    print(f"[process_key_frame] Valid 3D points after lifting: {valid_3d}/{image_info['points_3d'].shape[0]}")
 
-
-        # Step 3: Estimate poses from new tracks
-        new_extrinsics, new_track_mask, new_points_3d = _estimate_poses(
-            depth_priors, image_info["extrinsics"], image_info["intrinsics"],
-            new_pred_tracks, new_pred_vis_scores, None, frame_idx, args
-        )
-
-        # Step 4: Filter and verify tracks
-        new_track_mask, new_points_3d, new_pred_tracks, new_points_rgb = _filter_and_verify_tracks(
-            new_points_3d, new_extrinsics, image_info["intrinsics"],
-            new_pred_tracks, new_track_mask, new_points_rgb, frame_idx, args
-        )
-
-        # Step 5: Merge new tracks with existing tracks
-        _merge_tracks(image_info, new_pred_tracks, new_track_mask, new_points_3d, new_points_rgb, frame_idx, args)
-
-        # Step 6: Propagate uncertainties
-        _propagate_uncertainties(image_info, args)
-
-        # Step 7: Optional bundle adjustment
-        image_info = _run_bundle_adjustment(image_info, args)
-
-
-    finally:
-        # Restore original query index
-        args.cond_index = original_cond_index
 
     print(f"[process_key_frame] Keyframe {frame_idx} processing complete")
     return image_info

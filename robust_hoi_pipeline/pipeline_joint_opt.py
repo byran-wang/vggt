@@ -457,6 +457,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         image_info["invalid"] = image_info_work["invalid"].tolist()
         image_info["keyframe"] = image_info_work["keyframe"].tolist()
         image_info["c2o"] = np.linalg.inv(image_info_work["extrinsics"]).astype(np.float32)
+        image_info["points_3d"] = image_info_work["points_3d"].astype(np.float32)
         save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], results_dir=output_dir / "pipeline_joint_opt")
 
 def main(args):

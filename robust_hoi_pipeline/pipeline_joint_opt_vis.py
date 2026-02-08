@@ -156,7 +156,8 @@ def visualize_frame(
         vis_scores = image_info['vis_scores']  # (N,)
 
         # Log valid 3D points (finite + track mask)
-        valid_3d_mask = np.isfinite(points_3d).all(axis=-1) & tracks_mask.astype(bool)
+        valid_3d_mask = np.isfinite(points_3d).all(axis=-1) # & tracks_mask.astype(bool)
+        print(f"Frame {frame_idx}: {valid_3d_mask.sum()} valid 3D points out of {len(points_3d)}")
         if valid_3d_mask.any():
             valid_points_3d = points_3d[valid_3d_mask]
             vis = vis_scores[valid_3d_mask]
@@ -164,10 +165,10 @@ def visualize_frame(
             colors_3d[:, 1] = vis  # Green channel = visibility
             colors_3d[:, 0] = 1 - vis  # Red channel = 1 - visibility
 
-            # rr.log(
-            #     f"{frame_entity}/points_3d",
-            #     rr.Points3D(valid_points_3d, colors=colors_3d, radii=0.003),
-            # )
+            rr.log(
+                f"{frame_entity}/points_3d",
+                rr.Points3D(valid_points_3d, colors=colors_3d, radii=0.003),
+            )
 
         # # Valid tracks (in mask)
         # valid_2d = tracks_mask
@@ -361,7 +362,7 @@ if __name__ == "__main__":
                         help="Maximum number of frames to visualize (-1 for all)")
     parser.add_argument("--vis_type", type=str, default="keyframes", choices=["registered", "registered_valid", "keyframes"],
                         help="Type of frames to visualize")
-    parser.add_argument("--vis_gt", action="store_true", default=True,
+    parser.add_argument("--vis_gt", action="store_true", default=False,
                         help="Visualize ground truth mesh and camera poses")
 
     args = parser.parse_args()
