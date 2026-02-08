@@ -239,8 +239,19 @@ def main(args):
     results_dir = out_dir / "pipeline_joint_opt"
 
     # Initialize Rerun
-    rr.init("pipeline_joint_opt_vis", spawn=True)
-        # Log world coordinate system
+    import rerun.blueprint as rrb
+    blueprint = rrb.Blueprint(
+        rrb.Horizontal(
+            rrb.Spatial3DView(name="3D View", origin="world"),
+            rrb.Vertical(
+                rrb.Spatial2DView(name="Camera", origin="world/current_frame/camera"),
+                rrb.Spatial2DView(name="Reproj Error", origin="reproj_error"),
+            ),
+            column_shares=[2, 1],
+        ),
+    )
+    rr.init("pipeline_joint_opt_vis", spawn=True, default_blueprint=blueprint)
+    # Log world coordinate system
     rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_UP, static=True)
 
     # Load frame list
@@ -347,6 +358,13 @@ def main(args):
         # Visualize GT camera pose
         if data_gt is not None and i < len(gt_o2c) and bool(gt_is_valid[i]):
             visualize_gt_frame(frame_idx, gt_o2c[i], preprocess_data)
+
+        # Log reprojection error image if available
+        reproj_img_path = results_dir / f"{frame_idx:04d}" / "reproj_error.png"
+        if reproj_img_path.exists():
+            from PIL import Image
+            reproj_img = np.array(Image.open(reproj_img_path).convert("RGB"))
+            rr.log("reproj_error", rr.Image(reproj_img), static=False)
 
 
 

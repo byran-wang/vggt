@@ -268,7 +268,87 @@ def register_first_frame(
     return points_3d, c2o_per_frame
 
 
-def save_results(image_info: Dict, register_idx, results_dir: Path
+def save_reproj_errors(image_info: Dict, register_idx: int, image: np.ndarray, results_dir: Path) -> None:
+    """Compute and save reprojection errors for a registered frame."""
+    frame_indices = image_info.get("frame_indices", [])
+    if register_idx not in frame_indices:
+        return
+
+    local_idx = frame_indices.index(register_idx)
+    tracks = image_info["tracks"]
+    tracks_mask = image_info["tracks_mask"]
+    points_3d = image_info["points_3d"]
+    c2o = image_info["c2o"]
+
+    frame_mask = np.asarray(tracks_mask[local_idx]).astype(bool)
+    finite_mask = np.isfinite(points_3d).all(axis=-1)
+    valid = frame_mask & finite_mask
+
+    if not valid.any():
+        return
+
+    o2c = np.linalg.inv(c2o[local_idx])
+    K = image_info.get("intrinsics")
+
+    if K.ndim == 3:
+        K = K[local_idx]
+
+    pts_3d = points_3d[valid].astype(np.float64)
+    pts_2d = tracks[local_idx][valid].astype(np.float64)
+
+    cam = (o2c[:3, :3] @ pts_3d.T).T + o2c[:3, 3]
+    in_front = cam[:, 2] > 0
+
+    errs = np.full(valid.sum(), np.nan, dtype=np.float64)
+    proj_2d_all = np.full((valid.sum(), 2), np.nan, dtype=np.float64)
+    if in_front.any():
+        proj_x = K[0, 0] * cam[in_front, 0] / cam[in_front, 2] + K[0, 2]
+        proj_y = K[1, 1] * cam[in_front, 1] / cam[in_front, 2] + K[1, 2]
+        proj_2d = np.stack([proj_x, proj_y], axis=1)
+        errs[in_front] = np.linalg.norm(proj_2d - pts_2d[in_front], axis=1)
+        proj_2d_all[in_front] = proj_2d
+
+    valid_errs = errs[np.isfinite(errs)]
+
+    # Save reprojection error as image
+    import cv2
+    from PIL import Image
+
+
+
+    vis_img = image.copy()
+
+    finite_errs = np.isfinite(errs)
+    if finite_errs.any():
+        start_pts = pts_2d[finite_errs]
+        end_pts = proj_2d_all[finite_errs]
+        errors_vis = errs[finite_errs]
+
+        for s, e, err in zip(start_pts, end_pts, errors_vis):
+            start = tuple(np.round(s).astype(int))
+            end = tuple(np.round(e).astype(int))
+            color = (255, 0, 0) if err >= 2.0 else (0, 0, 255)
+            cv2.arrowedLine(
+                vis_img,
+                start,
+                end,
+                color=color,
+                thickness=1,
+                tipLength=0.2,
+            )
+
+    img_path = results_dir / "reproj_error.png"
+    # Draw stats text on image
+    if len(valid_errs) > 0:
+        text = (f"mean={valid_errs.mean():.2f}px max={valid_errs.max():.2f}px "
+                f"val_n/pts_n {len(valid_errs)}/{points_3d.shape[0]}")
+        cv2.putText(vis_img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(vis_img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
+    Image.fromarray(vis_img).save(img_path)
+    print(f"Saved reproj error image to {img_path}")
+
+
+def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir: Path
 ) -> None:
     """Save image info for joint optimization outputs."""
     results_dir = results_dir / f"{register_idx:04d}"
@@ -279,6 +359,19 @@ def save_results(image_info: Dict, register_idx, results_dir: Path
 
     from robust_hoi_pipeline.frame_management import save_register_order
     save_register_order(results_dir / "../" , register_idx)
+
+    #Load the image from preprocessed data for the registered frame
+    frame_indices = image_info.get("frame_indices", [])
+    image = None
+    if register_idx in frame_indices:
+        local_idx = frame_indices.index(register_idx)
+        images = preprocessed_data.get("images")
+        if images is not None and local_idx < len(images):
+            image = images[local_idx]
+
+    # Save reprojection errors for the registered frame
+    if image is not None:
+        save_reproj_errors(image_info, register_idx, image, results_dir)
     
 
 
@@ -458,7 +551,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         image_info["keyframe"] = image_info_work["keyframe"].tolist()
         image_info["c2o"] = np.linalg.inv(image_info_work["extrinsics"]).astype(np.float32)
         image_info["points_3d"] = image_info_work["points_3d"].astype(np.float32)
-        save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], results_dir=output_dir / "pipeline_joint_opt")
+        save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt")
 
 def main(args):
     data_dir = Path(args.data_dir)
@@ -512,11 +605,12 @@ def main(args):
         "invalid": invalid_flags,
         "points_3d": points_3d.astype(np.float32),
         "c2o": c2o_per_frame.astype(np.float32),
+        "intrinsics": _stack_intrinsics(preprocessed_data["intrinsics"]),
     }
 
     # 6. Save image info
     print("Building and saving image info...")
-    save_results(image_info=image_info, register_idx=cond_idx, results_dir=out_dir / "pipeline_joint_opt")
+    save_results(image_info=image_info, register_idx=cond_idx, preprocessed_data=preprocessed_data, results_dir=out_dir / "pipeline_joint_opt")
     
     register_remaining_frames(image_info, preprocessed_data, out_dir, cond_idx)
 
