@@ -454,7 +454,8 @@ def mask_track_for_outliers(image_info, frame_idx, reproj_thresh):
               f"with reproj error > {reproj_thresh}px")
 
 
-def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, cond_idx: int):
+def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, cond_idx: int,
+                               neus_ckpt=None, neus_total_steps=0, sam3d_root_dir=None):
 
     from robust_hoi_pipeline.frame_management import (
         find_next_frame,
@@ -466,8 +467,10 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         save_keyframe_indices,
     )
     from robust_hoi_pipeline.optimization import register_new_frame_by_PnP
+    from robust_hoi_pipeline.neus_integration import prepare_neus_data, run_neus_training, save_neus_mesh
 
     args = _build_default_joint_opt_args(output_dir, cond_idx)
+    neus_data_dir = output_dir / "neus_data"
 
     frame_indices = image_info["frame_indices"]
     cond_local_idx = frame_indices.index(cond_idx)
@@ -540,6 +543,34 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 except Exception as exc:
                     print(f"[register_remaining_frames] process_key_frame failed: {exc}")
 
+                # Resume NeuS optimization with new keyframe
+                if neus_ckpt is not None:
+                    try:
+                        kf_mask = image_info_work["keyframe"].astype(bool)
+                        kf_local_indices = np.where(kf_mask)[0]
+                        prepare_neus_data(
+                            keyframe_indices=kf_local_indices.tolist(),
+                            images=[preprocessed_data["images"][i] for i in kf_local_indices],
+                            masks=[preprocessed_data["masks_obj"][i] for i in kf_local_indices],
+                            depths=[preprocessed_data["depths"][i] for i in kf_local_indices],
+                            extrinsics_o2c=image_info_work["extrinsics"][kf_local_indices],
+                            intrinsics=image_info_work["intrinsics"][kf_local_indices],
+                            neus_data_dir=neus_data_dir,
+                        )
+                        neus_total_steps += 1000
+                        neus_ckpt, neus_mesh = run_neus_training(
+                            neus_data_dir,
+                            config_path="configs/neus-pipeline.yaml",
+                            max_steps=neus_total_steps,
+                            checkpoint_path=neus_ckpt,
+                            output_dir=output_dir / "neus_training",
+                            sam3d_root_dir=sam3d_root_dir,
+                        )
+                        frame_id = image_info['frame_indices'][next_frame_idx]
+                        save_neus_mesh(neus_mesh, output_dir / "pipeline_joint_opt" / f"{frame_id:04d}")
+                    except Exception as exc:
+                        print(f"[register_remaining_frames] NeuS resume failed: {exc}")
+
         print(
             f"registered: {image_info_work['registered'].sum()}, "
             f"keyframes: {image_info_work['keyframe'].sum()}, "
@@ -611,8 +642,42 @@ def main(args):
     # 6. Save image info
     print("Building and saving image info...")
     save_results(image_info=image_info, register_idx=cond_idx, preprocessed_data=preprocessed_data, results_dir=out_dir / "pipeline_joint_opt")
-    
-    register_remaining_frames(image_info, preprocessed_data, out_dir, cond_idx)
+
+    # 7. Run initial NeuS optimization on condition frame
+    from robust_hoi_pipeline.neus_integration import prepare_neus_data, run_neus_training, save_neus_mesh
+
+    neus_data_dir = out_dir / "neus_data"
+    sam3d_root_dir = SAM3D_dir / f"{cond_idx:04d}"
+    kf_indices = [cond_local_idx]
+    o2c_cond = np.linalg.inv(c2o_per_frame[kf_indices]).astype(np.float32)
+    K_cond = _stack_intrinsics(preprocessed_data["intrinsics"])[kf_indices]
+
+    prepare_neus_data(
+        keyframe_indices=kf_indices,
+        images=[preprocessed_data["images"][i] for i in kf_indices],
+        masks=[preprocessed_data["masks_obj"][i] for i in kf_indices],
+        depths=[preprocessed_data["depths"][i] for i in kf_indices],
+        extrinsics_o2c=o2c_cond,
+        intrinsics=K_cond,
+        neus_data_dir=neus_data_dir,
+    )
+    neus_ckpt, neus_mesh = run_neus_training(
+        neus_data_dir,
+        config_path="configs/neus-pipeline.yaml",
+        max_steps=10000,
+        checkpoint_path=None,
+        output_dir=out_dir / "pipeline_joint_opt",
+        sam3d_root_dir=sam3d_root_dir,
+    )
+
+    save_neus_mesh(neus_mesh, out_dir / "pipeline_joint_opt" / f"{cond_idx:04d}")
+    neus_total_steps = 20000
+    # 8. Register remaining frames with incremental NeuS
+    register_remaining_frames(
+        image_info, preprocessed_data, out_dir, cond_idx,
+        neus_ckpt=neus_ckpt, neus_total_steps=neus_total_steps,
+        sam3d_root_dir=sam3d_root_dir,
+    )
 
 
 
