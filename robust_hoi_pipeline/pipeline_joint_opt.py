@@ -372,7 +372,7 @@ def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir:
     # Save reprojection errors for the registered frame
     if image is not None:
         save_reproj_errors(image_info, register_idx, image, results_dir)
-
+    
 
 
 def _build_default_joint_opt_args(output_dir: Path, cond_index: int) -> SimpleNamespace:
@@ -523,7 +523,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         if not _refine_frame_pose_3d(image_info_work, next_frame_idx, args):
             image_info_work["invalid"][next_frame_idx] = True
             print(f"[register_remaining_frames] Pose refinement failed for frame {next_frame_idx}")
-
+        
         if check_reprojection_error(image_info_work, next_frame_idx, args):
             image_info_work["invalid"][next_frame_idx] = True
             print(f"[register_remaining_frames] High reprojection error, marking frame {next_frame_idx} as invalid")
@@ -584,20 +584,112 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         image_info["points_3d"] = image_info_work["points_3d"].astype(np.float32)
         save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt")
 
+def main(args):
+    data_dir = Path(args.data_dir)
+    out_dir = Path(args.output_dir)
+    cond_idx = args.cond_index
 
-def load_image_info(results_dir: Path, frame_idx: int) -> Dict:
-    """Load image_info saved by the first-frame pipeline.
+    SAM3D_dir = data_dir / "SAM3D_aligned_post_process"
+    data_preprocess_dir = out_dir / "pipeline_preprocess"
+    tracks_dir = out_dir / "pipeline_corres"
 
-    Args:
-        results_dir: Path to pipeline_joint_opt results directory.
-        frame_idx: The frame index whose results to load (e.g., cond_idx).
+    (
+        frame_indices,
+        preprocessed_data,
+        tracks,
+        vis_scores,
+        tracks_mask,
+        cond_cam_to_obj,
+        cond_local_idx,
+    ) = prepare_joint_opt_inputs(
+        data_preprocess_dir=data_preprocess_dir,
+        tracks_dir=tracks_dir,
+        sam3d_dir=SAM3D_dir,
+        cond_idx=cond_idx,
+    )
 
-    Returns:
-        image_info dictionary.
-    """
-    info_path = results_dir / f"{frame_idx:04d}" / "image_info.npy"
-    if not info_path.exists():
-        raise FileNotFoundError(f"image_info not found: {info_path}")
-    image_info = np.load(info_path, allow_pickle=True).item()
-    print(f"Loaded image_info from {info_path}")
-    return image_info
+    # 5. Lift 2D tracks to 3D points using depth and transformation
+    points_3d, c2o_per_frame = register_first_frame(
+        tracks=tracks,
+        tracks_mask=tracks_mask,
+        preprocessed=preprocessed_data,
+        frame_indices=frame_indices,
+        cond_local_idx=cond_local_idx,
+        cond_cam_to_obj=cond_cam_to_obj,
+    )
+
+    # mark the condition frame as keyframe and register frame
+    keyframe_flags = [i == cond_local_idx for i in range(len(frame_indices))]
+    register_flags = keyframe_flags.copy()
+    invalid_flags = [False] * len(frame_indices)
+
+
+    # 6. Build image info
+    image_info = {
+        'frame_indices': frame_indices,
+        'cond_idx': cond_idx,
+        "tracks": tracks.astype(np.float32),
+        "vis_scores": vis_scores.astype(np.float32),
+        "tracks_mask": tracks_mask.astype(bool),
+        "keyframe": keyframe_flags,
+        "register": register_flags,
+        "invalid": invalid_flags,
+        "points_3d": points_3d.astype(np.float32),
+        "c2o": c2o_per_frame.astype(np.float32),
+        "intrinsics": _stack_intrinsics(preprocessed_data["intrinsics"]),
+    }
+
+    # 6. Save image info
+    print("Building and saving image info...")
+    save_results(image_info=image_info, register_idx=cond_idx, preprocessed_data=preprocessed_data, results_dir=out_dir / "pipeline_joint_opt")
+
+    # 7. Run initial NeuS optimization on condition frame
+    from robust_hoi_pipeline.neus_integration import prepare_neus_data, run_neus_training, save_neus_mesh
+
+    neus_data_dir = out_dir / "neus_data"
+    sam3d_root_dir = SAM3D_dir / f"{cond_idx:04d}"
+    kf_indices = [cond_local_idx]
+    o2c_cond = np.linalg.inv(c2o_per_frame[kf_indices]).astype(np.float32)
+    K_cond = _stack_intrinsics(preprocessed_data["intrinsics"])[kf_indices]
+
+    prepare_neus_data(
+        keyframe_indices=kf_indices,
+        images=[preprocessed_data["images"][i] for i in kf_indices],
+        masks=[preprocessed_data["masks_obj"][i] for i in kf_indices],
+        depths=[preprocessed_data["depths"][i] for i in kf_indices],
+        extrinsics_o2c=o2c_cond,
+        intrinsics=K_cond,
+        neus_data_dir=neus_data_dir,
+    )
+    neus_ckpt, neus_mesh = run_neus_training(
+        neus_data_dir,
+        config_path="configs/neus-pipeline.yaml",
+        max_steps=10000,
+        checkpoint_path=None,
+        output_dir=out_dir / "pipeline_joint_opt",
+        sam3d_root_dir=sam3d_root_dir,
+    )
+
+    save_neus_mesh(neus_mesh, out_dir / "pipeline_joint_opt" / f"{cond_idx:04d}")
+    neus_total_steps = 20000
+    # 8. Register remaining frames with incremental NeuS
+    register_remaining_frames(
+        image_info, preprocessed_data, out_dir, cond_idx,
+        neus_ckpt=neus_ckpt, neus_total_steps=neus_total_steps,
+        sam3d_root_dir=sam3d_root_dir,
+    )
+
+
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Joint optimization pipeline for HOI reconstruction")
+    parser.add_argument("--data_dir", type=str, required=True,
+                        help="Input data directory (e.g., HO3D_v3/train/SM2)")
+    parser.add_argument("--output_dir", type=str, required=True,
+                        help="Output directory for results")
+    parser.add_argument("--cond_index", type=int, default=0,
+                        help="Condition frame index (keyframe with known SAM3D pose)")
+
+    args = parser.parse_args()
+    main(args)
