@@ -470,7 +470,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
     from robust_hoi_pipeline.neus_integration import prepare_neus_data, run_neus_training, save_neus_mesh
 
     args = _build_default_joint_opt_args(output_dir, cond_idx)
-    neus_data_dir = output_dir / "neus_data"
+    neus_data_dir = output_dir / "pipeline_joint_opt" / "neus_data"
 
     frame_indices = image_info["frame_indices"]
     cond_local_idx = frame_indices.index(cond_idx)
@@ -557,7 +557,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                             intrinsics=image_info_work["intrinsics"][kf_local_indices],
                             neus_data_dir=neus_data_dir,
                         )
-                        neus_total_steps += 1000
+                        neus_total_steps += 100
                         neus_ckpt, neus_mesh = run_neus_training(
                             neus_data_dir,
                             config_path="configs/neus-pipeline.yaml",
@@ -643,7 +643,17 @@ def main(args):
     print("Building and saving image info...")
     save_results(image_info=image_info, register_idx=cond_idx, preprocessed_data=preprocessed_data, results_dir=out_dir / "pipeline_joint_opt")
 
- 
+    # 7. Load NeuS checkpoint from pipeline_neus_init.py output
+    from robust_hoi_pipeline.neus_integration import _find_latest_checkpoint
+    neus_training_dir = out_dir / "pipeline_neus_init" / "neus_training"
+    neus_ckpt = _find_latest_checkpoint(neus_training_dir)
+    neus_total_steps = args.neus_init_steps
+    sam3d_root_dir = SAM3D_dir / f"{cond_idx:04d}"
+
+    if neus_ckpt is None:
+        print(f"[WARNING] No NeuS checkpoint found in {neus_training_dir}. "
+              "Run pipeline_neus_init.py first. NeuS resume will be skipped.")
+
     # 8. Register remaining frames with incremental NeuS
     register_remaining_frames(
         image_info, preprocessed_data, out_dir, cond_idx,
@@ -662,6 +672,8 @@ if __name__ == "__main__":
                         help="Output directory for results")
     parser.add_argument("--cond_index", type=int, default=0,
                         help="Condition frame index (keyframe with known SAM3D pose)")
+    parser.add_argument("--neus_init_steps", type=int, default=10000,
+                        help="Number of NeuS training steps used in pipeline_neus_init.py (for resuming)")
 
     args = parser.parse_args()
     main(args)
