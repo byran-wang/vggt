@@ -467,7 +467,7 @@ def _joint_optimize_keyframes(
     num_iters=30, lr_pose=5e-4, lr_points=1e-4,
     lambda_reproj=1.0, lambda_p2plane=10000., lambda_depth=300.,
     max_depth_pts=2000,
-    min_track_number=4, cauchy_c=3.0, depth_huber_delta=0.05,
+    min_track_number=4, cauchy_c=3.0, depth_huber_delta=0.01,
 ):
     """Jointly refine keyframe poses and 3D track points.
 
