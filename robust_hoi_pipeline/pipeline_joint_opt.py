@@ -398,6 +398,7 @@ def _build_default_joint_opt_args(output_dir: Path, cond_index: int) -> SimpleNa
         unc_thresh=4.0,
         duplicate_track_thresh=3.0,
         pnp_reproj_thresh=3.0,
+        joint_opt_reproj_thresh=4.0,
     )
 
 
@@ -452,6 +453,240 @@ def mask_track_for_outliers(image_info, frame_idx, reproj_thresh):
         track_mask[frame_idx][outlier_idx] = 0
         print(f"[mask_reproj_outliers] Frame {frame_idx}: masked {len(outlier_idx)} tracks "
               f"with reproj error > {reproj_thresh}px")
+
+
+def _joint_optimize_keyframes(
+    image_info_work, neus_mesh_path, cond_local_idx,
+    num_iters=30, lr_pose=5e-4, lr_points=1e-4,
+    lambda_reproj=1.0, lambda_p2plane=0.1, max_depth_pts=2000,
+    min_track_number=3, cauchy_c=3.0,
+):
+    """Jointly refine keyframe poses and 3D track points.
+
+    Minimizes two losses:
+      - Reprojection: projected 3D points vs 2D track observations on keyframes.
+      - Point-to-plane: depth-map points transformed to object space vs NeuS mesh surface.
+
+    The condition frame pose is held fixed.
+    Modifies image_info_work["extrinsics"] and image_info_work["points_3d"] in-place.
+    """
+    import torch
+
+    try:
+        import trimesh
+    except ImportError:
+        print("[joint_opt] trimesh not installed, skipping")
+        return
+
+    if neus_mesh_path is None or not Path(neus_mesh_path).exists():
+        return
+
+    kf_mask = image_info_work["keyframe"].astype(bool)
+    kf_indices = np.where(kf_mask)[0]
+    if len(kf_indices) < 2:
+        return
+
+    mesh = trimesh.load(neus_mesh_path, process=False)
+    if len(mesh.vertices) < 3:
+        print("[joint_opt] Mesh too small, skipping")
+        return
+
+    print(f"[joint_opt] Starting: {len(kf_indices)} keyframes, mesh={len(mesh.vertices)} verts")
+
+    mesh_face_normals = np.array(mesh.face_normals, dtype=np.float32)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    extrinsics = image_info_work["extrinsics"]       # (N, 4, 4) o2c
+    intrinsics_np = image_info_work["intrinsics"]     # (N, 3, 3)
+    tracks_np = image_info_work["pred_tracks"]        # (N, M, 2)
+    track_mask_np = image_info_work["track_mask"]      # (N, M)
+    points_3d_np = image_info_work["points_3d"]       # (M, 3)
+    depth_priors = image_info_work["depth_priors"]
+
+    n_kf = len(kf_indices)
+    opt_mask = np.array([idx != cond_local_idx for idx in kf_indices])
+    if opt_mask.sum() == 0:
+        return
+
+    # --- optimisation variables: delta rotation (axis-angle) + translation ---
+    delta_aa = torch.zeros(n_kf, 3, device=device, requires_grad=True)
+    delta_t = torch.zeros(n_kf, 3, device=device, requires_grad=True)
+
+    finite_mask = np.isfinite(points_3d_np).all(axis=-1)
+    # Replace NaN with 0 to prevent NaN gradient contamination through einsum backward
+    # (valid mask already excludes these points from the loss)
+    pts3d_init = points_3d_np.copy()
+    pts3d_init[~finite_mask] = 0.0
+    pts3d = torch.tensor(pts3d_init, dtype=torch.float32,
+                         device=device, requires_grad=True)
+
+    # --- fixed data on device ---
+    base_R = torch.tensor(extrinsics[kf_indices, :3, :3], dtype=torch.float32, device=device)
+    base_t = torch.tensor(extrinsics[kf_indices, :3, 3], dtype=torch.float32, device=device)
+    K = torch.tensor(intrinsics_np[kf_indices], dtype=torch.float32, device=device)
+    trk = torch.tensor(tracks_np[kf_indices], dtype=torch.float32, device=device)
+    tmask = torch.tensor(track_mask_np[kf_indices].astype(bool), device=device)
+    fin_t = torch.tensor(finite_mask, device=device)
+    # Only use 3D points visible in >= min_track_number keyframes for reprojection
+    vis_count = tmask.sum(dim=0)  # (M,) how many keyframes each track is visible in
+    valid = tmask & fin_t.unsqueeze(0) & (vis_count >= min_track_number).unsqueeze(0)
+    opt_t = torch.tensor(opt_mask, device=device)
+
+    # --- subsample depth point clouds (camera space) per keyframe ---
+    dclouds = []
+    for ki, kf_idx in enumerate(kf_indices):
+        d = depth_priors[kf_idx]
+        if d is None:
+            dclouds.append(None)
+            continue
+        Kn = intrinsics_np[kf_idx]
+        vmask = d > 0
+        masks = image_info_work.get("image_masks")
+        if masks is not None and masks[kf_idx] is not None:
+            vmask = vmask & (masks[kf_idx] > 0)
+        ys, xs = np.where(vmask)
+        if len(ys) == 0:
+            dclouds.append(None)
+            continue
+        if len(ys) > max_depth_pts:
+            sel = np.random.choice(len(ys), max_depth_pts, replace=False)
+            ys, xs = ys[sel], xs[sel]
+        zs = d[ys, xs]
+        xc = (xs.astype(np.float32) - Kn[0, 2]) * zs / Kn[0, 0]
+        yc = (ys.astype(np.float32) - Kn[1, 2]) * zs / Kn[1, 1]
+        dclouds.append(torch.tensor(np.stack([xc, yc, zs], -1), dtype=torch.float32, device=device))
+
+    # --- helpers ---
+    def rodrigues(aa):
+        """Axis-angle (B,3) -> rotation matrix (B,3,3)."""
+        th = aa.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        k = aa / th
+        Kx = torch.zeros(aa.shape[0], 3, 3, device=device)
+        Kx[:, 0, 1] = -k[:, 2]; Kx[:, 0, 2] = k[:, 1]
+        Kx[:, 1, 0] = k[:, 2];  Kx[:, 1, 2] = -k[:, 0]
+        Kx[:, 2, 0] = -k[:, 1]; Kx[:, 2, 1] = k[:, 0]
+        c = torch.cos(th).unsqueeze(-1)
+        s = torch.sin(th).unsqueeze(-1)
+        I3 = torch.eye(3, device=device).unsqueeze(0)
+        return c * I3 + s * Kx + (1 - c) * k.unsqueeze(-1) @ k.unsqueeze(-2)
+
+    def current_Rt():
+        """Apply delta to base o2c: new_R = dR @ R, new_t = dR @ t + dt."""
+        dR = rodrigues(delta_aa)
+        R = torch.where(opt_t[:, None, None], dR @ base_R, base_R)
+        t = torch.where(opt_t[:, None],
+                        torch.einsum('bij,bj->bi', dR, base_t) + delta_t,
+                        base_t)
+        return R, t
+
+    cond_ki = list(kf_indices).index(cond_local_idx) if cond_local_idx in kf_indices else -1
+
+    optimizer = torch.optim.Adam([
+        {"params": [delta_aa, delta_t], "lr": lr_pose},
+        {"params": [pts3d], "lr": lr_points},
+    ])
+
+    nn_cache = [None] * n_kf
+
+    for it in range(num_iters):
+        optimizer.zero_grad()
+        R_o2c, t_o2c = current_Rt()
+
+        # === reprojection loss (COLMAP-style: Cauchy kernel on ||r||²) ===
+        # r_ij = u_ij - π(K_i, R_i X_j + t_i),  ρ(s) = c² log(1 + s/c²)
+        cam = torch.einsum('bij,mj->bmi', R_o2c, pts3d) + t_o2c[:, None, :]
+        z = cam[:, :, 2:3].clamp(min=1e-6)
+        px = K[:, 0:1, 0:1] * cam[:, :, 0:1] / z + K[:, 0:1, 2:3]
+        py = K[:, 1:2, 1:2] * cam[:, :, 1:2] / z + K[:, 1:2, 2:3]
+        proj = torch.cat([px, py], dim=-1)
+
+        residual_sq = ((proj - trk) ** 2).sum(-1)  # ||r_ij||² (n_kf, M)
+        front = cam[:, :, 2] > 0
+        m = valid & front
+
+        cauchy_c_sq = cauchy_c ** 2
+        if m.any():
+            s = residual_sq[m]
+            loss_r = (cauchy_c_sq * torch.log1p(s / cauchy_c_sq)).mean()
+        else:
+            loss_r = torch.tensor(0.0, device=device)
+
+        # === point-to-plane loss ===
+        update_nn = (it % 5 == 0)
+        loss_p = torch.tensor(0.0, device=device)
+        np2p = 0
+
+        for ki in range(n_kf):
+            if dclouds[ki] is None:
+                continue
+            Ri, ti = R_o2c[ki], t_o2c[ki]
+            RiT = Ri.T
+            tic = -(RiT @ ti)
+            pts_obj = (RiT @ dclouds[ki].T).T + tic
+
+            # Filter out non-finite points before mesh query
+            fin_mask = torch.isfinite(pts_obj).all(dim=-1)
+            if fin_mask.sum() == 0:
+                continue
+            pts_obj_fin = pts_obj[fin_mask]
+
+            if update_nn or nn_cache[ki] is None:
+                pnp = pts_obj_fin.detach().cpu().numpy()
+                closest, _, tri_ids = mesh.nearest.on_surface(pnp)
+                nn_cache[ki] = (
+                    torch.tensor(closest, dtype=torch.float32, device=device),
+                    torch.tensor(mesh_face_normals[tri_ids],
+                                 dtype=torch.float32, device=device),
+                    fin_mask.detach().clone(),
+                )
+
+            cp, cn, cached_mask = nn_cache[ki]
+            # Re-filter with cached mask on non-update iterations
+            if not update_nn:
+                pts_obj_fin = pts_obj[cached_mask]
+            d = ((pts_obj_fin - cp) * cn).sum(-1)      # signed point-to-plane
+            da = d.abs()
+            loss_p = loss_p + torch.where(
+                da < 0.05, 0.5 * d ** 2, 0.05 * (da - 0.025)
+            ).mean()
+            np2p += 1
+
+        if np2p > 0:
+            loss_p = loss_p / np2p
+
+        loss = lambda_reproj * loss_r + lambda_p2plane * loss_p
+        loss.backward()
+
+        # keep condition frame
+        with torch.no_grad():
+            if cond_ki >= 0 and delta_aa.grad is not None:
+                delta_aa.grad[cond_ki] = 0
+                delta_t.grad[cond_ki] = 0
+            # if pts3d.grad is not None:
+            #     pts3d.grad[~fin_t] = 0
+
+        optimizer.step()
+
+        if it == 0 or (it + 1) % 1 == 0:
+            print(f"[joint_opt] {it+1}/{num_iters}  reproj={loss_r.item():.3f}  "
+                  f"p2plane={loss_p.item():.5f}  total={loss.item():.3f}")
+
+    # --- write back ---
+    with torch.no_grad():
+        Rf, tf = current_Rt()
+        Rf_np = Rf.cpu().numpy().astype(np.float32)
+        tf_np = tf.cpu().numpy().astype(np.float32)
+        for ki, kf_idx in enumerate(kf_indices):
+            if opt_mask[ki]:
+                image_info_work["extrinsics"][kf_idx, :3, :3] = Rf_np[ki]
+                image_info_work["extrinsics"][kf_idx, :3, 3] = tf_np[ki]
+        pts3d_out = pts3d.detach().cpu().numpy().astype(np.float32)
+        pts3d_out[~finite_mask] = np.nan  # restore NaN for originally invalid points
+        image_info_work["points_3d"] = pts3d_out
+
+    print(f"[joint_opt] Done. Refined {int(opt_mask.sum())} poses, "
+          f"{int(finite_mask.sum())} 3D points.")
+    
 
 
 def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, cond_idx: int,
@@ -573,11 +808,21 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                     except Exception as exc:
                         print(f"[register_remaining_frames] NeuS resume failed: {exc}")
 
-        print(
-            f"registered: {image_info_work['registered'].sum()}, "
-            f"keyframes: {image_info_work['keyframe'].sum()}, "
-            f"invalid: {image_info_work['invalid'].sum()}"
-        )
+
+
+        # Joint optimize keyframe poses + 3D points against NeuS mesh
+        if latest_neus_mesh is not None and image_info_work["keyframe"].sum() >= args.min_track_number:
+            try:
+                _joint_optimize_keyframes(
+                    image_info_work, latest_neus_mesh, cond_local_idx,
+                    min_track_number=args.min_track_number,
+                )
+                # Mask tracks with reprojection error > threshold on keyframes
+                kf_indices_arr = np.where(image_info_work["keyframe"].astype(bool))[0]
+                for ki in kf_indices_arr:
+                    mask_track_for_outliers(image_info_work, ki, args.joint_opt_reproj_thresh)
+            except Exception as exc:
+                print(f"[register_remaining_frames] joint optimization failed: {exc}")
 
         image_info["register"] = image_info_work["registered"].tolist()
         image_info["invalid"] = image_info_work["invalid"].tolist()
