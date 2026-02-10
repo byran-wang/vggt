@@ -116,6 +116,8 @@ def visualize_frame(
     image_info: Optional[Dict],
     c2o: Optional[np.ndarray],
     scale: float = 1.0,
+    track_vis_count: Optional[np.ndarray] = None,
+    min_track_number: int = 5,
 ):
 
     frame_entity = "world/current_frame"
@@ -160,10 +162,14 @@ def visualize_frame(
         print(f"Frame {frame_idx}: {valid_3d_mask.sum()} valid 3D points out of {len(points_3d)}")
         if valid_3d_mask.any():
             valid_points_3d = points_3d[valid_3d_mask]
-            vis = vis_scores[valid_3d_mask]
+            # Color by track visibility count: green = well-observed, red = poorly-observed
             colors_3d = np.zeros((len(valid_points_3d), 3))
-            colors_3d[:, 1] = vis  # Green channel = visibility
-            colors_3d[:, 0] = 1 - vis  # Red channel = 1 - visibility
+            if track_vis_count is not None:
+                well_observed = track_vis_count[valid_3d_mask] >= min_track_number
+                colors_3d[well_observed, 1] = 1.0   # Green
+                colors_3d[~well_observed, 0] = 1.0  # Red
+            else:
+                colors_3d[:, 1] = 1.0  # Default green
 
             rr.log(
                 f"{frame_entity}/points_3d",
@@ -337,6 +343,11 @@ def main(args):
             continue
         image_info = get_frame_image_info(image_info_all, frame_idx)
 
+        # Compute per-track visibility count across keyframes
+        kf_flags = np.array(image_info_all.get("keyframe", [False] * len(image_info_all["frame_indices"])))
+        kf_track_mask = np.array(image_info_all["tracks_mask"])[kf_flags].astype(bool)
+        track_vis_count = kf_track_mask.sum(axis=0) if len(kf_track_mask) > 0 else np.zeros(len(image_info_all["points_3d"]))
+
         if args.vis_type == "registered_valid" and image_info.get("is_invalid", False):
             continue
         if args.vis_type == "keyframes" and image_info.get("is_invalid", False) and not image_info.get("is_keyframe", False):
@@ -353,6 +364,8 @@ def main(args):
             image_info=image_info,
             c2o=c2o,
             scale=scale,
+            track_vis_count=track_vis_count,
+            min_track_number=args.min_track_number,
         )
 
         # Visualize GT camera pose
@@ -382,6 +395,8 @@ if __name__ == "__main__":
                         help="Type of frames to visualize")
     parser.add_argument("--vis_gt", action="store_true", default=False,
                         help="Visualize ground truth mesh and camera poses")
+    parser.add_argument("--min_track_number", type=int, default=5,
+                        help="Minimum track visibility count for green coloring")
 
     args = parser.parse_args()
     main(args)
