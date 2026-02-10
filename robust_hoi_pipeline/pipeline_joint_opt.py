@@ -412,17 +412,23 @@ def _stack_intrinsics(intrinsics_list: List[np.ndarray]) -> np.ndarray:
     return np.stack(stacked, axis=0)
 
 
-def mask_track_for_outliers(image_info, frame_idx, reproj_thresh):
+def mask_track_for_outliers(image_info, frame_idx, reproj_thresh, candidate_mask=None):
     """Mask tracks whose reprojection error exceeds a threshold for a given frame.
 
     After a frame is registered via PnP, this reprojects 3D points onto the frame
     and sets track_mask to 0 for tracks with reprojection error > reproj_thresh.
+
+    Args:
+        candidate_mask: Optional (M,) bool array. If provided, only tracks where
+            candidate_mask is True are considered for masking.
     """
     track_mask = image_info["track_mask"]
     pred_tracks = image_info["pred_tracks"]
     points_3d = image_info.get("points_3d")
 
     frame_mask = np.asarray(track_mask[frame_idx]).astype(bool)
+    if candidate_mask is not None:
+        frame_mask = frame_mask & candidate_mask
     if points_3d is None or not frame_mask.any():
         return
 
@@ -457,8 +463,8 @@ def mask_track_for_outliers(image_info, frame_idx, reproj_thresh):
 
 def _joint_optimize_keyframes(
     image_info_work, neus_mesh_path, cond_local_idx,
-    num_iters=30, lr_pose=5e-4, lr_points=1e-4,
-    lambda_reproj=1.0, lambda_p2plane=0.1, max_depth_pts=2000,
+    num_iters=10, lr_pose=5e-4, lr_points=1e-4,
+    lambda_reproj=1.0, lambda_p2plane=10000., max_depth_pts=2000,
     min_track_number=3, cauchy_c=3.0,
 ):
     """Jointly refine keyframe poses and 3D track points.
@@ -690,7 +696,8 @@ def _joint_optimize_keyframes(
 
 
 def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, cond_idx: int,
-                               neus_ckpt=None, neus_total_steps=0, sam3d_root_dir=None):
+                               neus_ckpt=None, neus_total_steps=0, sam3d_root_dir=None,
+                               neus_init_mesh=None):
 
     from robust_hoi_pipeline.frame_management import (
         find_next_frame,
@@ -733,6 +740,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
     }
 
     num_frames = len(frame_indices)
+    latest_neus_mesh = neus_init_mesh
 
     while image_info_work["registered"].sum() + image_info_work["invalid"].sum() < num_frames:
         next_frame_idx = find_next_frame(image_info_work)
@@ -805,6 +813,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                         )
                         frame_id = image_info['frame_indices'][next_frame_idx]
                         save_neus_mesh(neus_mesh, output_dir / "pipeline_joint_opt" / f"{frame_id:04d}")
+                        latest_neus_mesh = neus_mesh
                     except Exception as exc:
                         print(f"[register_remaining_frames] NeuS resume failed: {exc}")
 
@@ -817,10 +826,14 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                     image_info_work, latest_neus_mesh, cond_local_idx,
                     min_track_number=args.min_track_number,
                 )
-                # Mask tracks with reprojection error > threshold on keyframes
+                # Mask tracks with reprojection error > joint_opt_reproj_thresh
+                # Only consider tracks visible in >= min_track_number keyframes
                 kf_indices_arr = np.where(image_info_work["keyframe"].astype(bool))[0]
+                track_vis_count = image_info_work["track_mask"][kf_indices_arr].astype(bool).sum(axis=0)
+                well_observed = track_vis_count >= args.min_track_number
                 for ki in kf_indices_arr:
-                    mask_track_for_outliers(image_info_work, ki, args.joint_opt_reproj_thresh)
+                    mask_track_for_outliers(image_info_work, ki, args.joint_opt_reproj_thresh,
+                                           candidate_mask=well_observed)
             except Exception as exc:
                 print(f"[register_remaining_frames] joint optimization failed: {exc}")
 
@@ -830,6 +843,12 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         image_info["c2o"] = np.linalg.inv(image_info_work["extrinsics"]).astype(np.float32)
         image_info["points_3d"] = image_info_work["points_3d"].astype(np.float32)
         save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt")
+
+        print(
+            f"registered: {image_info_work['registered'].sum()}, "
+            f"keyframes: {image_info_work['keyframe'].sum()}, "
+            f"invalid: {image_info_work['invalid'].sum()}"
+        )        
 
 def main(args):
     data_dir = Path(args.data_dir)
@@ -891,9 +910,10 @@ def main(args):
     save_results(image_info=image_info, register_idx=cond_idx, preprocessed_data=preprocessed_data, results_dir=out_dir / "pipeline_joint_opt")
 
     # 7. Load NeuS checkpoint from pipeline_neus_init.py output
-    from robust_hoi_pipeline.neus_integration import _find_latest_checkpoint
+    from robust_hoi_pipeline.neus_integration import _find_latest_checkpoint, _find_latest_mesh
     neus_training_dir = out_dir / "pipeline_neus_init" / "neus_training"
     neus_ckpt = _find_latest_checkpoint(neus_training_dir)
+    neus_init_mesh = _find_latest_mesh(neus_training_dir)
     neus_total_steps = args.neus_init_steps
     sam3d_root_dir = SAM3D_dir / f"{cond_idx:04d}"
 
@@ -905,7 +925,7 @@ def main(args):
     register_remaining_frames(
         image_info, preprocessed_data, out_dir, cond_idx,
         neus_ckpt=neus_ckpt, neus_total_steps=neus_total_steps,
-        sam3d_root_dir=sam3d_root_dir,
+        sam3d_root_dir=sam3d_root_dir, neus_init_mesh=neus_init_mesh,
     )
 
 
