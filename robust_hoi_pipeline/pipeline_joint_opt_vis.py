@@ -110,6 +110,68 @@ def visualize_gt_frame(
         rr.log(f"{gt_frame_entity}/camera", rr.Image(preprocess_data['image']), static=False)
 
 
+def visualize_all_cameras(
+    image_info_all: Dict,
+    current_frame_idx: int,
+    scale: float = 1.0,
+):
+    """Visualize camera frustums for all registered frames in image_info_all."""
+    frame_indices = image_info_all.get("frame_indices", [])
+    c2o_all = image_info_all["c2o"]  # (N, 4, 4), already scaled and aligned
+    keyframe_flags = image_info_all.get("keyframe", [False] * len(frame_indices))
+    register_flags = image_info_all.get("register", [False] * len(frame_indices))
+    invalid_flags = image_info_all.get("invalid", [False] * len(frame_indices))
+    intrinsics = image_info_all.get("intrinsics")
+
+    for local_idx, fid in enumerate(frame_indices):
+        is_kf = bool(keyframe_flags[local_idx])
+        is_reg = bool(register_flags[local_idx])
+        is_inv = bool(invalid_flags[local_idx])
+        is_current = (fid == current_frame_idx)
+
+        if not is_reg and not is_kf:
+            continue
+
+        c2o = c2o_all[local_idx]
+        entity = f"world/all_cameras/{fid:04d}"
+
+        # Color: cyan=current, green=keyframe, blue=registered, red=invalid
+        if is_current:
+            color = [0, 255, 255]
+        elif is_inv:
+            color = [255, 0, 0]
+        elif is_kf:
+            color = [0, 255, 0]
+        else:
+            color = [100, 100, 255]
+
+        rr.log(
+            entity,
+            rr.Transform3D(
+                translation=c2o[:3, 3],
+                mat3x3=c2o[:3, :3],
+            ),
+        )
+
+        if intrinsics is not None and intrinsics.ndim == 3:
+            K = intrinsics[local_idx]
+            rr.log(
+                entity,
+                rr.Pinhole(
+                    resolution=[64, 48],  # small frustum
+                    focal_length=[K[0, 0] * 64 / 640, K[1, 1] * 48 / 480],
+                    principal_point=[32, 24],
+                    image_plane_distance=0.05,
+                ),
+            )
+
+        # Log a colored point at the camera position for visibility
+        rr.log(
+            f"{entity}/pos",
+            rr.Points3D([c2o[:3, 3]], colors=[color], radii=0.1),
+        )
+
+
 def visualize_frame(
     frame_idx: int,
     preprocess_data: Dict,
@@ -368,6 +430,10 @@ def main(args):
             min_track_number=args.min_track_number,
         )
 
+        # Visualize all camera poses
+        if args.vis_all_cameras:
+            visualize_all_cameras(image_info_all, frame_idx, scale=scale)
+
         # Visualize GT camera pose
         if data_gt is not None and i < len(gt_o2c) and bool(gt_is_valid[i]):
             visualize_gt_frame(frame_idx, gt_o2c[i], preprocess_data)
@@ -397,6 +463,8 @@ if __name__ == "__main__":
                         help="Visualize ground truth mesh and camera poses")
     parser.add_argument("--min_track_number", type=int, default=5,
                         help="Minimum track visibility count for green coloring")
+    parser.add_argument("--vis_all_cameras", action="store_true", default=True,
+                        help="Visualize all camera poses from image_info, not just the current frame")
 
     args = parser.parse_args()
     main(args)
