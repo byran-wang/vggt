@@ -179,7 +179,7 @@ def visualize_frame(
     c2o: Optional[np.ndarray],
     scale: float = 1.0,
     track_vis_count: Optional[np.ndarray] = None,
-    min_track_number: int = 5,
+    min_track_number: int = 4,
 ):
 
     frame_entity = "world/current_frame"
@@ -461,7 +461,7 @@ if __name__ == "__main__":
                         help="Type of frames to visualize")
     parser.add_argument("--vis_gt", action="store_true", default=False,
                         help="Visualize ground truth mesh and camera poses")
-    parser.add_argument("--min_track_number", type=int, default=5,
+    parser.add_argument("--min_track_number", type=int, default=4,
                         help="Minimum track visibility count for green coloring")
     parser.add_argument("--vis_all_cameras", action="store_true", default=True,
                         help="Visualize all camera poses from image_info, not just the current frame")

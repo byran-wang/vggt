@@ -389,7 +389,7 @@ def _build_default_joint_opt_args(output_dir: Path, cond_index: int) -> SimpleNa
         min_inlier_per_frame=50,
         min_inlier_per_track=4,
         min_depth_pixels=500,
-        min_track_number=5,
+        min_track_number=4,
         kf_rot_thresh=5.0,
         kf_trans_thresh=0.02,
         kf_depth_thresh=500,
@@ -464,9 +464,10 @@ def mask_track_for_outliers(image_info, frame_idx, reproj_thresh, candidate_mask
 
 def _joint_optimize_keyframes(
     image_info_work, neus_mesh_path, cond_local_idx,
-    num_iters=10, lr_pose=5e-4, lr_points=1e-4,
-    lambda_reproj=1.0, lambda_p2plane=10000., max_depth_pts=2000,
-    min_track_number=3, cauchy_c=3.0,
+    num_iters=30, lr_pose=5e-4, lr_points=1e-4,
+    lambda_reproj=1.0, lambda_p2plane=10000., lambda_depth=300.,
+    max_depth_pts=2000,
+    min_track_number=4, cauchy_c=3.0, depth_huber_delta=0.05,
 ):
     """Jointly refine keyframe poses and 3D track points.
 
@@ -569,6 +570,24 @@ def _joint_optimize_keyframes(
             yc = (ys.astype(np.float32) - Kn[1, 2]) * zs / Kn[1, 1]
             dclouds.append(torch.tensor(np.stack([xc, yc, zs], -1), dtype=torch.float32, device=device))
 
+    # --- pre-compute observed depth at 2D track locations for each keyframe ---
+    num_tracks = points_3d_np.shape[0]
+    depth_at_tracks = torch.zeros(n_kf, num_tracks, dtype=torch.float32, device=device)
+    for ki, kf_idx in enumerate(kf_indices):
+        d = depth_priors[kf_idx]
+        if d is None:
+            continue
+        H_d, W_d = d.shape[:2]
+        coords = tracks_np[kf_idx]  # (M, 2)
+        us = np.round(coords[:, 0]).astype(int)
+        vs = np.round(coords[:, 1]).astype(int)
+        in_bounds = (us >= 0) & (us < W_d) & (vs >= 0) & (vs < H_d)
+        valid_pix = np.where(in_bounds)[0]
+        depth_vals = np.zeros(num_tracks, dtype=np.float32)
+        depth_vals[valid_pix] = d[vs[valid_pix], us[valid_pix]]
+        depth_at_tracks[ki] = torch.tensor(depth_vals, dtype=torch.float32, device=device)
+    has_obs_depth = depth_at_tracks > 0
+
     # --- helpers ---
     def rodrigues(aa):
         """Axis-angle (B,3) -> rotation matrix (B,3,3)."""
@@ -668,7 +687,21 @@ def _joint_optimize_keyframes(
             if np2p > 0:
                 loss_p = loss_p / np2p
 
-        loss = lambda_reproj * loss_r + lambda_p2plane * loss_p
+        # === point-to-depth loss (predicted cam-z vs observed depth map) ===
+        loss_d = torch.tensor(0.0, device=device)
+        depth_valid = valid & front & has_obs_depth
+        if depth_valid.any():
+            pred_z = cam[:, :, 2][depth_valid]
+            obs_z = depth_at_tracks[depth_valid]
+            depth_res = pred_z - obs_z
+            abs_res = depth_res.abs()
+            loss_d = torch.where(
+                abs_res < depth_huber_delta,
+                0.5 * depth_res ** 2,
+                depth_huber_delta * (abs_res - 0.5 * depth_huber_delta),
+            ).mean()
+
+        loss = lambda_reproj * loss_r + lambda_p2plane * loss_p + lambda_depth * loss_d
         loss.backward()
 
         # keep condition frame
@@ -683,7 +716,7 @@ def _joint_optimize_keyframes(
 
         if it == 0 or (it + 1) % 1 == 0:
             print(f"[joint_opt] {it+1}/{num_iters}  reproj={loss_r.item():.3f}  "
-                  f"p2plane={loss_p.item():.5f}  total={loss.item():.3f}")
+                  f"p2plane={loss_p.item():.5f}  p2depth={loss_d.item():.5f}  total={loss.item():.3f}")
 
     # --- write back ---
     with torch.no_grad():
