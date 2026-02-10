@@ -565,6 +565,8 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                             checkpoint_path=neus_ckpt,
                             output_dir=output_dir / "pipeline_joint_opt" / "neus_training",
                             sam3d_root_dir=sam3d_root_dir,
+                            robust_hoi_weight=1.0,
+                            sam3d_weight=0.03,
                         )
                         frame_id = image_info['frame_indices'][next_frame_idx]
                         save_neus_mesh(neus_mesh, output_dir / "pipeline_joint_opt" / f"{frame_id:04d}")

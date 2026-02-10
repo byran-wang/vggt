@@ -145,6 +145,8 @@ def run_neus_training(
     output_dir: Path,
     sam3d_root_dir: Optional[Path] = None,
     gpu_id: int = 0,
+    robust_hoi_weight: float = 1.0,
+    sam3d_weight: float = 0.3,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Run NeuS training in-process with system caching.
 
@@ -216,6 +218,8 @@ def run_neus_training(
             f"trainer.max_steps={max_steps}",
             f"export.export_vertex_color=false",
             f"checkpoint.every_n_train_steps={max_steps}",
+            f"dataset.robust_hoi_weight={robust_hoi_weight}",
+            f"dataset.sam3d_weight={sam3d_weight}",
         ]
         if sam3d_root_dir and Path(sam3d_root_dir).exists():
             cli_args.append(f"dataset.sam3d_root_dir={sam3d_root_dir}")
@@ -248,6 +252,8 @@ def run_neus_training(
         config.dataset.root_dir = str(neus_data_dir)
         config.trainer.max_steps = max_steps
         config.checkpoint.every_n_train_steps = max_steps
+        config.dataset.robust_hoi_weight = robust_hoi_weight
+        config.dataset.sam3d_weight = sam3d_weight
         if sam3d_root_dir and Path(sam3d_root_dir).exists():
             config.dataset.sam3d_root_dir = str(sam3d_root_dir)
         print(f"[NeuS] Reusing cached system")
