@@ -1,18 +1,33 @@
 """NeuS integration for the joint optimization pipeline.
 
-Provides functions to prepare data, run NeuS training as a subprocess,
-and save the resulting mesh after each keyframe.
+Provides functions to prepare data, run NeuS training in-process with model
+caching, and save the resulting mesh after each keyframe.
 """
 
 import os
 import pickle
 import shutil
-import subprocess
+import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
+
+
+# ---------------------------------------------------------------------------
+# Module-level cache: keeps the NeuS system (model) in GPU memory between
+# calls to run_neus_training(), avoiding subprocess startup and redundant
+# checkpoint loading on every keyframe.
+# ---------------------------------------------------------------------------
+_neus_cache: Dict = {}
+
+
+def _ensure_neus_imports() -> None:
+    """Add the NeuS third-party directory to sys.path (idempotent)."""
+    neus_root = str(Path(__file__).resolve().parent.parent / "third_party" / "instant-nsr-pl")
+    if neus_root not in sys.path:
+        sys.path.insert(0, neus_root)
 
 
 # Depth encoding scale (matches utils_simba.depth)
@@ -131,7 +146,14 @@ def run_neus_training(
     sam3d_root_dir: Optional[Path] = None,
     gpu_id: int = 0,
 ) -> Tuple[Optional[str], Optional[str]]:
-    """Run NeuS training as a subprocess.
+    """Run NeuS training in-process with system caching.
+
+    On the first call the NeuS system (model) is created and kept in GPU
+    memory.  Subsequent calls reuse the cached system, so only the dataset
+    and trainer are rebuilt.  The checkpoint is still written to disk for
+    correct PyTorch-Lightning training-state restoration (step count,
+    optimizer, LR scheduler), but the heavy subprocess startup / reimport /
+    CUDA-init overhead is eliminated.
 
     Args:
         neus_data_dir: Path to prepared NeuS data directory.
@@ -143,19 +165,16 @@ def run_neus_training(
         gpu_id: GPU device ID to use.
 
     Returns:
-        Tuple of (latest_checkpoint_path, exported_mesh_path), either may be None
-        if not found after training.
+        Tuple of (latest_checkpoint_path, exported_mesh_path), either may be
+        None if not found after training.
     """
+    _ensure_neus_imports()
+
     neus_data_dir = Path(neus_data_dir).resolve()
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Find the project root (where launch.py lives)
     project_root = Path(__file__).resolve().parent.parent
-    launch_script = project_root / "third_party" / "instant-nsr-pl" / "launch.py"
-
-    if not launch_script.exists():
-        raise FileNotFoundError(f"NeuS launch script not found: {launch_script}")
 
     # Resolve config path
     config_resolved = Path(config_path)
@@ -164,47 +183,116 @@ def run_neus_training(
     if not config_resolved.exists():
         raise FileNotFoundError(f"NeuS config not found: {config_resolved}")
 
-    cmd = [
-        "/home/simba/miniconda3/envs/vggsfm_tmp/bin/python", str(launch_script),
-        "--config", str(config_resolved),
-        "--train",
-        "--gpu", str(gpu_id),
-        "--exp_dir", str(output_dir),
-        f"dataset.root_dir={neus_data_dir}",
-        f"trainer.max_steps={max_steps}",
-        f"export.export_vertex_color=false",
-        f"checkpoint.every_n_train_steps={max_steps}",
+    # ------------------------------------------------------------------
+    # Lazy imports – Python caches them after the first call
+    # ------------------------------------------------------------------
+    import datasets as neus_datasets          # noqa: E402 (from instant-nsr-pl)
+    import systems as neus_systems            # noqa: E402
+    import pytorch_lightning as pl            # noqa: E402
+    from pytorch_lightning import Trainer     # noqa: E402
+    from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor  # noqa: E402
+    from pytorch_lightning.loggers import CSVLogger  # noqa: E402
+    from utils.callbacks import CustomProgressBar    # noqa: E402
+    from utils.misc import load_config               # noqa: E402
+
+    # ------------------------------------------------------------------
+    # Determine which checkpoint to resume from:
+    #   cached (from previous in-process run) > provided (from caller)
+    # ------------------------------------------------------------------
+    resume_ckpt = _neus_cache.get("ckpt_path") or checkpoint_path
+    if resume_ckpt and not Path(resume_ckpt).exists():
+        resume_ckpt = None
+
+    # ------------------------------------------------------------------
+    # First call: build config & create system
+    # ------------------------------------------------------------------
+    if "system" not in _neus_cache:
+        os.environ["CC"] = "gcc-11"
+        os.environ["CXX"] = "g++-11"
+        os.environ["CUDAHOSTCXX"] = "g++-11"
+
+        cli_args = [
+            f"dataset.root_dir={neus_data_dir}",
+            f"trainer.max_steps={max_steps}",
+            f"export.export_vertex_color=false",
+            f"checkpoint.every_n_train_steps={max_steps}",
+        ]
+        if sam3d_root_dir and Path(sam3d_root_dir).exists():
+            cli_args.append(f"dataset.sam3d_root_dir={sam3d_root_dir}")
+
+        config = load_config(str(config_resolved), cli_args=cli_args)
+
+        from datetime import datetime
+        config.trial_name = config.get("trial_name") or (
+            config.tag + datetime.now().strftime("@%Y%m%d-%H%M%S")
+        )
+        config.exp_dir = str(output_dir)
+        config.save_dir = os.path.join(str(output_dir), config.trial_name, "save")
+        config.ckpt_dir = os.path.join(str(output_dir), config.trial_name, "ckpt")
+        config.code_dir = os.path.join(str(output_dir), config.trial_name, "code")
+        config.config_dir = os.path.join(str(output_dir), config.trial_name, "config")
+        config.cmd_args = {}
+
+        system = neus_systems.make(config.system.name, config)
+
+        _neus_cache["config"] = config
+        _neus_cache["system"] = system
+        print(f"[NeuS] Created in-process system (first call)")
+    else:
+        # --------------------------------------------------------------
+        # Subsequent calls: reuse cached system, update mutable config
+        # --------------------------------------------------------------
+        config = _neus_cache["config"]
+        system = _neus_cache["system"]
+
+        config.dataset.root_dir = str(neus_data_dir)
+        config.trainer.max_steps = max_steps
+        config.checkpoint.every_n_train_steps = max_steps
+        if sam3d_root_dir and Path(sam3d_root_dir).exists():
+            config.dataset.sam3d_root_dir = str(sam3d_root_dir)
+        print(f"[NeuS] Reusing cached system")
+
+    # ------------------------------------------------------------------
+    # Fresh data module + trainer for each call
+    # ------------------------------------------------------------------
+    pl.seed_everything(config.get("seed", 42))
+    dm = neus_datasets.make(config.dataset.name, config.dataset)
+
+    callbacks = [
+        ModelCheckpoint(dirpath=config.ckpt_dir, **config.checkpoint),
+        LearningRateMonitor(logging_interval="step"),
+        CustomProgressBar(refresh_rate=1),
     ]
+    loggers = [CSVLogger(config.exp_dir, name=config.trial_name, version="csv_logs")]
 
-    if sam3d_root_dir is not None and Path(sam3d_root_dir).exists():
-        cmd.append(f"dataset.sam3d_root_dir={sam3d_root_dir}")
-
-    
-
-    if checkpoint_path is not None and Path(checkpoint_path).exists():
-        cmd.extend(["--resume", str(checkpoint_path)])
-
-    print(f"[NeuS] Running training: max_steps={max_steps}, resume={checkpoint_path is not None}")
-    print(f"[NeuS] Command: {' '.join(cmd)}")
-
-    env = os.environ.copy()
-    env["CC"] = "gcc-11"
-    env["CXX"] = "g++-11"
-    env["CUDAHOSTCXX"] = "g++-11"
-
-    result = subprocess.run(
-        cmd,
-        cwd=str(project_root / "third_party" / "instant-nsr-pl"),
-        capture_output=False,
-        env=env,
+    trainer = Trainer(
+        devices=1,
+        accelerator="gpu",
+        callbacks=callbacks,
+        logger=loggers,
+        strategy="auto",
+        **config.trainer,
     )
 
-    if result.returncode != 0:
-        print(f"[NeuS] Training subprocess returned non-zero exit code: {result.returncode}")
+    # ------------------------------------------------------------------
+    # Train
+    # ------------------------------------------------------------------
+    print(f"[NeuS] Training: max_steps={max_steps}, resume={'yes' if resume_ckpt else 'no'}")
+    if resume_ckpt:
+        trainer.fit(system, datamodule=dm, ckpt_path=resume_ckpt)
+    else:
+        trainer.fit(system, datamodule=dm)
 
-    # Scan output directory for latest checkpoint and exported mesh
+    # Export mesh
+    system.cuda()
+    system.export()
+
+    # ------------------------------------------------------------------
+    # Update cache
+    # ------------------------------------------------------------------
     latest_ckpt = _find_latest_checkpoint(output_dir)
     latest_mesh = _find_latest_mesh(output_dir)
+    _neus_cache["ckpt_path"] = latest_ckpt
 
     print(f"[NeuS] Latest checkpoint: {latest_ckpt}")
     print(f"[NeuS] Exported mesh: {latest_mesh}")

@@ -62,8 +62,8 @@ def main(args):
         sam3d_root_dir=sam3d_root_dir,
     )
 
-    if neus_mesh:
-        save_neus_mesh(neus_mesh, out_dir / "pipeline_joint_opt" / f"{cond_idx:04d}")
+    # if neus_mesh:
+    #     save_neus_mesh(neus_mesh, out_dir / "pipeline_joint_opt" / f"{cond_idx:04d}")
 
     print(f"NeuS init complete. Checkpoint: {neus_ckpt}")
 

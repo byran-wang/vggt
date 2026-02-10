@@ -557,13 +557,13 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                             intrinsics=image_info_work["intrinsics"][kf_local_indices],
                             neus_data_dir=neus_data_dir,
                         )
-                        neus_total_steps += 100
+                        neus_total_steps += 300
                         neus_ckpt, neus_mesh = run_neus_training(
                             neus_data_dir,
                             config_path="configs/neus-pipeline.yaml",
                             max_steps=neus_total_steps,
                             checkpoint_path=neus_ckpt,
-                            output_dir=output_dir / "neus_training",
+                            output_dir=output_dir / "pipeline_joint_opt" / "neus_training",
                             sam3d_root_dir=sam3d_root_dir,
                         )
                         frame_id = image_info['frame_indices'][next_frame_idx]
