@@ -399,6 +399,7 @@ def _build_default_joint_opt_args(output_dir: Path, cond_index: int) -> SimpleNa
         duplicate_track_thresh=3.0,
         pnp_reproj_thresh=3.0,
         joint_opt_reproj_thresh=4.0,
+        no_optimize_with_point_to_plane=False,
     )
 
 
@@ -485,21 +486,26 @@ def _joint_optimize_keyframes(
         return
 
     if neus_mesh_path is None or not Path(neus_mesh_path).exists():
-        return
+        mesh = None
+    else:
+        mesh = trimesh.load(neus_mesh_path, process=False)
+        if len(mesh.vertices) < 3:
+            print("[joint_opt] Mesh too small, disabling point-to-plane")
+            mesh = None
+
+    use_p2p = mesh is not None
 
     kf_mask = image_info_work["keyframe"].astype(bool)
     kf_indices = np.where(kf_mask)[0]
     if len(kf_indices) < 2:
         return
 
-    mesh = trimesh.load(neus_mesh_path, process=False)
-    if len(mesh.vertices) < 3:
-        print("[joint_opt] Mesh too small, skipping")
-        return
+    mesh_info = ""
+    if use_p2p:
+        mesh_face_normals = np.array(mesh.face_normals, dtype=np.float32)
+        mesh_info = f", mesh={len(mesh.vertices)} verts"
+    print(f"[joint_opt] Starting: {len(kf_indices)} keyframes{mesh_info}, p2p={'on' if use_p2p else 'off'}")
 
-    print(f"[joint_opt] Starting: {len(kf_indices)} keyframes, mesh={len(mesh.vertices)} verts")
-
-    mesh_face_normals = np.array(mesh.face_normals, dtype=np.float32)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     extrinsics = image_info_work["extrinsics"]       # (N, 4, 4) o2c
@@ -540,27 +546,28 @@ def _joint_optimize_keyframes(
 
     # --- subsample depth point clouds (camera space) per keyframe ---
     dclouds = []
-    for ki, kf_idx in enumerate(kf_indices):
-        d = depth_priors[kf_idx]
-        if d is None:
-            dclouds.append(None)
-            continue
-        Kn = intrinsics_np[kf_idx]
-        vmask = d > 0
-        masks = image_info_work.get("image_masks")
-        if masks is not None and masks[kf_idx] is not None:
-            vmask = vmask & (masks[kf_idx] > 0)
-        ys, xs = np.where(vmask)
-        if len(ys) == 0:
-            dclouds.append(None)
-            continue
-        if len(ys) > max_depth_pts:
-            sel = np.random.choice(len(ys), max_depth_pts, replace=False)
-            ys, xs = ys[sel], xs[sel]
-        zs = d[ys, xs]
-        xc = (xs.astype(np.float32) - Kn[0, 2]) * zs / Kn[0, 0]
-        yc = (ys.astype(np.float32) - Kn[1, 2]) * zs / Kn[1, 1]
-        dclouds.append(torch.tensor(np.stack([xc, yc, zs], -1), dtype=torch.float32, device=device))
+    if use_p2p:
+        for ki, kf_idx in enumerate(kf_indices):
+            d = depth_priors[kf_idx]
+            if d is None:
+                dclouds.append(None)
+                continue
+            Kn = intrinsics_np[kf_idx]
+            vmask = d > 0
+            masks = image_info_work.get("image_masks")
+            if masks is not None and masks[kf_idx] is not None:
+                vmask = vmask & (masks[kf_idx] > 0)
+            ys, xs = np.where(vmask)
+            if len(ys) == 0:
+                dclouds.append(None)
+                continue
+            if len(ys) > max_depth_pts:
+                sel = np.random.choice(len(ys), max_depth_pts, replace=False)
+                ys, xs = ys[sel], xs[sel]
+            zs = d[ys, xs]
+            xc = (xs.astype(np.float32) - Kn[0, 2]) * zs / Kn[0, 0]
+            yc = (ys.astype(np.float32) - Kn[1, 2]) * zs / Kn[1, 1]
+            dclouds.append(torch.tensor(np.stack([xc, yc, zs], -1), dtype=torch.float32, device=device))
 
     # --- helpers ---
     def rodrigues(aa):
@@ -618,47 +625,48 @@ def _joint_optimize_keyframes(
             loss_r = torch.tensor(0.0, device=device)
 
         # === point-to-plane loss ===
-        update_nn = (it % 5 == 0)
         loss_p = torch.tensor(0.0, device=device)
-        np2p = 0
+        if use_p2p:
+            update_nn = (it % 5 == 0)
+            np2p = 0
 
-        for ki in range(n_kf):
-            if dclouds[ki] is None:
-                continue
-            Ri, ti = R_o2c[ki], t_o2c[ki]
-            RiT = Ri.T
-            tic = -(RiT @ ti)
-            pts_obj = (RiT @ dclouds[ki].T).T + tic
+            for ki in range(n_kf):
+                if dclouds[ki] is None:
+                    continue
+                Ri, ti = R_o2c[ki], t_o2c[ki]
+                RiT = Ri.T
+                tic = -(RiT @ ti)
+                pts_obj = (RiT @ dclouds[ki].T).T + tic
 
-            # Filter out non-finite points before mesh query
-            fin_mask = torch.isfinite(pts_obj).all(dim=-1)
-            if fin_mask.sum() == 0:
-                continue
-            pts_obj_fin = pts_obj[fin_mask]
+                # Filter out non-finite points before mesh query
+                fin_mask = torch.isfinite(pts_obj).all(dim=-1)
+                if fin_mask.sum() == 0:
+                    continue
+                pts_obj_fin = pts_obj[fin_mask]
 
-            if update_nn or nn_cache[ki] is None:
-                pnp = pts_obj_fin.detach().cpu().numpy()
-                closest, _, tri_ids = mesh.nearest.on_surface(pnp)
-                nn_cache[ki] = (
-                    torch.tensor(closest, dtype=torch.float32, device=device),
-                    torch.tensor(mesh_face_normals[tri_ids],
-                                 dtype=torch.float32, device=device),
-                    fin_mask.detach().clone(),
-                )
+                if update_nn or nn_cache[ki] is None:
+                    pnp = pts_obj_fin.detach().cpu().numpy()
+                    closest, _, tri_ids = mesh.nearest.on_surface(pnp)
+                    nn_cache[ki] = (
+                        torch.tensor(closest, dtype=torch.float32, device=device),
+                        torch.tensor(mesh_face_normals[tri_ids],
+                                     dtype=torch.float32, device=device),
+                        fin_mask.detach().clone(),
+                    )
 
-            cp, cn, cached_mask = nn_cache[ki]
-            # Re-filter with cached mask on non-update iterations
-            if not update_nn:
-                pts_obj_fin = pts_obj[cached_mask]
-            d = ((pts_obj_fin - cp) * cn).sum(-1)      # signed point-to-plane
-            da = d.abs()
-            loss_p = loss_p + torch.where(
-                da < 0.05, 0.5 * d ** 2, 0.05 * (da - 0.025)
-            ).mean()
-            np2p += 1
+                cp, cn, cached_mask = nn_cache[ki]
+                # Re-filter with cached mask on non-update iterations
+                if not update_nn:
+                    pts_obj_fin = pts_obj[cached_mask]
+                d = ((pts_obj_fin - cp) * cn).sum(-1)      # signed point-to-plane
+                da = d.abs()
+                loss_p = loss_p + torch.where(
+                    da < 0.05, 0.5 * d ** 2, 0.05 * (da - 0.025)
+                ).mean()
+                np2p += 1
 
-        if np2p > 0:
-            loss_p = loss_p / np2p
+            if np2p > 0:
+                loss_p = loss_p / np2p
 
         loss = lambda_reproj * loss_r + lambda_p2plane * loss_p
         loss.backward()
@@ -697,7 +705,7 @@ def _joint_optimize_keyframes(
 
 def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, cond_idx: int,
                                neus_ckpt=None, neus_total_steps=0, sam3d_root_dir=None,
-                               neus_init_mesh=None):
+                               neus_init_mesh=None, no_optimize_with_point_to_plane=False):
 
     from robust_hoi_pipeline.frame_management import (
         find_next_frame,
@@ -712,6 +720,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
     from robust_hoi_pipeline.neus_integration import prepare_neus_data, run_neus_training, save_neus_mesh
 
     args = _build_default_joint_opt_args(output_dir, cond_idx)
+    args.no_optimize_with_point_to_plane = no_optimize_with_point_to_plane
     neus_data_dir = output_dir / "pipeline_joint_opt" / "neus_data"
 
     frame_indices = image_info["frame_indices"]
@@ -787,7 +796,8 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                     print(f"[register_remaining_frames] process_key_frame failed: {exc}")
 
                 # Resume NeuS optimization with new keyframe
-                if neus_ckpt is not None:
+                # if neus_ckpt is not None:
+                if 0:
                     try:
                         kf_mask = image_info_work["keyframe"].astype(bool)
                         kf_local_indices = np.where(kf_mask)[0]
@@ -820,10 +830,12 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
 
         # Joint optimize keyframe poses + 3D points against NeuS mesh
-        if latest_neus_mesh is not None and image_info_work["keyframe"].sum() >= args.min_track_number:
+        can_joint_opt = (latest_neus_mesh is not None or args.no_optimize_with_point_to_plane)
+        if can_joint_opt and image_info_work["keyframe"].sum() >= args.min_track_number:
             try:
+                mesh_path = None if args.no_optimize_with_point_to_plane else latest_neus_mesh
                 _joint_optimize_keyframes(
-                    image_info_work, latest_neus_mesh, cond_local_idx,
+                    image_info_work, mesh_path, cond_local_idx,
                     min_track_number=args.min_track_number,
                 )
                 # Mask tracks with reprojection error > joint_opt_reproj_thresh
@@ -910,22 +922,29 @@ def main(args):
     save_results(image_info=image_info, register_idx=cond_idx, preprocessed_data=preprocessed_data, results_dir=out_dir / "pipeline_joint_opt")
 
     # 7. Load NeuS checkpoint from pipeline_neus_init.py output
-    from robust_hoi_pipeline.neus_integration import _find_latest_checkpoint, _find_latest_mesh
-    neus_training_dir = out_dir / "pipeline_neus_init" / "neus_training"
-    neus_ckpt = _find_latest_checkpoint(neus_training_dir)
-    neus_init_mesh = _find_latest_mesh(neus_training_dir)
+    neus_ckpt = None
+    neus_init_mesh = None
     neus_total_steps = args.neus_init_steps
     sam3d_root_dir = SAM3D_dir / f"{cond_idx:04d}"
 
-    if neus_ckpt is None:
-        print(f"[WARNING] No NeuS checkpoint found in {neus_training_dir}. "
-              "Run pipeline_neus_init.py first. NeuS resume will be skipped.")
+    if not args.no_optimize_with_point_to_plane:
+        from robust_hoi_pipeline.neus_integration import _find_latest_checkpoint, _find_latest_mesh
+        neus_training_dir = out_dir / "pipeline_neus_init" / "neus_training"
+        neus_ckpt = _find_latest_checkpoint(neus_training_dir)
+        neus_init_mesh = _find_latest_mesh(neus_training_dir)
+
+        if neus_ckpt is None:
+            print(f"[WARNING] No NeuS checkpoint found in {neus_training_dir}. "
+                  "Run pipeline_neus_init.py first. NeuS resume will be skipped.")
+    else:
+        print("[INFO] Point-to-plane disabled. Skipping NeuS mesh/checkpoint loading.")
 
     # 8. Register remaining frames with incremental NeuS
     register_remaining_frames(
         image_info, preprocessed_data, out_dir, cond_idx,
         neus_ckpt=neus_ckpt, neus_total_steps=neus_total_steps,
         sam3d_root_dir=sam3d_root_dir, neus_init_mesh=neus_init_mesh,
+        no_optimize_with_point_to_plane=args.no_optimize_with_point_to_plane,
     )
 
 
@@ -941,6 +960,8 @@ if __name__ == "__main__":
                         help="Condition frame index (keyframe with known SAM3D pose)")
     parser.add_argument("--neus_init_steps", type=int, default=10000,
                         help="Number of NeuS training steps used in pipeline_neus_init.py (for resuming)")
+    parser.add_argument("--no_optimize_with_point_to_plane", action="store_true", default=True,
+                        help="Disable point-to-plane loss and skip NeuS mesh loading")
 
     args = parser.parse_args()
     main(args)
