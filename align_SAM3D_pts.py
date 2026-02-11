@@ -17,6 +17,7 @@ from lightglue.utils import match_pair
 
 from third_party.utils_simba.utils_simba.depth import (
     get_depth,
+    load_filtered_depth,
 )
 
 

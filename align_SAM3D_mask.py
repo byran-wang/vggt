@@ -20,6 +20,7 @@ from third_party.utils_simba.utils_simba.depth import (
     get_depth,
     depth2xyzmap,
     save_depth,
+    load_filtered_pointmap,
 )
 
 from third_party.utils_simba.utils_simba.render import (
