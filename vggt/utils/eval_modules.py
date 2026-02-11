@@ -60,6 +60,13 @@ def _get_model_pts(model_pts, idx):
     return model_pts
 
 
+def eval_image_info(data_pred, data_gt, metric_dict):
+    metric_dict["total_frames"] = data_pred.get("total_frames", 0)
+    metric_dict["registered_frames"] = data_pred.get("registered_frames", 0)
+    metric_dict["keyframe_count"] = data_pred.get("keyframe_count", 0)
+    metric_dict["invalid_frames"] = data_pred.get("invalid_frames", 0)
+    return metric_dict
+
 def eval_add_object(data_pred, data_gt, metric_dict):
     pred_o2c = data_pred.get("extrinsics")
     gt_o2c = data_gt.get("o2c")

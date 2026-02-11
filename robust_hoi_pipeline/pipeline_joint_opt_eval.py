@@ -20,6 +20,7 @@ eval_fn_dict = {
     "add_s": eval_m.eval_add_s_object,
     "add_auc": eval_m.eval_add_auc_object,
     "add_s_auc": eval_m.eval_add_s_auc_object,
+    "image_info": eval_m.eval_image_info,
     # "mrrpe_ho": eval_m.eval_mrrpe_ho_right,
     # "cd_f_ra": eval_m.eval_cd_f_ra,
     # "cd_f_right": eval_m.eval_cd_f_right,
@@ -87,6 +88,10 @@ def main():
         "extrinsics": valid_extrinsics,
         "is_valid": np.ones(len(valid_frame_indices), dtype=np.float32),
         "full_seq_name": seq_name,
+        "total_frames": len(frame_indices),
+        "registered_frames": int(register_flags.sum()),
+        "keyframe_count": int(np.array(image_info.get("keyframe", []), dtype=bool).sum()),
+        "invalid_frames": int(invalid_flags.sum()),
     }
 
     # Return registered & valid frame indices for GT data selection
