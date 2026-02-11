@@ -72,11 +72,13 @@ python -m pip install -e .  # editable mode
 cd ../../
 
 # --- smplx (custom)
+cd ..
 git clone https://github.com/zc-alexfan/smplx.git
 cd smplx
 python setup.py install
-cd ..
+cd ../vggt
 
+conda install ipython
 # --- pytroch3d
 # ref https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md
 !ipython  # run on the terminal
