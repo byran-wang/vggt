@@ -10,6 +10,7 @@ wheel
 ninja
 rerun-sdk==0.17.0
 imageio
+scikit-image
 trimesh
 opencv-python==4.11.0.86
 hydra-core

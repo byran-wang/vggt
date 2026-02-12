@@ -22,12 +22,15 @@ def _setup_paths() -> Path:
 
 PROJECT_ROOT = _setup_paths()
 
-from mast3r.fast_nn import extract_correspondences_nonsym
-from mast3r.model import AsymmetricMASt3R
-import mast3r.utils.path_to_dust3r  # noqa: F401
-from dust3r.datasets.utils.transforms import ImgNorm
-from dust3r.inference import inference
-from dust3r_visloc.datasets.utils import get_resize_function
+matching_type = "vggsfm" # choise: vggsfm mast3r
+
+if matching_type == "mast3r":
+    from mast3r.fast_nn import extract_correspondences_nonsym
+    from mast3r.model import AsymmetricMASt3R
+    import mast3r.utils.path_to_dust3r  # noqa: F401
+    from dust3r.datasets.utils.transforms import ImgNorm
+    from dust3r.inference import inference
+    from dust3r_visloc.datasets.utils import get_resize_function
 from vggt.dependency.track_predict import predict_tracks
 from robust_hoi_pipeline.pipeline_utils import (
     load_mask,

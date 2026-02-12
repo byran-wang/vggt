@@ -55,10 +55,9 @@ pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https
 pip install -r requirements.txt
 pip install setuptools wheel ninja
 # in ubuntu 22.04, the gcc version is 12.3.0 which is great than 11.xxx, a version the nvdiffrast need. 
-sudo apt-get update
-sudo apt-get install -y gcc-11 g++-11
-export CC=/usr/bin/gcc-11
-export CXX=/usr/bin/g++-11
+conda install -y -c conda-forge gcc_linux-64=11 gxx_linux-64=11 ninja
+export CC=x86_64-conda-linux-gnu-gcc
+export CXX=x86_64-conda-linux-gnu-g++
 # sanity
 # $CC --version
 # $CXX --version
@@ -92,6 +91,15 @@ version_str="".join([
 ])
 !pip install fvcore iopath
 !pip install --no-index --no-cache-dir pytorch3d -f https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/{version_str}/download.html
+
+# ---- tiny cuda
+export PATH="/usr/local/cuda-11.8:/usr/local/cuda-11.8/bin/:$PATH"
+export CUDA_PATH='/usr/local/cuda-11.8'
+export LD_LIBRARY_PATH="/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH"
+git clone --recursive https://github.com/nvlabs/tiny-cuda-nn
+cd tiny-cuda-nn/bindings/torch
+python setup.py install
+cd ../../../
 
 
 ```
