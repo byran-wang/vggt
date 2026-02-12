@@ -53,11 +53,16 @@ conda activate vggsfm_tmp
 conda install -y pip setuptools wheel
 pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu118
 pip install -r requirements.txt
+
+# --- nvdiffrast
 pip install setuptools wheel ninja
 # in ubuntu 22.04, the gcc version is 12.3.0 which is great than 11.xxx, a version the nvdiffrast need. 
 conda install -y -c conda-forge gcc_linux-64=11 gxx_linux-64=11 ninja
 export CC=x86_64-conda-linux-gnu-gcc
 export CXX=x86_64-conda-linux-gnu-g++
+# clear the cache
+rm -rf ~/.cache/torch_extensions
+rm -rf ~/.cache/torch/_extensions
 # sanity
 # $CC --version
 # $CXX --version
