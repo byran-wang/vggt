@@ -330,7 +330,7 @@ def main(args):
 
     # Load and visualize SAM3D mesh
     print("Loading SAM3D mesh...")
-    mesh = load_sam3d_mesh(SAM3D_dir, cond_idx)
+    SAM3D_mesh = load_sam3d_mesh(SAM3D_dir, cond_idx)
     sam3d_transform = load_sam3d_transform(SAM3D_dir, args.cond_index)
     sam3d_to_cond_cam = sam3d_transform['sam3d_to_cond_cam']
     scale = sam3d_transform['scale']
@@ -367,9 +367,9 @@ def main(args):
         first_c2o[:, :3, 3] *= scale
         align_pred_to_gt = np.linalg.inv(gt_o2c[gt_cond_idx]) @ np.linalg.inv(first_c2o[cond_local])
 
-    if mesh is not None:
-        vertices = np.array(mesh.vertices, dtype=np.float32) * scale
-        faces = np.array(mesh.faces, dtype=np.uint32)
+    if SAM3D_mesh is not None:
+        vertices = np.array(SAM3D_mesh.vertices, dtype=np.float32) * scale
+        faces = np.array(SAM3D_mesh.faces, dtype=np.uint32)
 
         # Align SAM3D mesh to GT space if alignment is available
         if align_pred_to_gt is not None:
@@ -377,20 +377,60 @@ def main(args):
             vertices = (align_pred_to_gt @ verts_homo.T).T[:, :3].astype(np.float32)
 
         # Get vertex colors if available
-        if mesh.visual is not None and hasattr(mesh.visual, 'vertex_colors'):
-            vertex_colors = np.array(mesh.visual.vertex_colors)[:, :3] / 255.0
+        if SAM3D_mesh.visual is not None and hasattr(SAM3D_mesh.visual, 'vertex_colors'):
+            vertex_colors = np.array(SAM3D_mesh.visual.vertex_colors)[:, :3] / 255.0
         else:
             vertex_colors = np.ones((len(vertices), 3)) * 0.7  # Gray
 
+        # rr.log(
+        #     "world/sam3d/mesh",
+        #     rr.Mesh3D(
+        #         vertex_positions=vertices,
+        #         triangle_indices=faces,
+        #         vertex_colors=vertex_colors,
+        #     ),
+        #     static=True,
+        # )
         rr.log(
-            "world/sam3d_mesh",
-            rr.Mesh3D(
-                vertex_positions=vertices,
-                triangle_indices=faces,
-                vertex_colors=vertex_colors,
-            ),
+            "world/sam3d/points",
+            rr.Points3D(vertices, colors=np.broadcast_to(np.array([255, 255, 0], dtype=np.uint8), vertices.shape), radii=0.0003),
             static=True,
         )
+
+    # Load HY omni mesh (in SAM3D space) from pipeline_HY_to_SAM3D
+    hy_omni_path = out_dir / "pipeline_HY_to_SAM3D" / "HY_omni_in_sam3d.obj"
+    if hy_omni_path.exists():
+        hy_omni_mesh = trimesh.load(str(hy_omni_path), process=False)
+        hy_verts = np.array(hy_omni_mesh.vertices, dtype=np.float32) * scale
+        hy_faces = np.array(hy_omni_mesh.faces, dtype=np.uint32)
+
+        if align_pred_to_gt is not None:
+            verts_homo = np.hstack([hy_verts, np.ones((len(hy_verts), 1), dtype=np.float32)])
+            hy_verts = (align_pred_to_gt @ verts_homo.T).T[:, :3].astype(np.float32)
+
+        if hy_omni_mesh.visual is not None and hasattr(hy_omni_mesh.visual, 'vertex_colors'):
+            hy_colors = np.array(hy_omni_mesh.visual.vertex_colors)[:, :3] / 255.0
+        else:
+            hy_colors = np.ones((len(hy_verts), 3)) * 0.5  # Dark gray
+
+        # rr.log(
+        #     "world/hy_omni/mesh",
+        #     rr.Mesh3D(
+        #         vertex_positions=hy_verts,
+        #         triangle_indices=hy_faces,
+        #         vertex_colors=hy_colors,
+        #     ),
+        #     static=True,
+        # )
+
+        rr.log(
+            "world/hy_omni/points",
+            rr.Points3D(hy_verts, colors=np.broadcast_to(np.array([0, 0, 255], dtype=np.uint8), hy_verts.shape), radii=0.0003),
+            static=True,
+        )
+        print(f"Visualized HY omni mesh: {len(hy_verts)} vertices")
+    else:
+        print(f"HY omni mesh not found at {hy_omni_path}, skipping")
 
     # Visualize only keyframes
     print("Visualizing keyframes...")
