@@ -248,7 +248,7 @@ def eval_icp_first_frame(data_pred, data_gt, metric_dict, debug=False):
     source_mesh = TriangleMesh(v3d_o_ra, faces_o)
     target_mesh = TriangleMesh(v3d_o_ra_gt, faces_o_gt)
     best_cd, best_f5, best_f10, best_cd_no_scale, best_f5_no_scale, best_f10_no_scale, scale = compute_icp_metrics(
-        target_mesh, source_mesh, num_iters=1200, out_dir=data_pred["out_dir"]
+        target_mesh, source_mesh, num_iters=60, out_dir=data_pred["out_dir"]
     )
     metric_dict["cd_icp"] = best_cd
     metric_dict["f5_icp"] = best_f5 * 100.0
