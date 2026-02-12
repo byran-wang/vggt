@@ -16,6 +16,25 @@ from utils_simba.depth import get_depth, depth2xyzmap
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_sam3d_transform
 
 
+class TeeStream:
+    """Duplicate writes to multiple streams."""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for stream in self.streams:
+            stream.write(data)
+        return len(data)
+
+    def flush(self):
+        for stream in self.streams:
+            stream.flush()
+
+    def isatty(self):
+        return any(getattr(stream, "isatty", lambda: False)() for stream in self.streams)
+
+
 def load_preprocessed_data(data_preprocess_dir: Path, frame_indices: List[int]) -> Dict:
     """Load preprocessed data from pipeline_data_preprocess.py output.
 
@@ -896,89 +915,106 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         )        
 
 def main(args):
-    data_dir = Path(args.data_dir)
-    out_dir = Path(args.output_dir)
-    cond_idx = args.cond_index
+    log_file = None
+    orig_stdout = sys.stdout
+    orig_stderr = sys.stderr
+    try:
+        log_dir = Path(args.output_dir) / "pipeline_joint_opt"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "log.txt"
+        log_file = open(log_path, "a", buffering=1)
+        sys.stdout = TeeStream(orig_stdout, log_file)
+        sys.stderr = TeeStream(orig_stderr, log_file)
+        print(f"[logging] Writing console output to {log_path}")
 
-    SAM3D_dir = data_dir / "SAM3D_aligned_post_process"
-    data_preprocess_dir = out_dir / "pipeline_preprocess"
-    tracks_dir = out_dir / "pipeline_corres"
+        data_dir = Path(args.data_dir)
+        out_dir = Path(args.output_dir)
+        cond_idx = args.cond_index
 
-    (
-        frame_indices,
-        preprocessed_data,
-        tracks,
-        vis_scores,
-        tracks_mask,
-        cond_cam_to_obj,
-        cond_local_idx,
-    ) = prepare_joint_opt_inputs(
-        data_preprocess_dir=data_preprocess_dir,
-        tracks_dir=tracks_dir,
-        sam3d_dir=SAM3D_dir,
-        cond_idx=cond_idx,
-    )
+        SAM3D_dir = data_dir / "SAM3D_aligned_post_process"
+        data_preprocess_dir = out_dir / "pipeline_preprocess"
+        tracks_dir = out_dir / "pipeline_corres"
 
-    # 5. Lift 2D tracks to 3D points using depth and transformation
-    points_3d, c2o_per_frame = register_first_frame(
-        tracks=tracks,
-        tracks_mask=tracks_mask,
-        preprocessed=preprocessed_data,
-        frame_indices=frame_indices,
-        cond_local_idx=cond_local_idx,
-        cond_cam_to_obj=cond_cam_to_obj,
-    )
+        (
+            frame_indices,
+            preprocessed_data,
+            tracks,
+            vis_scores,
+            tracks_mask,
+            cond_cam_to_obj,
+            cond_local_idx,
+        ) = prepare_joint_opt_inputs(
+            data_preprocess_dir=data_preprocess_dir,
+            tracks_dir=tracks_dir,
+            sam3d_dir=SAM3D_dir,
+            cond_idx=cond_idx,
+        )
 
-    # mark the condition frame as keyframe and register frame
-    keyframe_flags = [i == cond_local_idx for i in range(len(frame_indices))]
-    register_flags = keyframe_flags.copy()
-    invalid_flags = [False] * len(frame_indices)
+        # 5. Lift 2D tracks to 3D points using depth and transformation
+        points_3d, c2o_per_frame = register_first_frame(
+            tracks=tracks,
+            tracks_mask=tracks_mask,
+            preprocessed=preprocessed_data,
+            frame_indices=frame_indices,
+            cond_local_idx=cond_local_idx,
+            cond_cam_to_obj=cond_cam_to_obj,
+        )
+
+        # mark the condition frame as keyframe and register frame
+        keyframe_flags = [i == cond_local_idx for i in range(len(frame_indices))]
+        register_flags = keyframe_flags.copy()
+        invalid_flags = [False] * len(frame_indices)
 
 
-    # 6. Build image info
-    image_info = {
-        'frame_indices': frame_indices,
-        'cond_idx': cond_idx,
-        "tracks": tracks.astype(np.float32),
-        "vis_scores": vis_scores.astype(np.float32),
-        "tracks_mask": tracks_mask.astype(bool),
-        "keyframe": keyframe_flags,
-        "register": register_flags,
-        "invalid": invalid_flags,
-        "points_3d": points_3d.astype(np.float32),
-        "c2o": c2o_per_frame.astype(np.float32),
-        "intrinsics": _stack_intrinsics(preprocessed_data["intrinsics"]),
-    }
+        # 6. Build image info
+        image_info = {
+            'frame_indices': frame_indices,
+            'cond_idx': cond_idx,
+            "tracks": tracks.astype(np.float32),
+            "vis_scores": vis_scores.astype(np.float32),
+            "tracks_mask": tracks_mask.astype(bool),
+            "keyframe": keyframe_flags,
+            "register": register_flags,
+            "invalid": invalid_flags,
+            "points_3d": points_3d.astype(np.float32),
+            "c2o": c2o_per_frame.astype(np.float32),
+            "intrinsics": _stack_intrinsics(preprocessed_data["intrinsics"]),
+        }
 
-    # 6. Save image info
-    print("Building and saving image info...")
-    save_results(image_info=image_info, register_idx=cond_idx, preprocessed_data=preprocessed_data, results_dir=out_dir / "pipeline_joint_opt")
+        # 6. Save image info
+        print("Building and saving image info...")
+        save_results(image_info=image_info, register_idx=cond_idx, preprocessed_data=preprocessed_data, results_dir=out_dir / "pipeline_joint_opt")
 
-    # 7. Load NeuS checkpoint from pipeline_neus_init.py output
-    neus_ckpt = None
-    neus_init_mesh = None
-    neus_total_steps = args.neus_init_steps
-    sam3d_root_dir = SAM3D_dir / f"{cond_idx:04d}"
+        # 7. Load NeuS checkpoint from pipeline_neus_init.py output
+        neus_ckpt = None
+        neus_init_mesh = None
+        neus_total_steps = args.neus_init_steps
+        sam3d_root_dir = SAM3D_dir / f"{cond_idx:04d}"
 
-    if not args.no_optimize_with_point_to_plane:
-        from robust_hoi_pipeline.neus_integration import _find_latest_checkpoint, _find_latest_mesh
-        neus_training_dir = out_dir / "pipeline_neus_init" / "neus_training"
-        neus_ckpt = _find_latest_checkpoint(neus_training_dir)
-        neus_init_mesh = _find_latest_mesh(neus_training_dir)
+        if not args.no_optimize_with_point_to_plane:
+            from robust_hoi_pipeline.neus_integration import _find_latest_checkpoint, _find_latest_mesh
+            neus_training_dir = out_dir / "pipeline_neus_init" / "neus_training"
+            neus_ckpt = _find_latest_checkpoint(neus_training_dir)
+            neus_init_mesh = _find_latest_mesh(neus_training_dir)
 
-        if neus_ckpt is None:
-            print(f"[WARNING] No NeuS checkpoint found in {neus_training_dir}. "
-                  "Run pipeline_neus_init.py first. NeuS resume will be skipped.")
-    else:
-        print("[INFO] Point-to-plane disabled. Skipping NeuS mesh/checkpoint loading.")
+            if neus_ckpt is None:
+                print(f"[WARNING] No NeuS checkpoint found in {neus_training_dir}. "
+                      "Run pipeline_neus_init.py first. NeuS resume will be skipped.")
+        else:
+            print("[INFO] Point-to-plane disabled. Skipping NeuS mesh/checkpoint loading.")
 
-    # 8. Register remaining frames with incremental NeuS
-    register_remaining_frames(
-        image_info, preprocessed_data, out_dir, cond_idx,
-        neus_ckpt=neus_ckpt, neus_total_steps=neus_total_steps,
-        sam3d_root_dir=sam3d_root_dir, neus_init_mesh=neus_init_mesh,
-        no_optimize_with_point_to_plane=args.no_optimize_with_point_to_plane,
-    )
+        # 8. Register remaining frames with incremental NeuS
+        register_remaining_frames(
+            image_info, preprocessed_data, out_dir, cond_idx,
+            neus_ckpt=neus_ckpt, neus_total_steps=neus_total_steps,
+            sam3d_root_dir=sam3d_root_dir, neus_init_mesh=neus_init_mesh,
+            no_optimize_with_point_to_plane=args.no_optimize_with_point_to_plane,
+        )
+    finally:
+        sys.stdout = orig_stdout
+        sys.stderr = orig_stderr
+        if log_file is not None:
+            log_file.close()
 
 
 
