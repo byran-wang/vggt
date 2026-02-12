@@ -217,7 +217,7 @@ def compute_auc(rec, max_val=0.1):
     ap = np.sum((mrec[i] - mrec[i - 1]) * mpre[i]) / max_val
     return ap
 
-def eval_icp_first_frame(data_pred, data_gt, metric_dict):
+def eval_icp_first_frame(data_pred, data_gt, metric_dict, debug=False):
     faces = data_pred["faces"]["object"]
     from vggt.utils.icp import compute_icp_metrics
     from open3d.geometry import TriangleMesh
@@ -225,7 +225,7 @@ def eval_icp_first_frame(data_pred, data_gt, metric_dict):
     selected_index = 0
     v3d_o_ra = Vector3dVector(data_pred["v3d_ra.object"][selected_index].numpy())
     faces_o = Vector3iVector(faces.cpu().numpy())
-    if 0:
+    if debug:
         # Create a Trimesh mesh object
         vertices = data_pred["v3d_ra.object"][selected_index].cpu().numpy()  # Get vertices as numpy array
         faces = faces.cpu().numpy()  # Get faces as numpy array
