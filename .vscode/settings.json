@@ -1,0 +1,7 @@
+{
+  "files.exclude": {
+    "**/ho3d_v3": true,
+    "**/dataset_HO3D": true,
+    "**/dataset_ZED": true
+  }
+}
