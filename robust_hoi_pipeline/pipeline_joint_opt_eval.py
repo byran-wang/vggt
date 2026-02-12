@@ -11,6 +11,8 @@ sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
 import vggt.utils.eval_modules as eval_m
 import vggt.utils.gt as gt
+import torch
+import trimesh
 from robust_hoi_pipeline.frame_management import load_register_indices
 from robust_hoi_pipeline.pipeline_utils import load_sam3d_transform
 device = "cuda:0"
@@ -26,6 +28,27 @@ eval_fn_dict = {
     # "cd_f_right": eval_m.eval_cd_f_right,
 }
 
+
+def load_mesh_as_trimesh(mesh_path: Path):
+    """Load a mesh file and return a single Trimesh (supports scene-based GLB)."""
+    loaded = trimesh.load(str(mesh_path), process=False)
+    if isinstance(loaded, trimesh.Trimesh):
+        return loaded
+
+    if isinstance(loaded, trimesh.Scene):
+        meshes = []
+        for node_name in loaded.graph.nodes_geometry:
+            transform, geom_name = loaded.graph[node_name]
+            geom = loaded.geometry[geom_name].copy()
+            geom.apply_transform(transform)
+            meshes.append(geom)
+        if len(meshes) == 0:
+            return None
+        return trimesh.util.concatenate(meshes)
+
+    return None
+
+
 def parse_args():
     import argparse
 
@@ -35,6 +58,8 @@ def parse_args():
     parser.add_argument("--cond_index", type=int, required=True,help="Condition frame index")
     parser.add_argument("--out_dir", type=str, default="")
     parser.add_argument("--debug", default=False, action="store_true")
+    parser.add_argument("--mesh_type", type=str, default="sam3d",
+                        help="Type of mesh for evaluation: hy_omni or sam3d")
     
     args = parser.parse_args()
     from easydict import EasyDict
@@ -93,6 +118,57 @@ def main():
         "keyframe_count": int(np.array(image_info.get("keyframe", []), dtype=bool).sum()),
         "invalid_frames": int(invalid_flags.sum()),
     }
+    # Load HY omni mesh and compute per-frame vertices for ICP and CD evaluation
+    mesh_path = None
+    if args.mesh_type == "hy_omni":
+        mesh_path = results_dir.parent / "pipeline_HY_to_SAM3D" / "HY_omni_in_sam3d.obj"
+    elif args.mesh_type == "sam3d":
+        mesh_path = SAM3D_dir.parent / "SAM3D" / f"{args.cond_index:04d}" / "scene.glb"
+
+    if mesh_path is not None and mesh_path.exists():
+        hy_mesh = load_mesh_as_trimesh(mesh_path)
+        if hy_mesh is None:
+            print(f"Failed to load mesh geometry from {mesh_path}, skipping ICP and CD evaluation")
+            hy_mesh = None
+        
+    if mesh_path is not None and mesh_path.exists() and hy_mesh is not None:
+        hy_verts_sam3d = np.array(hy_mesh.vertices, dtype=np.float64)
+        hy_faces = np.array(hy_mesh.faces, dtype=np.int64)
+
+        # Build SAM3D → scaled-object-space transform
+        cond_local = list(frame_indices).index(args.cond_index)
+        c2o_cond_scaled = c2o[cond_local].copy()
+        c2o_cond_scaled[:3, 3] *= scale
+        sam3d_to_obj = c2o_cond_scaled @ sam3d_to_cond_cam  # (4, 4)
+
+        # Transform mesh vertices to scaled object space once
+        hy_verts_homo = np.hstack([hy_verts_sam3d, np.ones((len(hy_verts_sam3d), 1))])
+        hy_verts_obj = (sam3d_to_obj @ hy_verts_homo.T).T[:, :3]
+
+        # Compute per-frame camera-space vertices for each valid frame
+        v3d_ra_list = []
+        v3d_right_list = []
+        for i in range(len(valid_extrinsics)):
+            o2c_i = valid_extrinsics[i]
+            v_cam = (o2c_i[:3, :3] @ hy_verts_obj.T).T + o2c_i[:3, 3]
+
+            # Root-align at bounding-box centre
+            bbox_center = (v_cam.min(axis=0) + v_cam.max(axis=0)) / 2.0
+            v_cam_ra = (v_cam - bbox_center).astype(np.float32)
+
+            v3d_ra_list.append(torch.tensor(v_cam_ra))
+            v3d_right_list.append(torch.tensor(v_cam_ra))
+
+        data_pred["v3d_ra.object"] = v3d_ra_list
+        data_pred["v3d_right.object"] = v3d_right_list
+        data_pred["faces"] = {"object": torch.tensor(hy_faces)}
+        data_pred["out_dir"] = args.out_dir
+
+        eval_fn_dict["icp"] = eval_m.eval_icp_first_frame
+        eval_fn_dict["cd_f_right"] = eval_m.eval_cd_f_right
+        print(f"Loaded mesh ({len(hy_verts_sam3d)} verts) from {mesh_path.name}, enabled ICP and CD evaluation")
+    else:
+        print(f"Mesh not found or invalid at {mesh_path}, skipping ICP and CD evaluation")
 
     # Return registered & valid frame indices for GT data selection
     def get_image_fids():
