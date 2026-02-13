@@ -753,7 +753,16 @@ def _joint_optimize_keyframes(
     print(f"[joint_opt] Done. Refined {int(opt_mask.sum())} poses, "
           f"{int(finite_mask.sum())} 3D points.")
     
-
+def print_image_info_stats(image_info, invalid_cnt):
+    print(
+        f"total : {len(image_info['frame_indices'])}, "
+        f"registered: {np.array(image_info['registered']).sum()}, "
+        f"keyframes: {np.array(image_info['keyframe']).sum()}, "
+        f"invalid: {np.array(image_info['invalid']).sum()}"
+        f"(insuf_pixel: {invalid_cnt['insufficient_pixel']}, "
+        f"3d_3d_corr: {invalid_cnt['3d_3d_corr']}, "
+        f"reproj_err: {invalid_cnt['reproj_err']})"
+    )   
 
 def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, cond_idx: int,
                                neus_ckpt=None, neus_total_steps=0, sam3d_root_dir=None,
@@ -785,8 +794,14 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
     intrinsics = _stack_intrinsics(preprocessed_data["intrinsics"])
     depth_priors = preprocessed_data["depths"]
     points_3d_global = image_info["points_3d"].astype(np.float32)
+    invalid_cnt = {
+        "insufficient_pixel": 0,
+        "3d_3d_corr": 0,
+        "reproj_err": 0,
+    }
 
     image_info_work = {
+        "frame_indices": image_info["frame_indices"],
         "pred_tracks": image_info["tracks"],
         "track_mask": image_info["tracks_mask"],
         "points_3d": points_3d_global,
@@ -817,23 +832,35 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             min_inlier_per_frame=args.min_inlier_per_frame,
             min_depth_pixels=args.min_depth_pixels,
         ):
-            image_info_work["invalid"][next_frame_idx] = True
+            image_info_work["invalid"][next_frame_idx] = True     
+            print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to insufficient inliers/depth pixels")
+            invalid_cnt["insufficient_pixel"] += 1
+            print_image_info_stats(image_info_work, invalid_cnt)
             continue
 
         register_new_frame_by_PnP(image_info_work, next_frame_idx, args)
         mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh)
-        image_info_work["registered"][next_frame_idx] = True
+        
 
         if not _refine_frame_pose_3d(image_info_work, next_frame_idx, args):
             image_info_work["invalid"][next_frame_idx] = True
-            print(f"[register_remaining_frames] Pose refinement failed for frame {next_frame_idx}")
+            print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to 3D-3D correspondences refinement failure")
+            invalid_cnt["3d_3d_corr"] += 1
+            print_image_info_stats(image_info_work, invalid_cnt)
+            continue
         
         if check_reprojection_error(image_info_work, next_frame_idx, args):
             image_info_work["invalid"][next_frame_idx] = True
-            print(f"[register_remaining_frames] High reprojection error, marking frame {next_frame_idx} as invalid")
+            print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to large reprojection error")
+            invalid_cnt["reproj_err"] += 1
+            print_image_info_stats(image_info_work, invalid_cnt)
+            continue
 
 
-        if not image_info_work["invalid"][next_frame_idx]:
+        image_info_work["registered"][next_frame_idx] = True
+        print(f"Successfully registered frame {image_info['frame_indices'][next_frame_idx]}")
+
+        if 1:
             if check_key_frame(
                 image_info_work,
                 next_frame_idx,
@@ -906,13 +933,10 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         image_info["keyframe"] = image_info_work["keyframe"].tolist()
         image_info["c2o"] = np.linalg.inv(image_info_work["extrinsics"]).astype(np.float32)
         image_info["points_3d"] = image_info_work["points_3d"].astype(np.float32)
-        save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt")
 
-        print(
-            f"registered: {image_info_work['registered'].sum()}, "
-            f"keyframes: {image_info_work['keyframe'].sum()}, "
-            f"invalid: {image_info_work['invalid'].sum()}"
-        )        
+        save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt")
+        print_image_info_stats(image_info_work, invalid_cnt)
+
 
 def main(args):
     log_file = None

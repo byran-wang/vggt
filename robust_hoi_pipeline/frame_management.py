@@ -594,7 +594,7 @@ def _refine_frame_pose_3d(image_info, frame_idx, args):
     # RANSAC parameters
     ransac_iters = getattr(args, 'pose_ransac_iters', 1000)
     ransac_thresh = getattr(args, 'pose_ransac_thresh', 0.02)  # 2cm threshold in 3D
-    min_inliers = max(6, int(len(world_points) * 0.3))
+    min_inliers = max(6, int(len(world_points) * 0.2)) # at least 20% inliers
 
     best_R, best_t = None, None
     best_inlier_count = 0
