@@ -57,11 +57,13 @@ python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_po
 # python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_keyframe_optimization --seq_list $seq_list --rebuild #--vis
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_data_preprocess hoi_pipeline_get_corres --seq_list $seq_list --rebuild
 # python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_get_corres --seq_list $seq_list --rebuild
-python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_neus_init --seq_list $seq_list --rebuild
+
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_joint_opt --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_joint_opt --seq_list $seq_list --vis
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_joint_opt --seq_list $seq_list --eval
+python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_neus_init --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum --seq_list $seq_list
+
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_HY_gen --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_align_SAM3D_with_HY --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_3D_points_align_with_HY --seq_list $seq_list --rebuild
