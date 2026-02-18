@@ -49,6 +49,66 @@ def load_mesh_as_trimesh(mesh_path: Path):
     return None
 
 
+def build_mesh_object_predictions(
+    mesh_path: Path,
+    frame_indices: np.ndarray,
+    valid_extrinsics: np.ndarray,
+    c2o: np.ndarray,
+    scale: float,
+    sam3d_to_cond_cam: np.ndarray,
+    cond_index: int,
+):
+    """Load a mesh in SAM3D space and convert it to per-frame camera-space vertices."""
+    if not mesh_path.exists():
+        return None
+
+    mesh = load_mesh_as_trimesh(mesh_path)
+    if mesh is None:
+        print(f"Failed to load mesh geometry from {mesh_path}")
+        return None
+
+    if cond_index not in frame_indices.tolist():
+        print(f"Condition index {cond_index} not found in frame_indices, skip {mesh_path}")
+        return None
+
+    verts_sam3d = np.array(mesh.vertices, dtype=np.float64)
+    cond_local = frame_indices.tolist().index(cond_index)
+    c2o_cond_scaled = c2o[cond_local].copy()
+    c2o_cond_scaled[:3, 3] *= scale
+    sam3d_to_obj = c2o_cond_scaled @ sam3d_to_cond_cam  # (4, 4)
+
+    verts_homo = np.hstack([verts_sam3d, np.ones((len(verts_sam3d), 1), dtype=np.float64)])
+    verts_obj = (sam3d_to_obj @ verts_homo.T).T[:, :3]
+
+    v3d_right_list = []
+    for i in range(len(valid_extrinsics)):
+        o2c_i = valid_extrinsics[i]
+        v_cam = (o2c_i[:3, :3] @ verts_obj.T).T + o2c_i[:3, 3]
+        bbox_center = (v_cam.min(axis=0) + v_cam.max(axis=0)) / 2.0
+        v_cam_ra = (v_cam - bbox_center).astype(np.float32)
+        v3d_right_list.append(torch.tensor(v_cam_ra))
+
+    faces = np.array(mesh.faces, dtype=np.int64)
+    return {
+        "v3d_ra.object": v3d_right_list,
+        "v3d_right.object": v3d_right_list,
+        "faces": {"object": torch.tensor(faces)},
+    }
+
+
+def find_joint_opt_mesh_from_ckpt(joint_opt_ckpt: Path):
+    """Find an exported NeuS mesh near the fixed checkpoint path."""
+    if not joint_opt_ckpt.exists():
+        return None
+
+    save_dir = joint_opt_ckpt.parent.parent / "save"
+    if not save_dir.exists():
+        return None
+
+    mesh_candidates = sorted(save_dir.rglob("*.obj"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return mesh_candidates[0] if mesh_candidates else None
+
+
 def parse_args():
     import argparse
 
@@ -118,58 +178,6 @@ def main():
         "keyframe_count": int(np.array(image_info.get("keyframe", []), dtype=bool).sum()),
         "invalid_frames": int(invalid_flags.sum()),
     }
-    # Load HY omni mesh and compute per-frame vertices for ICP and CD evaluation
-    mesh_path = None
-    if args.mesh_type == "hy_omni":
-        mesh_path = results_dir.parent / "pipeline_HY_to_SAM3D" / "HY_omni_in_sam3d.obj"
-    elif args.mesh_type == "sam3d":
-        mesh_path = SAM3D_dir.parent / "SAM3D" / f"{args.cond_index:04d}" / "scene.glb"
-
-    if mesh_path is not None and mesh_path.exists():
-        hy_mesh = load_mesh_as_trimesh(mesh_path)
-        if hy_mesh is None:
-            print(f"Failed to load mesh geometry from {mesh_path}, skipping ICP and CD evaluation")
-            hy_mesh = None
-        
-    if mesh_path is not None and mesh_path.exists() and hy_mesh is not None:
-        hy_verts_sam3d = np.array(hy_mesh.vertices, dtype=np.float64)
-        hy_faces = np.array(hy_mesh.faces, dtype=np.int64)
-
-        # Build SAM3D → scaled-object-space transform
-        cond_local = list(frame_indices).index(args.cond_index)
-        c2o_cond_scaled = c2o[cond_local].copy()
-        c2o_cond_scaled[:3, 3] *= scale
-        sam3d_to_obj = c2o_cond_scaled @ sam3d_to_cond_cam  # (4, 4)
-
-        # Transform mesh vertices to scaled object space once
-        hy_verts_homo = np.hstack([hy_verts_sam3d, np.ones((len(hy_verts_sam3d), 1))])
-        hy_verts_obj = (sam3d_to_obj @ hy_verts_homo.T).T[:, :3]
-
-        # Compute per-frame camera-space vertices for each valid frame
-        v3d_ra_list = []
-        v3d_right_list = []
-        for i in range(len(valid_extrinsics)):
-            o2c_i = valid_extrinsics[i]
-            v_cam = (o2c_i[:3, :3] @ hy_verts_obj.T).T + o2c_i[:3, 3]
-
-            # Root-align at bounding-box centre
-            bbox_center = (v_cam.min(axis=0) + v_cam.max(axis=0)) / 2.0
-            v_cam_ra = (v_cam - bbox_center).astype(np.float32)
-
-            v3d_ra_list.append(torch.tensor(v_cam_ra))
-            v3d_right_list.append(torch.tensor(v_cam_ra))
-
-        data_pred["v3d_ra.object"] = v3d_ra_list
-        data_pred["v3d_right.object"] = v3d_right_list
-        data_pred["faces"] = {"object": torch.tensor(hy_faces)}
-        data_pred["out_dir"] = args.out_dir
-
-        eval_fn_dict["icp"] = eval_m.eval_icp_first_frame
-        eval_fn_dict["cd_f_right"] = eval_m.eval_cd_f_right
-        print(f"Loaded mesh ({len(hy_verts_sam3d)} verts) from {mesh_path.name}, enabled ICP and CD evaluation")
-    else:
-        print(f"Mesh not found or invalid at {mesh_path}, skipping ICP and CD evaluation")
-
     # Return registered & valid frame indices for GT data selection
     def get_image_fids():
         return valid_frame_indices.tolist()
@@ -194,6 +202,52 @@ def main():
     for eval_fn_name, eval_fn in pbar:
         pbar.set_description(f"Evaluating {eval_fn_name}")
         metric_dict = eval_fn(data_pred, data_gt, metric_dict)
+
+    # Optional Chamfer/F-score metrics from available meshes, with prefixed keys.
+    hy_omni_mesh = results_dir.parent / "pipeline_HY_to_SAM3D" / "HY_omni_in_sam3d.obj"
+    sam3d_mesh = SAM3D_dir.parent / "SAM3D" / f"{args.cond_index:04d}" / "scene.glb"
+    joint_opt_ckpt = (
+        results_dir.parent / "pipeline_neus_init" / "neus_training" / "joint_opt" / "ckpt" / "epoch=0-step=10000.ckpt"
+    )
+    joint_opt_mesh = find_joint_opt_mesh_from_ckpt(joint_opt_ckpt)
+
+    mesh_specs = [
+        ("sam3d", sam3d_mesh),
+        ("joint_opt", joint_opt_mesh),
+        ("hy_omni", hy_omni_mesh),
+    ]
+
+    for prefix, mesh_path in mesh_specs:
+        if mesh_path is None or not mesh_path.exists():
+            if prefix == "joint_opt" and joint_opt_ckpt.exists():
+                print(f"Joint-opt checkpoint exists at {joint_opt_ckpt}, but no exported mesh found under save/")
+            else:
+                print(f"[{prefix}] Mesh not found, skip Chamfer evaluation")
+            continue
+
+        pred_mesh_data = build_mesh_object_predictions(
+            mesh_path=mesh_path,
+            frame_indices=frame_indices,
+            valid_extrinsics=valid_extrinsics,
+            c2o=c2o,
+            scale=scale,
+            sam3d_to_cond_cam=sam3d_to_cond_cam,
+            cond_index=args.cond_index,
+        )
+        if pred_mesh_data is None:
+            print(f"[{prefix}] Failed to prepare predicted mesh vertices, skip Chamfer evaluation")
+            continue
+
+        pred_mesh_data["out_dir"] = args.out_dir
+        local_metric_dict = {}
+        try:
+            local_metric_dict = eval_m.eval_icp_first_frame(pred_mesh_data, data_gt, local_metric_dict)
+        except Exception as e:
+            print(f"[{prefix}] ICP evaluation failed ({e}), continue with Chamfer only")
+        local_metric_dict = eval_m.eval_cd_f_right(pred_mesh_data, data_gt, local_metric_dict)
+        for k, v in local_metric_dict.items():
+            metric_dict[f"{prefix}_{k}"] = v
+        print(f"[{prefix}] Added Chamfer metrics from {mesh_path}")
 
     # Dictionary to store mean values of metrics
     mean_metrics = {}
