@@ -32,19 +32,24 @@ for device in "${!device_sequences[@]}"; do
 
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
       --execute_list obj_process \
-      --process_list hoi_pipeline_neus_init hoi_pipeline_joint_opt \
+      --process_list hoi_pipeline_joint_opt \
       --seq_list $sequences --rebuild 
 
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
       --execute_list obj_process \
       --process_list hoi_pipeline_joint_opt \
       --seq_list $sequences --eval 
+
+    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+      --execute_list obj_process \
+      --process_list hoi_pipeline_neus_init \
+      --seq_list $sequences --rebuild       
     
     echo "Running fit_hand on CUDA device $device with sequences: $sequences"
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
       --execute_list obj_process \
       --process_list eval_sum \
-      --seq_list $sequences --rebuild --num_frames 300
+      --seq_list $sequences --rebuild
 
 
 
