@@ -1,5 +1,6 @@
 name: neus
 tag: ""
+trial_name: joint_opt # if empty, it auto-uses tag + @YYYYMMDD-HHMMS
 seed: 42
 
 dataset:
