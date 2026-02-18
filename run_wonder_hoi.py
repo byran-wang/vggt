@@ -1474,7 +1474,7 @@ class run_wonder_hoi:
     def hoi_pipeline_data_preprocess(self, scene_name, **kwargs):
         self.print_header(f"hoi pipeline data preprocess for {scene_name}")
         data_dir = f"{self.dataset_dir}/{scene_name}"
-        out_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_preprocess/"
+        out_dir = f"{self.dataset_dir}/{scene_name}/pipeline_preprocess/"
         frame_interval = self.seq_config['frame_interval']
         frame_number = self.seq_config['frame_number']
 
@@ -1494,8 +1494,8 @@ class run_wonder_hoi:
 
     def hoi_pipeline_get_corres(self, scene_name, **kwargs):
         self.print_header(f"hoi pipeline get correspondences for {scene_name}")
-        data_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_preprocess"
-        out_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_corres"
+        data_dir = f"{self.dataset_dir}/{scene_name}/pipeline_preprocess"
+        out_dir = f"{self.dataset_dir}/{scene_name}/pipeline_corres"
 
         if self.rebuild:
             cmd = f"rm -rf {out_dir}"

@@ -956,8 +956,8 @@ def main(args):
         cond_idx = args.cond_index
 
         SAM3D_dir = data_dir / "SAM3D_aligned_post_process"
-        data_preprocess_dir = out_dir / "pipeline_preprocess"
-        tracks_dir = out_dir / "pipeline_corres"
+        data_preprocess_dir = data_dir / "pipeline_preprocess"
+        tracks_dir = data_dir / "pipeline_corres"
 
         (
             frame_indices,

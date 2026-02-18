@@ -5,7 +5,7 @@ import numpy as np
 from pathlib import Path
 
 def search_metrics_files(parent_dir, metric_folder):
-    search_items = ["add_auc", "add_s_auc", "total_frames", "registered_frames", "keyframe_count", "invalid_frames", "hy_omni_cd_icp_no_scale", "hy_omni_cd_icp", "joint_opt_cd_icp_no_scale", "joint_opt_cd_icp", "sam3d_cd_icp_no_scale", "sam3d_cd_icp", ]
+    search_items = ["add_auc", "add_s_auc", "total_frames", "registered_frames", "keyframe_count", "invalid_frames", "sam3d_cd_icp_no_scale", "sam3d_cd_icp", "joint_opt_cd_icp_no_scale", "joint_opt_cd_icp", "hy_omni_cd_icp_no_scale", "hy_omni_cd_icp", ]
     results = {}
     
     for root, dirs, files in os.walk(parent_dir):

@@ -22,7 +22,7 @@ def main(args):
     cond_idx = args.cond_index
 
     SAM3D_dir = data_dir / "SAM3D_aligned_post_process"
-    data_preprocess_dir = out_dir.parent / "pipeline_preprocess"
+    data_preprocess_dir = data_dir / "pipeline_preprocess"
     joint_opt_dir = out_dir.parent / "pipeline_joint_opt"
 
     print("Loading latest image info from pipeline_joint_opt...")
