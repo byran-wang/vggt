@@ -90,8 +90,8 @@ def main(args):
         checkpoint_path=None,
         output_dir=out_dir / "neus_training",
         sam3d_root_dir=sam3d_root_dir,
-        robust_hoi_weight=1.0,
-        sam3d_weight=0.2,
+        robust_hoi_weight=0.3,
+        sam3d_weight=1.0,
     )
 
     # if neus_mesh:
