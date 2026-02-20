@@ -396,7 +396,7 @@ if __name__ == "__main__":
         "--elevation-range",
         type=float,
         nargs=2,
-        default=[-30, 75],
+        default=[-80, 80],
         help="Elevation range in degrees [min, max]",
     )
     parser.add_argument(
@@ -428,7 +428,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num-views",
         type=int,
-        default=100,
+        default=200,
         help="Number of views to render",
     )
 
