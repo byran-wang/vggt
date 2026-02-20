@@ -3,5 +3,8 @@
     "**/ho3d_v3": true,
     "**/dataset_HO3D": true,
     "**/dataset_ZED": true
-  }
+  },
+  "python-envs.defaultEnvManager": "ms-python.python:conda",
+  "python-envs.defaultPackageManager": "ms-python.python:conda",
+  "python-envs.pythonProjects": []
 }

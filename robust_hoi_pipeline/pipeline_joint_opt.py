@@ -832,7 +832,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             min_inlier_per_frame=args.min_inlier_per_frame,
             min_depth_pixels=args.min_depth_pixels,
         ):
-            image_info_work["invalid"][next_frame_idx] = True     
+            image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True     
             print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to insufficient inliers/depth pixels")
             invalid_cnt["insufficient_pixel"] += 1
             save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt")
@@ -844,7 +844,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         
 
         if not _refine_frame_pose_3d(image_info_work, next_frame_idx, args):
-            image_info_work["invalid"][next_frame_idx] = True
+            image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True     
             print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to 3D-3D correspondences refinement failure")
             invalid_cnt["3d_3d_corr"] += 1
             save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt")
@@ -852,7 +852,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             continue
         
         if check_reprojection_error(image_info_work, next_frame_idx, args):
-            image_info_work["invalid"][next_frame_idx] = True
+            image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True 
             print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to large reprojection error")
             invalid_cnt["reproj_err"] += 1
             save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt")
