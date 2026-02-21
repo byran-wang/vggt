@@ -14,7 +14,7 @@ import vggt.utils.gt as gt
 import torch
 import trimesh
 from robust_hoi_pipeline.frame_management import load_register_indices
-from robust_hoi_pipeline.pipeline_utils import load_sam3d_transform
+from robust_hoi_pipeline.pipeline_utils import load_sam3d_transform, load_preprocessed_frame
 device = "cuda:0"
 
 eval_fn_dict = {
@@ -128,82 +128,84 @@ def parse_args():
     return args
 
 
-def main():
-    from tqdm import tqdm
-    args = parse_args()
-    import vggt.utils.ours as ours
+def visualize_in_rerun(extrinsics, frame_indices, valid_flags, SAM3D_dir, cond_index, scale):
+    """Visualize object-to-camera extrinsics and SAM3D mesh in rerun.
 
-    # Load image info from the last register step determined by register_order.txt
-    results_dir = Path(args.result_folder)
-    register_indices = load_register_indices(results_dir)
-    last_register_idx = register_indices[-1]
-    image_info = np.load(
-        results_dir / f"{last_register_idx:04d}" / "image_info.npy",
-        allow_pickle=True,
-    ).item()
+    Args:
+        extrinsics: (N, 4, 4) object-to-camera matrices
+        frame_indices: (N,) frame index array
+        valid_flags: (N,) boolean mask for valid frames
+        SAM3D_dir: Path to SAM3D_aligned_post_process directory
+        cond_index: Condition frame index
+        scale: SAM3D-to-metric scale factor
+    """
+    import rerun as rr
+    rr.init("pipeline_joint_opt_eval", spawn=True)
+    rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_UP, static=True)
 
-    
-    SAM3D_dir = Path(args.SAM3D_dir)
-    sam3d_transform = load_sam3d_transform(SAM3D_dir, args.cond_index)
-    sam3d_to_cond_cam = sam3d_transform['sam3d_to_cond_cam']
-    scale = sam3d_transform['scale']
+    # Load and log SAM3D mesh
+    mesh_path = SAM3D_dir / f"{cond_index:04d}" / "mesh.obj"
+    if mesh_path.exists():
+        sam3d_mesh = trimesh.load(str(mesh_path), force='mesh')
+        verts = np.array(sam3d_mesh.vertices, dtype=np.float32) * scale
+        faces = np.array(sam3d_mesh.faces, dtype=np.uint32)
+        vertex_colors = None
+        if sam3d_mesh.visual is not None and hasattr(sam3d_mesh.visual, 'vertex_colors'):
+            vertex_colors = np.array(sam3d_mesh.visual.vertex_colors)[:, :3]
+        rr.log(
+            "world/sam3d_mesh",
+            rr.Mesh3D(
+                vertex_positions=verts,
+                triangle_indices=faces,
+                vertex_colors=vertex_colors,
+            ),
+            static=True,
+        )
 
-    # Reconstruct data_pred from image info
-    frame_indices = np.array(image_info["frame_indices"])
-    register_flags = np.array(image_info["register"], dtype=bool)
-    invalid_flags = np.array(image_info["invalid"], dtype=bool)
-    valid_flags = register_flags & ~invalid_flags
-    c2o = np.array(image_info["c2o"])  # (N, 4, 4) camera-to-object (SAM3D scaled)
-    extrinsics = c2o.copy()
-    extrinsics[:, :3, 3] *= scale
-    extrinsics = np.linalg.inv(extrinsics) # object-to-camera
-    # Transform from SAM3D object space to scene space (condition camera frame)
-    # R_s2c = sam3d_to_cond_cam[:3, :3]  # (3, 3)
-    # t_s2c = sam3d_to_cond_cam[:3, 3]   # (3,)
-    # extrinsics = np.tile(np.eye(4, dtype=c2o.dtype), (len(c2o), 1, 1))
-    # extrinsics[:, :3, 3] = (R_s2c @ c2o[:, :3, 3, None]).squeeze(-1) + t_s2c
-    # extrinsics[:, :3, :3] = (R_s2c / scale) @ c2o[:, :3, :3]
+    # Log camera poses from extrinsics (object-to-camera), intrinsic and image
+    data_preprocess_dir = SAM3D_dir.parent / "pipeline_preprocess"
+    for i, fid in enumerate(frame_indices):
+        if not valid_flags[i]:
+            continue
+        c2o_i = np.linalg.inv(extrinsics[i]).astype(np.float32)
+        entity = f"world/cameras/{fid:04d}"
+        rr.log(entity, rr.Transform3D(translation=c2o_i[:3, 3], mat3x3=c2o_i[:3, :3]))
 
-    valid_extrinsics = extrinsics[valid_flags]
-    valid_frame_indices = frame_indices[valid_flags]
-
-    seq_name = results_dir.parent.name
-
-    data_pred = {
-        "extrinsics": valid_extrinsics,
-        "is_valid": np.ones(len(valid_frame_indices), dtype=np.float32),
-        "full_seq_name": seq_name,
-        "total_frames": len(frame_indices),
-        "registered_frames": int(register_flags.sum()),
-        "keyframe_count": int(np.array(image_info.get("keyframe", []), dtype=bool).sum()),
-        "invalid_frames": int(invalid_flags.sum()),
-    }
-    # Return registered & valid frame indices for GT data selection
-    def get_image_fids():
-        return valid_frame_indices.tolist()
-
-    data_gt = gt.load_data(seq_name, get_image_fids)        
-    
-    
-    out_p = args.out_dir
-    os.makedirs(out_p, exist_ok=True)
+        preprocess_data = load_preprocessed_frame(data_preprocess_dir, fid)
+        K = preprocess_data.get("intrinsics")
+        img = preprocess_data.get("image")
+        if K is not None and img is not None:
+            H, W = img.shape[:2]
+            rr.log(
+                f"{entity}/camera",
+                rr.Pinhole(
+                    resolution=[W, H],
+                    focal_length=[float(K[0, 0]), float(K[1, 1])],
+                    principal_point=[float(K[0, 2]), float(K[1, 2])],
+                    image_plane_distance=0.02,
+                ),
+            )
+            rr.log(f"{entity}/camera", rr.Image(img))
 
 
-    print("------------------")
-    print("Involving the following eval_fn:")
-    for eval_fn_name in eval_fn_dict.keys():
-        print(eval_fn_name)
-    print("------------------")
+def eval_mesh_chamfer(
+    metric_dict, data_gt, results_dir, SAM3D_dir, args,
+    frame_indices, valid_extrinsics, c2o, scale, sam3d_to_cond_cam,
+):
+    """Evaluate Chamfer/F-score metrics for available meshes.
 
-    # Initialize the metrics dictionaries
-    metric_dict = {}
-    # Evaluate each metric using the corresponding function
-    pbar = tqdm(eval_fn_dict.items())
-    for eval_fn_name, eval_fn in pbar:
-        pbar.set_description(f"Evaluating {eval_fn_name}")
-        metric_dict = eval_fn(data_pred, data_gt, metric_dict)
-
-    # Optional Chamfer/F-score metrics from available meshes, with prefixed keys.
+    Args:
+        metric_dict: Dictionary to update with prefixed Chamfer metrics (modified in-place)
+        data_gt: Ground truth data dictionary
+        results_dir: Path to pipeline_joint_opt results directory
+        SAM3D_dir: Path to SAM3D_aligned_post_process directory
+        args: Parsed arguments (needs cond_index, out_dir)
+        frame_indices: (N,) frame index array
+        valid_extrinsics: (M, 4, 4) object-to-camera matrices for valid frames
+        c2o: (N, 4, 4) camera-to-object matrices
+        scale: SAM3D-to-metric scale factor
+        sam3d_to_cond_cam: (4, 4) SAM3D-to-condition-camera transform
+    """
     hy_omni_mesh = results_dir.parent / "pipeline_HY_to_SAM3D" / "HY_omni_in_sam3d.obj"
     sam3d_mesh = SAM3D_dir.parent / "SAM3D" / f"{args.cond_index:04d}" / "scene.glb"
     joint_opt_ckpt = (
@@ -248,6 +250,84 @@ def main():
         for k, v in local_metric_dict.items():
             metric_dict[f"{prefix}_{k}"] = v
         print(f"[{prefix}] Added Chamfer metrics from {mesh_path}")
+
+
+def main():
+    from tqdm import tqdm
+    args = parse_args()
+    import vggt.utils.ours as ours
+
+    # Load image info from the last register step determined by register_order.txt
+    results_dir = Path(args.result_folder)
+    register_indices = load_register_indices(results_dir)
+    last_register_idx = register_indices[-1]
+    image_info = np.load(
+        results_dir / f"{last_register_idx:04d}" / "image_info.npy",
+        allow_pickle=True,
+    ).item()
+
+    
+    SAM3D_dir = Path(args.SAM3D_dir)
+    sam3d_transform = load_sam3d_transform(SAM3D_dir, args.cond_index)
+    sam3d_to_cond_cam = sam3d_transform['sam3d_to_cond_cam']
+    scale = sam3d_transform['scale']
+
+    # Reconstruct data_pred from image info
+    frame_indices = np.array(image_info["frame_indices"])
+    register_flags = np.array(image_info["register"], dtype=bool)
+    invalid_flags = np.array(image_info["invalid"], dtype=bool)
+    valid_flags = register_flags & ~invalid_flags
+    c2o = np.array(image_info["c2o"])  # (N, 4, 4) camera-to-object (SAM3D scaled)
+    extrinsics = c2o.copy()
+    extrinsics[:, :3, 3] *= scale
+    extrinsics = np.linalg.inv(extrinsics) # object-to-camera
+
+    # visualize_in_rerun(extrinsics, frame_indices, valid_flags, SAM3D_dir, args.cond_index, scale)
+
+    valid_extrinsics = extrinsics[valid_flags]
+    valid_frame_indices = frame_indices[valid_flags]
+
+    seq_name = results_dir.parent.name
+
+    data_pred = {
+        "extrinsics": valid_extrinsics,
+        "is_valid": np.ones(len(valid_frame_indices), dtype=np.float32),
+        "full_seq_name": seq_name,
+        "total_frames": len(frame_indices),
+        "registered_frames": int(register_flags.sum()),
+        "keyframe_count": int(np.array(image_info.get("keyframe", []), dtype=bool).sum()),
+        "invalid_frames": int(invalid_flags.sum()),
+    }
+    # Return registered & valid frame indices for GT data selection
+    def get_image_fids():
+        return valid_frame_indices.tolist()
+
+    data_gt = gt.load_data(seq_name, get_image_fids)        
+    
+    
+    out_p = args.out_dir
+    os.makedirs(out_p, exist_ok=True)
+
+
+    print("------------------")
+    print("Involving the following eval_fn:")
+    for eval_fn_name in eval_fn_dict.keys():
+        print(eval_fn_name)
+    print("------------------")
+
+    # Initialize the metrics dictionaries
+    metric_dict = {}
+    # Evaluate each metric using the corresponding function
+    pbar = tqdm(eval_fn_dict.items())
+    for eval_fn_name, eval_fn in pbar:
+        pbar.set_description(f"Evaluating {eval_fn_name}")
+        metric_dict = eval_fn(data_pred, data_gt, metric_dict)
+
+    # Optional Chamfer/F-score metrics from available meshes, with prefixed keys.
+    eval_mesh_chamfer(
+        metric_dict, data_gt, results_dir, SAM3D_dir, args,
+        frame_indices, valid_extrinsics, c2o, scale, sam3d_to_cond_cam,
+    )
 
     # Dictionary to store mean values of metrics
     mean_metrics = {}
