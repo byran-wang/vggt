@@ -413,7 +413,7 @@ def _build_default_joint_opt_args(output_dir: Path, cond_index: int) -> SimpleNa
         min_inlier_per_frame=50,
         min_inlier_per_track=4,
         min_depth_pixels=500,
-        min_track_number=4,
+        min_track_number=3,
         kf_rot_thresh=5.0,
         kf_trans_thresh=0.02,
         kf_depth_thresh=500,
@@ -491,7 +491,7 @@ def _joint_optimize_keyframes(
     num_iters=30, lr_pose=5e-4, lr_points=1e-4,
     lambda_reproj=1.0, lambda_p2plane=10000., lambda_depth=300.,
     max_depth_pts=2000,
-    min_track_number=4, cauchy_c=3.0, depth_huber_delta=0.01,
+    min_track_number=None, cauchy_c=3.0, depth_huber_delta=0.01,
 ):
     """Jointly refine keyframe poses and 3D track points.
 

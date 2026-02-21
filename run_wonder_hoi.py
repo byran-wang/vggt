@@ -1652,7 +1652,6 @@ class run_wonder_hoi:
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_3D_points_align_with_HY.py "
         cmd += f"--data_dir {data_dir} "
         cmd += f"--output_dir {out_dir} "
-        cmd += f"--min_track_num 4 "
         print(cmd)
         os.system(cmd)
 

@@ -69,7 +69,7 @@ if __name__ == "__main__":
                         help="Input data directory (e.g., HO3D_v3/train/GSF13)")
     parser.add_argument("--output_dir", type=str, required=True,
                         help="Output directory for results")
-    parser.add_argument("--min_track_num", type=int, default=4,
+    parser.add_argument("--min_track_num", type=int, default=3,
                         help="Minimum number of keyframe observations for a 3D point to be valid")
     args = parser.parse_args()
     main(args)
