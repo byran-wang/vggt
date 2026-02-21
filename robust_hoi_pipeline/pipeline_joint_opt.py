@@ -367,17 +367,22 @@ def save_reproj_errors(image_info: Dict, register_idx: int, image: np.ndarray, r
     print(f"Saved reproj error image to {img_path}")
 
 
-def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir: Path
+def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir: Path, only_save_register_order=False
 ) -> None:
     """Save image info for joint optimization outputs."""
     results_dir = results_dir / f"{register_idx:04d}"
     results_dir.mkdir(parents=True, exist_ok=True)
+
+    if only_save_register_order:
+        from robust_hoi_pipeline.frame_management import save_register_order
+        save_register_order(results_dir / "../" , register_idx)
+        return
+    
     info_path = results_dir / "image_info.npy"
     np.save(info_path, image_info)
     print(f"Saved image info to {results_dir}")
 
-    from robust_hoi_pipeline.frame_management import save_register_order
-    save_register_order(results_dir / "../" , register_idx)
+
 
     #Load the image from preprocessed data for the registered frame
     frame_indices = image_info.get("frame_indices", [])
@@ -835,7 +840,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True     
             print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to insufficient inliers/depth pixels")
             invalid_cnt["insufficient_pixel"] += 1
-            save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt")
+            save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=True)
             print_image_info_stats(image_info_work, invalid_cnt)
             continue
 
@@ -847,7 +852,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True     
             print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to 3D-3D correspondences refinement failure")
             invalid_cnt["3d_3d_corr"] += 1
-            save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt")
+            save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=True)
             print_image_info_stats(image_info_work, invalid_cnt)
             continue
         
@@ -855,7 +860,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True 
             print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to large reprojection error")
             invalid_cnt["reproj_err"] += 1
-            save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt")
+            save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=True)
             print_image_info_stats(image_info_work, invalid_cnt)
             continue
 
@@ -936,9 +941,10 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         image_info["keyframe"] = image_info_work["keyframe"].tolist()
         image_info["c2o"] = np.linalg.inv(image_info_work["extrinsics"]).astype(np.float32)
         image_info["points_3d"] = image_info_work["points_3d"].astype(np.float32)
-
-        save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt")
         print_image_info_stats(image_info_work, invalid_cnt)
+        save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=True)
+
+    save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt")
 
 
 def main(args):
