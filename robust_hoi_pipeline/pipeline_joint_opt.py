@@ -371,13 +371,13 @@ def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir:
 ) -> None:
     """Save image info for joint optimization outputs."""
     results_dir = results_dir / f"{register_idx:04d}"
-    results_dir.mkdir(parents=True, exist_ok=True)
 
     if only_save_register_order:
         from robust_hoi_pipeline.frame_management import save_register_order
         save_register_order(results_dir / "../" , register_idx)
         return
     
+    results_dir.mkdir(parents=True, exist_ok=True)
     info_path = results_dir / "image_info.npy"
     np.save(info_path, image_info)
     print(f"Saved image info to {results_dir}")
