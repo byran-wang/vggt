@@ -120,6 +120,8 @@ def parse_args():
     parser.add_argument("--debug", default=False, action="store_true")
     parser.add_argument("--mesh_type", type=str, default="sam3d",
                         help="Type of mesh for evaluation: hy_omni or sam3d")
+    parser.add_argument("--eval_mesh_chamfer", action="store_true", default=False,
+                         help="Whether to evaluate Chamfer/F-score metrics for available meshes")
     
     args = parser.parse_args()
     from easydict import EasyDict
@@ -324,10 +326,11 @@ def main():
         metric_dict = eval_fn(data_pred, data_gt, metric_dict)
 
     # Optional Chamfer/F-score metrics from available meshes, with prefixed keys.
-    eval_mesh_chamfer(
-        metric_dict, data_gt, results_dir, SAM3D_dir, args,
-        frame_indices, valid_extrinsics, c2o, scale, sam3d_to_cond_cam,
-    )
+    if args.eval_mesh_chamfer:
+        eval_mesh_chamfer(
+            metric_dict, data_gt, results_dir, SAM3D_dir, args,
+            frame_indices, valid_extrinsics, c2o, scale, sam3d_to_cond_cam,
+        )
 
     # Dictionary to store mean values of metrics
     mean_metrics = {}
