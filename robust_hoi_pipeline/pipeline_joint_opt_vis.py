@@ -180,6 +180,7 @@ def visualize_frame(
     scale: float = 1.0,
     track_vis_count: Optional[np.ndarray] = None,
     min_track_number: int = 4,
+    align_pred_to_gt: Optional[np.ndarray] = None,
 ):
 
     frame_entity = "world/current_frame"
@@ -224,6 +225,8 @@ def visualize_frame(
         print(f"Frame {frame_idx}: {valid_3d_mask.sum()} valid 3D points out of {len(points_3d)}")
         if valid_3d_mask.any():
             valid_points_3d = points_3d[valid_3d_mask]
+            if align_pred_to_gt is not None:
+                valid_points_3d = (align_pred_to_gt[:3, :3] @ valid_points_3d.T).T + align_pred_to_gt[:3, 3]
             # Color by track visibility count: green = well-observed, red = poorly-observed
             colors_3d = np.zeros((len(valid_points_3d), 3))
             if track_vis_count is not None:
@@ -471,6 +474,7 @@ def main(args):
             scale=scale,
             track_vis_count=track_vis_count,
             min_track_number=args.min_track_number,
+            align_pred_to_gt=align_pred_to_gt,
         )
 
         # Visualize all camera poses
