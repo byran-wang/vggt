@@ -1,8 +1,11 @@
 #!/bin/bash
 
 # Declare an associative array mapping CUDA devices to their respective sequence lists
-
 export RUN_ON_SERVER=true
+# nerf acc need to export the cuda path
+export PATH="/usr/local/cuda-11.8:/usr/local/cuda-11.8/bin/:$PATH"
+export CUDA_PATH='/usr/local/cuda-11.8'
+export LD_LIBRARY_PATH="/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH"
 
 declare -A device_sequences=(
   [0]="BB12 BB13"
@@ -24,6 +27,11 @@ for device in "${!device_sequences[@]}"; do
   sequences=${device_sequences[$device]}
   
   (
+
+    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    #   --execute_list obj_process \
+    #   --process_list ho3d_SAM3D_post_process \
+    #   --seq_list $sequences --rebuild 
 
     # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
     #   --execute_list obj_process \
