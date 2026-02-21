@@ -58,7 +58,7 @@ def load_register_indices(output_dir):
         return [int(line.strip()) for line in f if line.strip()]
 
 
-def find_next_frame(image_info):
+def find_next_frame(image_info, find_mode="sequential"):
     """Select next unregistered frame that shares the most tracks with registered frames.
 
     Args:
@@ -67,38 +67,59 @@ def find_next_frame(image_info):
     Returns:
         Index of next frame to process, or None if all processed
     """
-    track_mask = image_info.get("track_mask")
-    registered = image_info.get("registered")
-    invalid = image_info.get("invalid")
-    if track_mask is None or registered is None or invalid is None:
-        return None
+    if find_mode == "most_tracks":
+        track_mask = image_info.get("track_mask")
+        registered = image_info.get("registered")
+        invalid = image_info.get("invalid")
+        if track_mask is None or registered is None or invalid is None:
+            return None
 
-    track_mask = np.asarray(track_mask)
-    registered = np.asarray(registered)
-    invalid = np.asarray(invalid)
+        track_mask = np.asarray(track_mask)
+        registered = np.asarray(registered)
+        invalid = np.asarray(invalid)
 
-    if registered.ndim != 1:
-        registered = registered.reshape(-1)
-    if invalid.ndim != 1:
-        invalid = invalid.reshape(-1)
+        if registered.ndim != 1:
+            registered = registered.reshape(-1)
+        if invalid.ndim != 1:
+            invalid = invalid.reshape(-1)
 
-    num_frames = track_mask.shape[0]
-    registered_mask = registered & (~invalid)
-    if not np.any(registered_mask):
-        return None
+        num_frames = track_mask.shape[0]
+        registered_mask = registered & (~invalid)
+        if not np.any(registered_mask):
+            return None
 
-    # tracks visible in any registered frame
-    vis_in_registered = track_mask[registered_mask].any(axis=0)
+        # tracks visible in any registered frame
+        vis_in_registered = track_mask[registered_mask].any(axis=0)
 
-    best_idx = None
-    best_count = -1
-    for idx in range(num_frames):
-        if registered[idx] or invalid[idx]:
-            continue
-        count = np.count_nonzero(track_mask[idx] & vis_in_registered)
-        if count > best_count:
-            best_count = count
-            best_idx = idx
+        best_idx = None
+        best_count = -1
+        for idx in range(num_frames):
+            if registered[idx] or invalid[idx]:
+                continue
+            count = np.count_nonzero(track_mask[idx] & vis_in_registered)
+            if count > best_count:
+                best_count = count
+                best_idx = idx
+    elif find_mode == "sequential":
+        registered = image_info.get("registered")
+        invalid = image_info.get("invalid")
+        if registered is None or invalid is None:
+            return None
+
+        registered = np.asarray(registered).reshape(-1)
+        invalid = np.asarray(invalid).reshape(-1)
+        num_frames = len(registered)
+
+        # Start searching from the frame after the last registered one
+        registered_indices = np.where(registered)[0]
+        start = (int(registered_indices[-1]) + 1) if len(registered_indices) > 0 else 0
+
+        for offset in range(num_frames):
+            idx = (start + offset) % num_frames
+            if not registered[idx] and not invalid[idx]:
+                best_idx = idx
+                break
+
     return best_idx
 
 
