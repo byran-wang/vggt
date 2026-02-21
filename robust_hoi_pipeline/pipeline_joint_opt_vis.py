@@ -438,6 +438,9 @@ def main(args):
     for i, frame_idx in enumerate(frame_indices):
         # Load image info (from joint opt)
         image_info_all = load_image_info(results_dir / f"{frame_idx:04d}")
+        if image_info_all is None:
+            print(f"Failed to load image info for frame {frame_idx}")
+            continue
         image_info_all["c2o"][:, :3, 3] *= scale
         if align_pred_to_gt is not None:
             image_info_all["c2o"] = (align_pred_to_gt @ image_info_all["c2o"]).astype(np.float32)
