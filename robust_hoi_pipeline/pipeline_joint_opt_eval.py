@@ -122,6 +122,8 @@ def parse_args():
                         help="Type of mesh for evaluation: hy_omni or sam3d")
     parser.add_argument("--eval_mesh_chamfer", action="store_true", default=False,
                          help="Whether to evaluate Chamfer/F-score metrics for available meshes")
+    parser.add_argument("--vis_gt_pred", action="store_true", default=False,
+                         help="Whether to visualize GT and predicted poses with rotated 3D points in rerun")
     
     args = parser.parse_args()
     from easydict import EasyDict
@@ -507,9 +509,10 @@ def main():
     )
 
     data_pred["extrinsics"] = aligned_pred_extrinsics
-    visualize_gt_and_pred_in_rerun(
-        data_gt, aligned_pred_extrinsics, data_pred["valid_frame_indices"], SAM3D_dir,
-    )
+    if args.vis_gt_pred:
+        visualize_gt_and_pred_in_rerun(
+            data_gt, aligned_pred_extrinsics, data_pred["valid_frame_indices"], SAM3D_dir,
+        )
     
 
     out_p = args.out_dir
