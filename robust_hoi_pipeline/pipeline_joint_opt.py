@@ -425,6 +425,7 @@ def _build_default_joint_opt_args(output_dir: Path, cond_index: int) -> SimpleNa
         pnp_reproj_thresh=5.0,
         joint_opt_reproj_thresh=4.0,
         no_optimize_with_point_to_plane=False,
+        only_save_register_order=False,
     )
 
 
@@ -1070,8 +1071,6 @@ if __name__ == "__main__":
                         help="Number of NeuS training steps used in pipeline_neus_init.py (for resuming)")
     parser.add_argument("--no_optimize_with_point_to_plane", action="store_true", default=True,
                         help="Disable point-to-plane loss and skip NeuS mesh loading")
-    parser.add_argument("--only_save_register_order", action="store_true", default=True,
-                        help="Only save the register order without saving full results (for debugging)")
 
     args = parser.parse_args()
     main(args)
