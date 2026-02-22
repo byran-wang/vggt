@@ -290,10 +290,11 @@ def align_pred_to_gt(valid_extrinsics, gt_o2c, valid_frame_indices,
 
 
 def visualize_gt_and_pred_in_rerun(data_gt, pred_extrinsics, frame_indices, SAM3D_dir):
-    """Visualize GT and predicted poses with rotated mesh in rerun.
+    """Visualize GT and predicted poses with rotated 3D points in rerun.
 
-    For each frame, transforms the GT canonical mesh by the o2c pose (object-to-camera)
-    and logs it alongside camera intrinsics and images for both GT and predicted poses.
+    For each frame, transforms the GT canonical mesh vertices by the o2c pose
+    (object-to-camera) and logs them as colored point clouds alongside camera
+    intrinsics and images for both GT and predicted poses.
 
     Args:
         data_gt: Ground truth data dict (from gt.load_data) with keys:
@@ -306,16 +307,10 @@ def visualize_gt_and_pred_in_rerun(data_gt, pred_extrinsics, frame_indices, SAM3
     rr.init("pipeline_joint_opt_eval", spawn=True)
     rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_UP, static=True)
 
-    # Load GT mesh canonical vertices and faces
+    # Load GT mesh canonical vertices
     gt_mesh_path = data_gt["mesh_name.object"]
     gt_mesh = trimesh.load(str(gt_mesh_path), force='mesh') if os.path.exists(gt_mesh_path) else None
     gt_verts_can = np.array(gt_mesh.vertices, dtype=np.float32) if gt_mesh is not None else None
-    gt_faces = np.array(gt_mesh.faces, dtype=np.uint32) if gt_mesh is not None else None
-    gt_vertex_colors = None
-    if gt_mesh is not None and gt_mesh.visual is not None and hasattr(gt_mesh.visual, 'vertex_colors'):
-        gt_vertex_colors = np.array(gt_mesh.visual.vertex_colors)[:, :3]
-    elif gt_mesh is not None:
-        gt_vertex_colors = np.array(gt_mesh.visual.to_color().vertex_colors)[:, :3]
 
     gt_o2c = data_gt["o2c"].numpy() if torch.is_tensor(data_gt["o2c"]) else np.array(data_gt["o2c"])
     gt_is_valid = data_gt["is_valid"].numpy() if torch.is_tensor(data_gt["is_valid"]) else np.array(data_gt["is_valid"])
@@ -329,16 +324,17 @@ def visualize_gt_and_pred_in_rerun(data_gt, pred_extrinsics, frame_indices, SAM3
         img = preprocess_data.get("image")
         K_pred = preprocess_data.get("intrinsics")
 
-        # Predicted: rotate mesh by predicted o2c and log camera with intrinsics/image
+        # Predicted: rotate vertices by predicted o2c, log as blue points
         pred_o2c = pred_extrinsics[i].astype(np.float32)
         if gt_verts_can is not None:
             pred_verts_cam = (pred_o2c[:3, :3] @ gt_verts_can.T).T + pred_o2c[:3, 3]
             rr.log(
-                "world/pred_mesh",
-                rr.Mesh3D(
-                    vertex_positions=pred_verts_cam.astype(np.float32),
-                    triangle_indices=gt_faces,
-                    vertex_colors=gt_vertex_colors,
+                "world/pred_points",
+                rr.Points3D(
+                    pred_verts_cam.astype(np.float32),
+                    colors=np.broadcast_to(
+                        np.array([[0, 0, 255]], dtype=np.uint8), (len(pred_verts_cam), 3)),
+                    radii=0.0003,
                 ),
             )
         pred_entity = "world/pred_camera"
@@ -357,17 +353,18 @@ def visualize_gt_and_pred_in_rerun(data_gt, pred_extrinsics, frame_indices, SAM3
             )
             rr.log(f"{pred_entity}/camera", rr.Image(img))
 
-        # GT: rotate mesh by GT o2c and log camera with intrinsics/image
+        # GT: rotate vertices by GT o2c, log as green points
         if i < len(gt_o2c) and bool(gt_is_valid[i]):
             gt_o2c_i = gt_o2c[i].astype(np.float32)
             if gt_verts_can is not None:
                 gt_verts_cam = (gt_o2c_i[:3, :3] @ gt_verts_can.T).T + gt_o2c_i[:3, 3]
                 rr.log(
-                    "world/gt_mesh",
-                    rr.Mesh3D(
-                        vertex_positions=gt_verts_cam.astype(np.float32),
-                        triangle_indices=gt_faces,
-                        vertex_colors=gt_vertex_colors,
+                    "world/gt_points",
+                    rr.Points3D(
+                        gt_verts_cam.astype(np.float32),
+                        colors=np.broadcast_to(
+                            np.array([[0, 255, 0]], dtype=np.uint8), (len(gt_verts_cam), 3)),
+                        radii=0.0003,
                     ),
                 )
             gt_entity = "world/gt_camera"
