@@ -842,7 +842,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             image_info["c2o"] = np.linalg.inv(image_info_work["extrinsics"]).astype(np.float32)     
             print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to insufficient inliers/depth pixels")
             invalid_cnt["insufficient_pixel"] += 1
-            save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=True)
+            save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
             print_image_info_stats(image_info_work, invalid_cnt)
             continue
 
@@ -854,7 +854,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         #     image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True     
         #     print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to 3D-3D correspondences refinement failure")
         #     invalid_cnt["3d_3d_corr"] += 1
-        #     save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=True)
+        #     save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
         #     print_image_info_stats(image_info_work, invalid_cnt)
         #     continue
         
@@ -863,7 +863,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             image_info["c2o"] = np.linalg.inv(image_info_work["extrinsics"]).astype(np.float32)
             print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to large reprojection error")
             invalid_cnt["reproj_err"] += 1
-            save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=True)
+            save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
             print_image_info_stats(image_info_work, invalid_cnt)
             continue
 
@@ -945,7 +945,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         image_info["c2o"] = np.linalg.inv(image_info_work["extrinsics"]).astype(np.float32)
         image_info["points_3d"] = image_info_work["points_3d"].astype(np.float32)
         print_image_info_stats(image_info_work, invalid_cnt)
-        save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=True)
+        save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
 
     save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt")
 
@@ -1067,6 +1067,8 @@ if __name__ == "__main__":
                         help="Number of NeuS training steps used in pipeline_neus_init.py (for resuming)")
     parser.add_argument("--no_optimize_with_point_to_plane", action="store_true", default=True,
                         help="Disable point-to-plane loss and skip NeuS mesh loading")
+    parser.add_argument("--only_save_register_order", action="store_true", default=True,
+                        help="Only save the register order without saving full results (for debugging)")
 
     args = parser.parse_args()
     main(args)
