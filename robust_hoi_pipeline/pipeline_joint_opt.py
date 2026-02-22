@@ -438,23 +438,29 @@ def _stack_intrinsics(intrinsics_list: List[np.ndarray]) -> np.ndarray:
     return np.stack(stacked, axis=0)
 
 
-def mask_track_for_outliers(image_info, frame_idx, reproj_thresh, candidate_mask=None):
+def mask_track_for_outliers(image_info, frame_idx, reproj_thresh, min_track_number=1):
     """Mask tracks whose reprojection error exceeds a threshold for a given frame.
 
     After a frame is registered via PnP, this reprojects 3D points onto the frame
     and sets track_mask to 0 for tracks with reprojection error > reproj_thresh.
+    Only tracks whose 3D points are tracked by at least min_track_number keyframes
+    are considered for masking.
 
     Args:
-        candidate_mask: Optional (M,) bool array. If provided, only tracks where
-            candidate_mask is True are considered for masking.
+        min_track_number: Minimum number of keyframes a track must be visible in
+            to be considered for outlier masking.
     """
     track_mask = image_info["track_mask"]
     pred_tracks = image_info["pred_tracks"]
     points_3d = image_info.get("points_3d")
 
     frame_mask = np.asarray(track_mask[frame_idx]).astype(bool)
-    if candidate_mask is not None:
-        frame_mask = frame_mask & candidate_mask
+    # Only consider tracks visible in >= min_track_number keyframes
+    kf_indices = np.where(np.asarray(image_info["keyframe"]).astype(bool))[0]
+    if len(kf_indices) > 0:
+        track_vis_count = np.asarray(track_mask)[kf_indices].astype(bool).sum(axis=0)
+        well_observed = track_vis_count >= min_track_number
+        frame_mask = frame_mask & well_observed
     if points_3d is None or not frame_mask.any():
         return
 
@@ -847,7 +853,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             continue
 
         register_new_frame_by_PnP(image_info_work, next_frame_idx, args)
-        mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh)
+        mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=args.min_track_number)
         
 
         # if not _refine_frame_pose_3d(image_info_work, next_frame_idx, args):
@@ -929,13 +935,10 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                     min_track_number=args.min_track_number,
                 )
                 # Mask tracks with reprojection error > joint_opt_reproj_thresh
-                # Only consider tracks visible in >= min_track_number keyframes
                 kf_indices_arr = np.where(image_info_work["keyframe"].astype(bool))[0]
-                track_vis_count = image_info_work["track_mask"][kf_indices_arr].astype(bool).sum(axis=0)
-                well_observed = track_vis_count >= args.min_track_number
                 for ki in kf_indices_arr:
                     mask_track_for_outliers(image_info_work, ki, args.joint_opt_reproj_thresh,
-                                           candidate_mask=well_observed)
+                                           min_track_number=args.min_track_number)
             except Exception as exc:
                 print(f"[register_remaining_frames] joint optimization failed: {exc}")
 
