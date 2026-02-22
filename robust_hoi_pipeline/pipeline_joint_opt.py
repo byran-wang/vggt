@@ -164,6 +164,8 @@ def prepare_joint_opt_inputs(
     tracks = track_data['tracks']
     vis_scores = track_data['vis_scores']
     tracks_mask = track_data['tracks_mask']
+    # Mask out tracks with low visibility scores
+    tracks_mask = tracks_mask & (vis_scores >= 0.5)
     print(f"Loaded tracks: {tracks.shape[0]} frames, {tracks.shape[1]} tracks")
 
     print("Loading SAM3D transformation...")
