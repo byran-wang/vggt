@@ -12,8 +12,8 @@ declare -A device_sequences=(
   [1]="ABF12 ABF14"
   [2]="GPMF12 GPMF14"
   [3]="MC1 MC4"
-  [4]="MDF12 MDF14 "
-  [5]="ShSu10 ShSu14 "
+  [4]="MDF12 MDF14"
+  [5]="ShSu10 ShSu14"
   [6]="SM2 SM4 GSF12"
   [7]="SMu1 SMu40 GSF13"     
 
@@ -27,6 +27,11 @@ for device in "${!device_sequences[@]}"; do
   sequences=${device_sequences[$device]}
   
   (
+    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    #   --execute_list obj_process \
+    #   --process_list ho3d_obj_SAM3D_gen ho3d_align_SAM3D_mask ho3d_align_SAM3D_pts \
+    #   --seq_list $sequences --rebuild 
+
 
     # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
     #   --execute_list obj_process \
@@ -37,6 +42,11 @@ for device in "${!device_sequences[@]}"; do
     #   --execute_list obj_process \
     #   --process_list hoi_pipeline_data_preprocess hoi_pipeline_get_corres \
     #   --seq_list $sequences --rebuild 
+
+    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    #   --execute_list obj_process \
+    #   --process_list hoi_pipeline_data_preprocess_sam3d_neus \
+    #   --seq_list $sequences --rebuild
 
 
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
