@@ -451,8 +451,7 @@ def main():
         return data_pred["valid_frame_indices"].tolist()
 
     data_gt = gt.load_data(seq_name, get_image_fids)
-    # breakpoint()
-    # # TODO: filter invalid frame in data_gt and also data_pred, valid_extrinsics
+    # TODO: filter invalid frame in data_gt and also apply to data_pred
 
     gt_o2c_all = data_gt["o2c"].numpy() if torch.is_tensor(data_gt["o2c"]) else np.array(data_gt["o2c"])
     aligned_pred_extrinsics = align_pred_to_gt(
