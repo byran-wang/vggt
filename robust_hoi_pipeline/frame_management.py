@@ -114,11 +114,17 @@ def find_next_frame(image_info, find_mode="sequential"):
         registered_indices = np.where(registered)[0]
         start = (int(registered_indices[-1]) + 1) if len(registered_indices) > 0 else 0
 
-        for offset in range(num_frames):
-            idx = (start + offset) % num_frames
+        # Search forward first
+        for idx in range(start, num_frames):
             if not registered[idx] and not invalid[idx]:
                 best_idx = idx
                 break
+        else:
+            # Forward hit the end, search backward from start
+            for idx in range(start - 1, -1, -1):
+                if not registered[idx] and not invalid[idx]:
+                    best_idx = idx
+                    break
 
     return best_idx
 
