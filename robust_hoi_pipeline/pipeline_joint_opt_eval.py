@@ -384,6 +384,51 @@ def visualize_gt_and_pred_in_rerun(data_gt, pred_extrinsics, frame_indices, SAM3
                 rr.log(f"{gt_entity}/camera", rr.Image(img))
 
 
+def filter_invalid_gt_frames(data_gt, data_pred):
+    """Remove GT-invalid frames from both data_gt and data_pred.
+
+    Filters all per-frame entries (those whose first dimension equals the
+    number of frames) in data_gt using its ``is_valid`` flag, and applies
+    the same mask to ``data_pred``.
+
+    Args:
+        data_gt: Ground truth xdict from gt.load_data
+        data_pred: Prediction dict with extrinsics, valid_frame_indices, is_valid
+
+    Returns:
+        Tuple of (data_gt, data_pred) with invalid frames removed.
+    """
+    gt_is_valid = data_gt["is_valid"]
+    if torch.is_tensor(gt_is_valid):
+        gt_valid_mask = gt_is_valid.bool().numpy()
+    else:
+        gt_valid_mask = np.asarray(gt_is_valid).astype(bool)
+
+    if gt_valid_mask.all():
+        return data_gt, data_pred
+
+    num_filtered = int((~gt_valid_mask).sum())
+    print(f"[filter] Removing {num_filtered} GT-invalid frames "
+          f"({gt_valid_mask.sum()}/{len(gt_valid_mask)} remain)")
+
+    # Filter per-frame entries in data_gt whose first dim matches the mask length
+    n = len(gt_valid_mask)
+    mask_tensor = torch.from_numpy(gt_valid_mask)
+    for k in list(data_gt.keys()):
+        v = data_gt[k]
+        if torch.is_tensor(v) and v.ndim >= 1 and v.shape[0] == n:
+            dict.__setitem__(data_gt, k, v[mask_tensor])
+        elif isinstance(v, np.ndarray) and v.ndim >= 1 and v.shape[0] == n:
+            dict.__setitem__(data_gt, k, v[gt_valid_mask])
+
+    # Filter data_pred to match
+    data_pred["extrinsics"] = data_pred["extrinsics"][gt_valid_mask]
+    data_pred["valid_frame_indices"] = data_pred["valid_frame_indices"][gt_valid_mask]
+    data_pred["is_valid"] = data_pred["is_valid"][gt_valid_mask]
+
+    return data_gt, data_pred
+
+
 def load_pred_data(results_dir, SAM3D_dir, cond_index):
     """Load image info and build prediction data dict with valid extrinsics.
 
@@ -451,7 +496,9 @@ def main():
         return data_pred["valid_frame_indices"].tolist()
 
     data_gt = gt.load_data(seq_name, get_image_fids)
-    # TODO: filter invalid frame in data_gt and also apply to data_pred
+
+    # Filter out frames that are invalid in GT from both data_gt and data_pred
+    data_gt, data_pred = filter_invalid_gt_frames(data_gt, data_pred)
 
     gt_o2c_all = data_gt["o2c"].numpy() if torch.is_tensor(data_gt["o2c"]) else np.array(data_gt["o2c"])
     aligned_pred_extrinsics = align_pred_to_gt(
