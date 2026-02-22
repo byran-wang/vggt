@@ -425,7 +425,7 @@ def _build_default_joint_opt_args(output_dir: Path, cond_index: int) -> SimpleNa
         pnp_reproj_thresh=5.0,
         joint_opt_reproj_thresh=4.0,
         no_optimize_with_point_to_plane=False,
-        only_save_register_order=False,
+        only_save_register_order=True,
     )
 
 
