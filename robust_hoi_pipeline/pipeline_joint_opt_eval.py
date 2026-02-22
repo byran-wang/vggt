@@ -254,6 +254,104 @@ def eval_mesh_chamfer(
         print(f"[{prefix}] Added Chamfer metrics from {mesh_path}")
 
 
+def visualize_gt_and_pred_in_rerun(data_gt, pred_extrinsics, frame_indices, SAM3D_dir):
+    """Visualize GT and predicted poses with rotated mesh in rerun.
+
+    For each frame, transforms the GT canonical mesh by the o2c pose (object-to-camera)
+    and logs it alongside camera intrinsics and images for both GT and predicted poses.
+
+    Args:
+        data_gt: Ground truth data dict (from gt.load_data) with keys:
+            mesh_name.object, o2c, K, is_valid
+        pred_extrinsics: (M, 4, 4) predicted object-to-camera matrices for valid frames
+        frame_indices: (M,) frame indices corresponding to pred_extrinsics
+        SAM3D_dir: Path to SAM3D_aligned_post_process directory
+    """
+    import rerun as rr
+    rr.init("pipeline_joint_opt_eval", spawn=True)
+    rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_UP, static=True)
+
+    # Load GT mesh canonical vertices and faces
+    gt_mesh_path = data_gt["mesh_name.object"]
+    gt_mesh = trimesh.load(str(gt_mesh_path), force='mesh') if os.path.exists(gt_mesh_path) else None
+    gt_verts_can = np.array(gt_mesh.vertices, dtype=np.float32) if gt_mesh is not None else None
+    gt_faces = np.array(gt_mesh.faces, dtype=np.uint32) if gt_mesh is not None else None
+    gt_vertex_colors = None
+    if gt_mesh is not None and gt_mesh.visual is not None and hasattr(gt_mesh.visual, 'vertex_colors'):
+        gt_vertex_colors = np.array(gt_mesh.visual.vertex_colors)[:, :3]
+    elif gt_mesh is not None:
+        gt_vertex_colors = np.array(gt_mesh.visual.to_color().vertex_colors)[:, :3]
+
+    gt_o2c = data_gt["o2c"].numpy() if torch.is_tensor(data_gt["o2c"]) else np.array(data_gt["o2c"])
+    gt_is_valid = data_gt["is_valid"].numpy() if torch.is_tensor(data_gt["is_valid"]) else np.array(data_gt["is_valid"])
+    gt_K = data_gt["K"].numpy() if torch.is_tensor(data_gt["K"]) else np.array(data_gt["K"])
+    data_preprocess_dir = SAM3D_dir.parent / "pipeline_preprocess"
+
+    for i, fid in enumerate(frame_indices):
+        rr.set_time_sequence("frame", i)
+
+        preprocess_data = load_preprocessed_frame(data_preprocess_dir, fid)
+        img = preprocess_data.get("image")
+        K_pred = preprocess_data.get("intrinsics")
+
+        # Predicted: rotate mesh by predicted o2c and log camera with intrinsics/image
+        pred_o2c = pred_extrinsics[i].astype(np.float32)
+        if gt_verts_can is not None:
+            pred_verts_cam = (pred_o2c[:3, :3] @ gt_verts_can.T).T + pred_o2c[:3, 3]
+            rr.log(
+                "world/pred_mesh",
+                rr.Mesh3D(
+                    vertex_positions=pred_verts_cam.astype(np.float32),
+                    triangle_indices=gt_faces,
+                    vertex_colors=gt_vertex_colors,
+                ),
+            )
+        pred_entity = "world/pred_camera"
+        rr.log(pred_entity, rr.Transform3D(
+            translation=np.zeros_like(pred_o2c[:3, 3]), mat3x3=np.eye(3)))
+        if img is not None and K_pred is not None:
+            H, W = img.shape[:2]
+            rr.log(
+                f"{pred_entity}/camera",
+                rr.Pinhole(
+                    resolution=[W, H],
+                    focal_length=[float(K_pred[0, 0]), float(K_pred[1, 1])],
+                    principal_point=[float(K_pred[0, 2]), float(K_pred[1, 2])],
+                    image_plane_distance=1.0,
+                ),
+            )
+            rr.log(f"{pred_entity}/camera", rr.Image(img))
+
+        # GT: rotate mesh by GT o2c and log camera with intrinsics/image
+        if i < len(gt_o2c) and bool(gt_is_valid[i]):
+            gt_o2c_i = gt_o2c[i].astype(np.float32)
+            if gt_verts_can is not None:
+                gt_verts_cam = (gt_o2c_i[:3, :3] @ gt_verts_can.T).T + gt_o2c_i[:3, 3]
+                rr.log(
+                    "world/gt_mesh",
+                    rr.Mesh3D(
+                        vertex_positions=gt_verts_cam.astype(np.float32),
+                        triangle_indices=gt_faces,
+                        vertex_colors=gt_vertex_colors,
+                    ),
+                )
+            gt_entity = "world/gt_camera"
+            rr.log(gt_entity, rr.Transform3D(
+                translation=np.zeros_like(gt_o2c_i[:3, 3]), mat3x3=np.eye(3)))
+            if img is not None:
+                H, W = img.shape[:2]
+                rr.log(
+                    f"{gt_entity}/camera",
+                    rr.Pinhole(
+                        resolution=[W, H],
+                        focal_length=[float(gt_K[0, 0]), float(gt_K[1, 1])],
+                        principal_point=[float(gt_K[0, 2]), float(gt_K[1, 2])],
+                        image_plane_distance=1.0,
+                    ),
+                )
+                rr.log(f"{gt_entity}/camera", rr.Image(img))
+
+
 def main():
     from tqdm import tqdm
     args = parse_args()
@@ -304,9 +402,12 @@ def main():
     def get_image_fids():
         return valid_frame_indices.tolist()
 
-    data_gt = gt.load_data(seq_name, get_image_fids)        
-    
-    
+    data_gt = gt.load_data(seq_name, get_image_fids)
+
+    visualize_gt_and_pred_in_rerun(
+        data_gt, valid_extrinsics, valid_frame_indices, SAM3D_dir,
+    )
+
     out_p = args.out_dir
     os.makedirs(out_p, exist_ok=True)
 
