@@ -58,7 +58,7 @@ def load_register_indices(output_dir):
         return [int(line.strip()) for line in f if line.strip()]
 
 
-def find_next_frame(image_info, find_mode="most_tracks"):
+def find_next_frame(image_info, find_mode="sequential"):
     """Select next unregistered frame that shares the most tracks with registered frames.
 
     Args:
