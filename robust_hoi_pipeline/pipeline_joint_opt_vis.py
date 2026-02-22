@@ -185,9 +185,26 @@ def visualize_frame(
 
     frame_entity = "world/current_frame"
 
-    # Log image
+    # Log image with colored border based on frame type
     if preprocess_data['image'] is not None:
-        rr.log(f"{frame_entity}/camera", rr.Image(preprocess_data['image']), static=False)
+        img = preprocess_data['image'].copy()
+        # Determine border color: green=keyframe, blue=register, gray=invalid
+        if image_info is not None:
+            border_width = 6
+            if image_info.get("is_keyframe", False):
+                color = (0, 255, 0)       # Green
+            elif image_info.get("is_invalid", False):
+                color = (160, 160, 160)    # Gray
+            elif image_info.get("is_register", False):
+                color = (0, 0, 255)        # Blue
+            else:
+                color = None
+            if color is not None:
+                img[:border_width, :] = color
+                img[-border_width:, :] = color
+                img[:, :border_width] = color
+                img[:, -border_width:] = color
+        rr.log(f"{frame_entity}/camera", rr.Image(img), static=False)
 
     # # Log object mask
     # if preprocess_data['mask_obj'] is not None:
@@ -455,10 +472,11 @@ def main(args):
         kf_flags = np.array(image_info_all.get("keyframe", [False] * len(image_info_all["frame_indices"])))
         kf_track_mask = np.array(image_info_all["tracks_mask"])[kf_flags].astype(bool)
         track_vis_count = kf_track_mask.sum(axis=0) if len(kf_track_mask) > 0 else np.zeros(len(image_info_all["points_3d"]))
-
         if args.vis_type == "registered_valid" and image_info.get("is_invalid", False):
+            print(f"Skipping invalid frame {frame_idx} in registered_valid mode")
             continue
         if args.vis_type == "keyframes" and image_info.get("is_invalid", False) and not image_info.get("is_keyframe", False):
+            print(f"Skipping non-keyframe {frame_idx} in keyframes mode")
             continue
 
         preprocess_data = load_preprocessed_frame(data_preprocess_dir, frame_idx)
@@ -504,7 +522,7 @@ if __name__ == "__main__":
                         help="Condition frame index")
     parser.add_argument("--max_frames", type=int, default=-1,
                         help="Maximum number of frames to visualize (-1 for all)")
-    parser.add_argument("--vis_type", type=str, default="keyframes", choices=["registered", "registered_valid", "keyframes"],
+    parser.add_argument("--vis_type", type=str, default="all", choices=["all", "registered_valid", "keyframes"],
                         help="Type of frames to visualize")
     parser.add_argument("--vis_gt", action="store_true", default=False,
                         help="Visualize ground truth mesh and camera poses")
