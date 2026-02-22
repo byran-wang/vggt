@@ -257,19 +257,12 @@ def check_reprojection_error(image_info, frame_idx, args, min_valid_points=150):
 
     # Get frame-specific data
     frame_track_mask = np.asarray(track_mask[frame_idx]).astype(bool)
-    valid_mask = frame_track_mask.copy()
+    finite_3d = np.isfinite(np.asarray(points_3d)).all(axis=-1)
+    valid_mask = frame_track_mask & finite_3d
 
-    # Filter by uncertainty threshold
-    unc_thresh = getattr(args, 'unc_thresh', 2.0)
-    if uncertainties is not None and 'points3d' in uncertainties:
-        pts_unc = uncertainties['points3d']
-        if pts_unc is not None:
-            pts_unc = np.asarray(pts_unc)
-            unc_valid = np.isfinite(pts_unc) & (pts_unc <= unc_thresh)
-            valid_mask = valid_mask & unc_valid
 
     num_valid = np.sum(valid_mask)
-    print(f"[check_reprjection_error] Frame {frame_idx}: {num_valid} valid points after uncertainty filtering")
+    print(f"[check_reprjection_error] Frame {frame_idx}: {num_valid} valid points for reprojection error check")
     if num_valid < min_valid_points:
         print(f"[check_reprjection_error] Frame {frame_idx}: insufficient valid points ({num_valid} < {min_valid_points}), skipping check")
         return True
@@ -559,7 +552,8 @@ def _refine_frame_pose_3d(image_info, frame_idx, args):
 
     # Filter points: must be visible in this frame
     frame_track_mask = np.asarray(track_mask[frame_idx]).astype(bool)
-    valid_mask = frame_track_mask.copy()
+    finite_3d = np.isfinite(np.asarray(points_3d)).all(axis=-1)
+    valid_mask = frame_track_mask & finite_3d
     if image_info["registered"].sum() >= args.min_track_number:
         # Also filter by uncertainty threshold
         unc_thresh = getattr(args, 'unc_thresh', 2.0)
