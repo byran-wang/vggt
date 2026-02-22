@@ -854,7 +854,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             continue
 
         register_new_frame_by_PnP(image_info_work, next_frame_idx, args)
-        mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=args.min_track_number)
+        mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
         
 
         # if not _refine_frame_pose_3d(image_info_work, next_frame_idx, args):
