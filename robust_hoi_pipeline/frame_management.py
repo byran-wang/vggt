@@ -229,7 +229,7 @@ def check_key_frame(image_info, frame_idx, rot_thresh, trans_thresh, depth_thres
     return True
 
 
-def check_reprojection_error(image_info, frame_idx, args):
+def check_reprojection_error(image_info, frame_idx, args, min_valid_points=150):
     """Check if frame has high reprojection error using low-uncertainty 3D points.
 
     Reprojects 3D points (filtered by uncertainty threshold) to the frame and
@@ -253,7 +253,7 @@ def check_reprojection_error(image_info, frame_idx, args):
 
     if points_3d is None or pred_tracks is None or track_mask is None:
         print(f"[check_reprjection_error] Missing required data, skipping check")
-        return False
+        return True
 
     # Get frame-specific data
     frame_track_mask = np.asarray(track_mask[frame_idx]).astype(bool)
@@ -269,9 +269,10 @@ def check_reprojection_error(image_info, frame_idx, args):
             valid_mask = valid_mask & unc_valid
 
     num_valid = np.sum(valid_mask)
-    if num_valid < 10:
-        print(f"[check_reprjection_error] Frame {frame_idx}: insufficient valid points ({num_valid} < 10), skipping check")
-        return False
+    print(f"[check_reprjection_error] Frame {frame_idx}: {num_valid} valid points after uncertainty filtering")
+    if num_valid < min_valid_points:
+        print(f"[check_reprjection_error] Frame {frame_idx}: insufficient valid points ({num_valid} < {min_valid_points}), skipping check")
+        return True
 
     # Get 3D points and 2D tracks for valid points
     pts_3d = np.asarray(points_3d)[valid_mask]
