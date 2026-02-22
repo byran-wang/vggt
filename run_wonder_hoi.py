@@ -97,6 +97,7 @@ class run_wonder_hoi:
                 "eval_sum": self.eval_sum,
                 "hoi_pipeline_neus_init": self.hoi_pipeline_neus_init,
                 "hoi_pipeline_data_preprocess": self.hoi_pipeline_data_preprocess,
+                "hoi_pipeline_data_preprocess_sam3d_neus": self.hoi_pipeline_data_preprocess_sam3d_neus,
                 "hoi_pipeline_get_corres": self.hoi_pipeline_get_corres,
                 "hoi_pipeline_align_SAM3D_with_HY": self.hoi_pipeline_align_SAM3D_with_HY,
                 "hoi_pipeline_3D_points_align_with_HY": self.hoi_pipeline_3D_points_align_with_HY,
@@ -1493,6 +1494,30 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
+    def hoi_pipeline_data_preprocess_sam3d_neus(self, scene_name, **kwargs):
+        self.print_header(f"hoi pipeline sam3d neus initialization for {scene_name}")
+        id = f"{self.seq_config['cond_idx']:04d}"
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+        result_dir = f"{vggt_code_dir}/output/{scene_name}/"
+        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_post_process/{id}/neus/"
+
+        if self.rebuild:
+            cmd = f"rm -rf {out_dir}"
+            print(cmd)
+            os.system(cmd)
+        
+        CONDA_PREFIX = f"{self.conda_dir}/envs/vggsfm_tmp"
+        cmd = f'''cd {vggt_code_dir} && export PATH={CONDA_PREFIX}/bin:$PATH && export CC={CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-gcc &&  export CXX={CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-g++ && '''
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_neus_init.py "
+        cmd += f"--data_dir {data_dir} "
+        cmd += f"--result_dir {result_dir} "
+        cmd += f"--output_dir {out_dir} "
+        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--robust_hoi_weight 0.0 " # set to 0.0 to disable robust hoi in neus initialization
+        cmd += f"--sam3d_weight 1.0 " # only run sam3d neus initialization without robust hoi
+        print(cmd)
+        os.system(cmd)
+
     def hoi_pipeline_get_corres(self, scene_name, **kwargs):
         self.print_header(f"hoi pipeline get correspondences for {scene_name}")
         data_dir = f"{self.dataset_dir}/{scene_name}/pipeline_preprocess"
@@ -1927,6 +1952,7 @@ if __name__ == "__main__":
                 "ho3d_inpaint",
                 "hoi_pipeline_neus_init",
                 "hoi_pipeline_data_preprocess",
+                "hoi_pipeline_data_preprocess_sam3d_neus",
                 "hoi_pipeline_get_corres",
                 "hoi_pipeline_align_SAM3D_with_HY",
                 "hoi_pipeline_3D_points_align_with_HY",

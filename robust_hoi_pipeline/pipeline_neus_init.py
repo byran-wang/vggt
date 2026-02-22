@@ -19,11 +19,12 @@ from robust_hoi_pipeline.pipeline_utils import load_sam3d_transform
 def main(args):
     data_dir = Path(args.data_dir)
     out_dir = Path(args.output_dir)
+    result_dir = Path(args.result_dir)
     cond_idx = args.cond_index
 
     SAM3D_dir = data_dir / "SAM3D_aligned_post_process"
     data_preprocess_dir = data_dir / "pipeline_preprocess"
-    joint_opt_dir = out_dir.parent / "pipeline_joint_opt"
+    joint_opt_dir = result_dir / "pipeline_joint_opt"
 
     print("Loading latest image info from pipeline_joint_opt...")
     register_indices = load_register_indices(joint_opt_dir)
@@ -90,8 +91,8 @@ def main(args):
         checkpoint_path=None,
         output_dir=out_dir / "neus_training",
         sam3d_root_dir=sam3d_root_dir,
-        robust_hoi_weight=1.0,
-        sam3d_weight=0.5,
+        robust_hoi_weight=args.robust_hoi_weight,
+        sam3d_weight=args.sam3d_weight,
     )
 
     # if neus_mesh:
@@ -104,12 +105,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="NeuS initialization with condition frame")
     parser.add_argument("--data_dir", type=str, required=True,
                         help="Input data directory (e.g., HO3D_v3/train/SM2/ which includes SAM3D_aligned_post_process/)")
+    parser.add_argument("--result_dir", type=str, required=True,
+                        help="Directory containing latest pipeline_joint_opt results (used to load latest image_info)")
     parser.add_argument("--output_dir", type=str, required=True,
                         help="Output directory for results")
     parser.add_argument("--cond_index", type=int, default=0,
                         help="Condition frame index (keyframe with known SAM3D pose)")
     parser.add_argument("--max_steps", type=int, default=10000,
                         help="Number of NeuS training steps")
+    parser.add_argument("--robust_hoi_weight", type=float, default=1.0,
+                        help="Weight for robust HOI loss")
+    parser.add_argument("--sam3d_weight", type=float, default=0.5,
+                        help="Weight for SAM3D loss")
 
     args = parser.parse_args()
     main(args)

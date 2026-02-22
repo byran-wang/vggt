@@ -56,6 +56,8 @@ python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_SA
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_post_process  --seq_list $seq_list --rebuild
 # python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_keyframe_optimization --seq_list $seq_list --rebuild #--vis
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_data_preprocess hoi_pipeline_get_corres --seq_list $seq_list --rebuild
+python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_data_preprocess_sam3d_neus --seq_list $seq_list --rebuild
+
 # python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_get_corres --seq_list $seq_list --rebuild
 
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_joint_opt --seq_list $seq_list --rebuild
