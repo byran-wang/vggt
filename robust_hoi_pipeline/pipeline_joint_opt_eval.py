@@ -254,6 +254,41 @@ def eval_mesh_chamfer(
         print(f"[{prefix}] Added Chamfer metrics from {mesh_path}")
 
 
+def align_pred_to_gt(valid_extrinsics, gt_o2c, valid_frame_indices,
+                     cond_index, register_indices):
+    """Align predicted extrinsics to GT object space using a shared anchor frame.
+
+    Uses the condition frame as anchor. If it is not among valid frames,
+    falls back to the first frame in register_indices that is valid.
+
+    Args:
+        valid_extrinsics: (M, 4, 4) predicted object-to-camera for valid frames
+        gt_o2c: (M, 4, 4) GT object-to-camera for the same valid frames
+        valid_frame_indices: (M,) frame indices corresponding to the matrices
+        cond_index: preferred anchor frame index
+        register_indices: ordered list of registered frame indices to search
+
+    Returns:
+        (M, 4, 4) aligned predicted extrinsics
+    """
+    valid_list = valid_frame_indices.tolist()
+    if cond_index in valid_list:
+        anchor_idx = valid_list.index(cond_index)
+    else:
+        anchor_idx = None
+        for ri in register_indices:
+            if ri in valid_list:
+                anchor_idx = valid_list.index(ri)
+                print(f"[align] cond_index {cond_index} not in valid frames, "
+                      f"using frame {ri} as anchor")
+                break
+        if anchor_idx is None:
+            raise ValueError(
+                "No registered frame found in valid_frame_indices for alignment")
+    align_tf = np.linalg.inv(valid_extrinsics[anchor_idx]) @ gt_o2c[anchor_idx]
+    return valid_extrinsics @ align_tf
+
+
 def visualize_gt_and_pred_in_rerun(data_gt, pred_extrinsics, frame_indices, SAM3D_dir):
     """Visualize GT and predicted poses with rotated mesh in rerun.
 
@@ -404,9 +439,17 @@ def main():
 
     data_gt = gt.load_data(seq_name, get_image_fids)
 
-    visualize_gt_and_pred_in_rerun(
-        data_gt, valid_extrinsics, valid_frame_indices, SAM3D_dir,
+    gt_o2c_all = data_gt["o2c"].numpy() if torch.is_tensor(data_gt["o2c"]) else np.array(data_gt["o2c"])
+    aligned_pred_extrinsics = align_pred_to_gt(
+        valid_extrinsics, gt_o2c_all, valid_frame_indices,
+        args.cond_index, register_indices,
     )
+
+    data_pred["extrinsics"] = aligned_pred_extrinsics
+    visualize_gt_and_pred_in_rerun(
+        data_gt, aligned_pred_extrinsics, valid_frame_indices, SAM3D_dir,
+    )
+    
 
     out_p = args.out_dir
     os.makedirs(out_p, exist_ok=True)

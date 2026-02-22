@@ -86,9 +86,10 @@ def eval_add_object(data_pred, data_gt, metric_dict):
     pred_poses = [_build_pose_4x4(p) for p in pred_o2c]
     gt_poses = [np.array(g) for g in gt_o2c]
     n = min(len(gt_poses), len(pred_poses))
-    if n > 0:
-        align_tf = np.linalg.inv(pred_poses[0]) @ gt_poses[0]
-        pred_poses = [p @ align_tf for p in pred_poses]
+    # pred_poses and gt_poses has been aligned so we do not need to do additional alignment here.
+    # if n > 0:
+    #     align_tf = np.linalg.inv(pred_poses[0]) @ gt_poses[0]
+    #     pred_poses = [p @ align_tf for p in pred_poses]
 
     add_vals = []
     for i in range(n):
@@ -122,9 +123,10 @@ def eval_add_s_object(data_pred, data_gt, metric_dict):
     pred_poses = [_build_pose_4x4(p) for p in pred_extr]
     gt_poses = [np.array(g) for g in gt_o2c]
     n = min(len(gt_poses), len(pred_poses))
-    if n > 0:
-        align_tf = np.linalg.inv(pred_poses[0]) @ gt_poses[0]
-        pred_poses = [p @ align_tf for p in pred_poses]
+    # pred_poses and gt_poses has been aligned so we do not need to do additional alignment here.
+    # if n > 0:
+    #     align_tf = np.linalg.inv(pred_poses[0]) @ gt_poses[0]
+    #     pred_poses = [p @ align_tf for p in pred_poses]
 
     adds_vals = []
     for i in range(n):
