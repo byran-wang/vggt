@@ -387,13 +387,18 @@ def visualize_gt_and_pred_in_rerun(data_gt, pred_extrinsics, frame_indices, SAM3
                 rr.log(f"{gt_entity}/camera", rr.Image(img))
 
 
-def main():
-    from tqdm import tqdm
-    args = parse_args()
-    import vggt.utils.ours as ours
+def load_pred_data(results_dir, SAM3D_dir, cond_index):
+    """Load image info and build prediction data dict with valid extrinsics.
 
-    # Load image info from the last register step determined by register_order.txt
-    results_dir = Path(args.result_folder)
+    Args:
+        results_dir: Path to pipeline_joint_opt results directory
+        SAM3D_dir: Path to SAM3D_aligned_post_process directory
+        cond_index: Condition frame index
+
+    Returns:
+        Tuple of (data_pred, valid_extrinsics, valid_frame_indices,
+                  frame_indices, register_indices, c2o, scale, sam3d_to_cond_cam)
+    """
     register_indices = load_register_indices(results_dir)
     last_register_idx = register_indices[-1]
     image_info = np.load(
@@ -401,13 +406,10 @@ def main():
         allow_pickle=True,
     ).item()
 
-    
-    SAM3D_dir = Path(args.SAM3D_dir)
-    sam3d_transform = load_sam3d_transform(SAM3D_dir, args.cond_index)
+    sam3d_transform = load_sam3d_transform(SAM3D_dir, cond_index)
     sam3d_to_cond_cam = sam3d_transform['sam3d_to_cond_cam']
     scale = sam3d_transform['scale']
 
-    # Reconstruct data_pred from image info
     frame_indices = np.array(image_info["frame_indices"])
     register_flags = np.array(image_info["register"], dtype=bool)
     invalid_flags = np.array(image_info["invalid"], dtype=bool)
@@ -415,9 +417,7 @@ def main():
     c2o = np.array(image_info["c2o"])  # (N, 4, 4) camera-to-object (SAM3D scaled)
     extrinsics = c2o.copy()
     extrinsics[:, :3, 3] *= scale
-    extrinsics = np.linalg.inv(extrinsics) # object-to-camera
-
-    # visualize_in_rerun(extrinsics, frame_indices, valid_flags, SAM3D_dir, args.cond_index, scale)
+    extrinsics = np.linalg.inv(extrinsics)  # object-to-camera
 
     valid_extrinsics = extrinsics[valid_flags]
     valid_frame_indices = frame_indices[valid_flags]
@@ -426,6 +426,7 @@ def main():
 
     data_pred = {
         "extrinsics": valid_extrinsics,
+        "valid_frame_indices": valid_frame_indices,
         "is_valid": np.ones(len(valid_frame_indices), dtype=np.float32),
         "full_seq_name": seq_name,
         "total_frames": len(frame_indices),
@@ -433,21 +434,38 @@ def main():
         "keyframe_count": int(np.array(image_info.get("keyframe", []), dtype=bool).sum()),
         "invalid_frames": int(invalid_flags.sum()),
     }
-    # Return registered & valid frame indices for GT data selection
+
+    return (data_pred, frame_indices, register_indices, c2o, scale, sam3d_to_cond_cam)
+
+
+def main():
+    from tqdm import tqdm
+    args = parse_args()
+
+    results_dir = Path(args.result_folder)
+    SAM3D_dir = Path(args.SAM3D_dir)
+
+    (data_pred, frame_indices, register_indices, c2o_pred, scale,
+     sam3d_to_cond_cam) = load_pred_data(results_dir, SAM3D_dir, args.cond_index)
+
+    seq_name = results_dir.parent.name
+
     def get_image_fids():
-        return valid_frame_indices.tolist()
+        return data_pred["valid_frame_indices"].tolist()
 
     data_gt = gt.load_data(seq_name, get_image_fids)
+    # breakpoint()
+    # # TODO: filter invalid frame in data_gt and also data_pred, valid_extrinsics
 
     gt_o2c_all = data_gt["o2c"].numpy() if torch.is_tensor(data_gt["o2c"]) else np.array(data_gt["o2c"])
     aligned_pred_extrinsics = align_pred_to_gt(
-        valid_extrinsics, gt_o2c_all, valid_frame_indices,
+        data_pred["extrinsics"], gt_o2c_all, data_pred["valid_frame_indices"],
         args.cond_index, register_indices,
     )
 
     data_pred["extrinsics"] = aligned_pred_extrinsics
     visualize_gt_and_pred_in_rerun(
-        data_gt, aligned_pred_extrinsics, valid_frame_indices, SAM3D_dir,
+        data_gt, aligned_pred_extrinsics, data_pred["valid_frame_indices"], SAM3D_dir,
     )
     
 
@@ -473,7 +491,7 @@ def main():
     if args.eval_mesh_chamfer:
         eval_mesh_chamfer(
             metric_dict, data_gt, results_dir, SAM3D_dir, args,
-            frame_indices, valid_extrinsics, c2o, scale, sam3d_to_cond_cam,
+            frame_indices, data_pred["extrinsics"], c2o_pred, scale, sam3d_to_cond_cam,
         )
 
     # Dictionary to store mean values of metrics
