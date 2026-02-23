@@ -542,15 +542,19 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
     R = ext[:3, :3].copy()
     t = ext[:3, 3].copy()
 
-    mesh_fn = np.array(mesh.face_normals, dtype=np.float64)
+    mesh_verts = np.array(mesh.vertices, dtype=np.float64)
+    mesh_vnormals = np.array(mesh.vertex_normals, dtype=np.float64)
+    from scipy.spatial import cKDTree
+    kd_tree = cKDTree(mesh_verts)
+
     for it in tqdm(range(num_iters), desc=f"Aligning frame {frame_idx} with depth"):
         # Transform depth cloud to object space: p_obj = R^T (p_cam - t)
         pts_obj = (R.T @ (pts_cam - t).T).T  # (N, 3)
 
-        # Find nearest surface points on mesh
-        closest, _, tri_ids = mesh.nearest.on_surface(pts_obj.astype(np.float32))
-        closest = closest.astype(np.float64)
-        normals = mesh_fn[tri_ids].astype(np.float64)
+        # Find nearest vertices by KD-tree (much faster than mesh.nearest.on_surface)
+        _, vid = kd_tree.query(pts_obj, k=1)
+        closest = mesh_verts[vid]     # (N, 3)
+        normals = mesh_vnormals[vid]  # (N, 3)
 
         # Point-to-plane residuals
         diff = pts_obj - closest
@@ -1022,7 +1026,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             if sam3d_mesh is not None:
                 print(f"[register_remaining_frames] Aligning frame {next_frame_idx} with SAM3D mesh using depth")
                 _align_frame_with_mesh_depth(image_info_work, next_frame_idx, sam3d_mesh, 
-                                             debug_dir=output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}"
+                                             debug_dir=output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
                                              )
         
         mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
