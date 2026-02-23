@@ -495,7 +495,63 @@ def mask_track_for_outliers(image_info, frame_idx, reproj_thresh, min_track_numb
               f"with reproj error > {reproj_thresh}px")
 
 
-def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000, num_iters=30, inlier_thresh=0.5, debug_dir=None):
+def _save_depth_alignment_debug(image_info_work, frame_idx, depth_map, K, masks, ys, xs, debug_dir):
+    if debug_dir is None:
+        return
+
+    from PIL import Image
+    import trimesh as _trimesh
+
+    _debug_dir = Path(debug_dir)
+    _debug_dir.mkdir(parents=True, exist_ok=True)
+
+    img_dbg = None
+    images = image_info_work.get("images")
+    if images is not None and images[frame_idx] is not None:
+        img_dbg = np.asarray(images[frame_idx])
+        if img_dbg.ndim == 2:
+            Image.fromarray(img_dbg.astype(np.uint8), mode="L").save(
+                _debug_dir / f"image_frame_{frame_idx:04d}.png")
+        elif img_dbg.ndim == 3 and img_dbg.shape[2] >= 3:
+            Image.fromarray(img_dbg[:, :, :3].astype(np.uint8), mode="RGB").save(
+                _debug_dir / f"image_frame_{frame_idx:04d}.png")
+
+    if masks is not None and masks[frame_idx] is not None:
+        mask_u8 = (masks[frame_idx] > 0).astype(np.uint8) * 255
+        Image.fromarray(mask_u8, mode="L").save(_debug_dir / f"mask_frame_{frame_idx:04d}.png")
+
+    if len(ys) == 0:
+        return
+
+    z_dbg = depth_map[ys, xs].astype(np.float64)
+    x_dbg = (xs.astype(np.float64) - K[0, 2]) * z_dbg / K[0, 0]
+    y_dbg = (ys.astype(np.float64) - K[1, 2]) * z_dbg / K[1, 1]
+    pts_dbg = np.stack([x_dbg, y_dbg, z_dbg], axis=-1)
+
+    colors_dbg = None
+    if img_dbg is not None:
+        if img_dbg.ndim == 2:
+            img_rgb = np.stack([img_dbg, img_dbg, img_dbg], axis=-1)
+        elif img_dbg.ndim == 3 and img_dbg.shape[2] >= 3:
+            img_rgb = img_dbg[:, :, :3]
+        else:
+            img_rgb = None
+
+        if img_rgb is not None:
+            colors_dbg = img_rgb[ys, xs]
+            if np.issubdtype(colors_dbg.dtype, np.floating) and colors_dbg.max(initial=0.0) <= 1.0:
+                colors_dbg = colors_dbg * 255.0
+            colors_dbg = np.clip(colors_dbg, 0, 255).astype(np.uint8)
+
+    if colors_dbg is None:
+        colors_dbg = np.zeros((len(pts_dbg), 3), dtype=np.uint8)
+        colors_dbg[:, 2] = 255
+
+    ply_path = _debug_dir / f"depth_frame_{frame_idx:04d}.ply"
+    _trimesh.PointCloud(pts_dbg.astype(np.float32), colors=colors_dbg).export(ply_path)
+
+
+def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000, num_iters=60, inlier_thresh=0.3, debug_dir=None):
     """Align a single frame to the SAM3D mesh using depth-based ICP.
 
     Back-projects masked depth pixels to 3D in camera space, transforms to object
@@ -524,23 +580,56 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
     if masks is not None and masks[frame_idx] is not None:
         vmask = vmask & (masks[frame_idx] > 0)
     ys, xs = np.where(vmask)
+
+    if debug_dir is not None:
+        _save_depth_alignment_debug(
+            image_info_work=image_info_work,
+            frame_idx=frame_idx,
+            depth_map=d,
+            K=K,
+            masks=masks,
+            ys=ys,
+            xs=xs,
+            debug_dir=debug_dir,
+        )
+
     if len(ys) < 50:
         print(f"[align_depth] Frame {frame_idx}: only {len(ys)} depth pixels, skipping")
         return False
 
-    if len(ys) > max_pts:
-        sel = np.random.choice(len(ys), max_pts, replace=False)
-        ys, xs = ys[sel], xs[sel]
+
+
 
     zs = d[ys, xs].astype(np.float64)
     xc = (xs.astype(np.float64) - K[0, 2]) * zs / K[0, 0]
     yc = (ys.astype(np.float64) - K[1, 2]) * zs / K[1, 1]
     pts_cam = np.stack([xc, yc, zs], axis=-1)  # (N, 3)
 
+    # Current extrinsic (o2c) used to transform depth points to object space.
+    ext = extrinsics[frame_idx].astype(np.float64)
+    R0 = ext[:3, :3]
+    t0 = ext[:3, 3]
+
+    pts_obj0 = (R0.T @ (pts_cam - t0).T).T
+    bbox_min = np.array([-0.8, -0.8, -0.8], dtype=np.float64)
+    bbox_max = np.array([0.8, 0.8, 0.8], dtype=np.float64)
+    in_bbox = np.all((pts_obj0 >= bbox_min) & (pts_obj0 <= bbox_max), axis=1)
+    pts_cam = pts_cam[in_bbox]
+
+    if len(pts_cam) < max_pts:
+        print(
+            f"[align_depth] Frame {frame_idx}: only {len(pts_cam)} points in object bbox, "
+            f"need at least {max_pts}, skipping"
+        )
+        return False
+
+    if len(pts_cam) > max_pts:
+        sel = np.random.choice(len(pts_cam), max_pts, replace=False)
+        pts_cam = pts_cam[sel]
+
     # Current extrinsic (o2c) — maintain pose as axis-angle + translation
     # so R is always reconstructed via Rodrigues (exact SO(3), no drift).
     from scipy.spatial.transform import Rotation as ScipyRotation
-    ext = extrinsics[frame_idx].astype(np.float64)
     acc_rotvec = ScipyRotation.from_matrix(ext[:3, :3]).as_rotvec()
     t = ext[:3, 3].copy()
 
@@ -549,7 +638,7 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
     from scipy.spatial import cKDTree
     kd_tree = cKDTree(mesh_verts)
 
-    for it in tqdm(range(num_iters), desc=f"Aligning frame {frame_idx} with depth"):
+    for it in range(num_iters):
         # Reconstruct R from axis-angle (always exact SO(3))
         R = ScipyRotation.from_rotvec(acc_rotvec).as_matrix()
 
@@ -563,13 +652,21 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
 
         # Point-to-plane residuals
         diff = pts_obj - closest
-        signed_dist = (diff * normals).sum(axis=-1)
+        if it % 5 == 0 or it == num_iters - 1:
+            diff_norm = np.linalg.norm(diff, axis=-1)
+            print(
+                f"[align_depth] Frame {frame_idx}: iter {it}/{num_iters}, "
+                f"diff_norm mean={diff_norm.mean():.6f}, "
+                f"median={np.median(diff_norm):.6f}, max={diff_norm.max():.6f}"
+            )
 
-        # Outlier rejection
+
+        # Outlier rejection on signed point-to-plane distance (1D mask over points)
+        signed_dist = (diff * normals).sum(axis=-1)
         inlier = np.abs(signed_dist) < inlier_thresh
-        if inlier.sum() < 30:
+        if inlier.sum() < 1000:
             print(f"[align_depth] Frame {frame_idx}: iter {it}, only {inlier.sum()} inliers, stopping")
-            break
+            return False
 
         # Solve for pose correction using inlier point-to-plane
         # Linearised: n_i^T (dR * p_obj_i + dt - c_i) ≈ 0
@@ -596,7 +693,7 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
         R_new = ScipyRotation.from_rotvec(acc_rotvec).as_matrix()
         t = t - R_new @ dt_obj
 
-        if debug_dir is not None and it % 5 == 0:
+        if debug_dir is not None and (it % 5 == 0 or it == num_iters - 1):
             import trimesh as _trimesh
             _debug_dir = Path(debug_dir)
             _debug_dir.mkdir(parents=True, exist_ok=True)
