@@ -537,9 +537,11 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
     yc = (ys.astype(np.float64) - K[1, 2]) * zs / K[1, 1]
     pts_cam = np.stack([xc, yc, zs], axis=-1)  # (N, 3)
 
-    # Current extrinsic (o2c)
+    # Current extrinsic (o2c) — maintain pose as axis-angle + translation
+    # so R is always reconstructed via Rodrigues (exact SO(3), no drift).
+    from scipy.spatial.transform import Rotation as ScipyRotation
     ext = extrinsics[frame_idx].astype(np.float64)
-    R = ext[:3, :3].copy()
+    acc_rotvec = ScipyRotation.from_matrix(ext[:3, :3]).as_rotvec()
     t = ext[:3, 3].copy()
 
     mesh_verts = np.array(mesh.vertices, dtype=np.float64)
@@ -548,6 +550,9 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
     kd_tree = cKDTree(mesh_verts)
 
     for it in tqdm(range(num_iters), desc=f"Aligning frame {frame_idx} with depth"):
+        # Reconstruct R from axis-angle (always exact SO(3))
+        R = ScipyRotation.from_rotvec(acc_rotvec).as_matrix()
+
         # Transform depth cloud to object space: p_obj = R^T (p_cam - t)
         pts_obj = (R.T @ (pts_cam - t).T).T  # (N, 3)
 
@@ -585,17 +590,11 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
         w = x[:3]
         dt_obj = x[3:6]
 
-        # Convert small rotation to matrix: dR ≈ I + [w]_x
-        wx = np.array([
-            [0, -w[2], w[1]],
-            [w[2], 0, -w[0]],
-            [-w[1], w[0], 0],
-        ])
-        dR_obj = np.eye(3) + wx
-
-        # Update extrinsic: R_new = R @ dR_obj^T,  t_new = t - R @ dt_obj
-        R = R @ dR_obj.T
-        t = t - R @ dt_obj
+        # Compose rotation in SO(3): R_new = R @ dR_obj^T = R @ R(-w)
+        # Accumulate in axis-angle space, then reconstruct R next iteration.
+        acc_rotvec = (ScipyRotation.from_rotvec(acc_rotvec) * ScipyRotation.from_rotvec(-w)).as_rotvec()
+        R_new = ScipyRotation.from_rotvec(acc_rotvec).as_matrix()
+        t = t - R_new @ dt_obj
 
         if debug_dir is not None and it % 5 == 0:
             import trimesh as _trimesh
@@ -618,7 +617,8 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
                 _debug_dir / f"closest_iter{it:03d}.ply")
 
     # Write back
-    extrinsics[frame_idx, :3, :3] = R.astype(np.float32)
+    R_final = ScipyRotation.from_rotvec(acc_rotvec).as_matrix()
+    extrinsics[frame_idx, :3, :3] = R_final.astype(np.float32)
     extrinsics[frame_idx, :3, 3] = t.astype(np.float32)
     print(f"[align_depth] Frame {frame_idx}: alignment done, {int(inlier.sum())} inliers")
     return True
@@ -1025,11 +1025,18 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             # Align the frame with SAM3D mesh using depth with outlier rejection
             if sam3d_mesh is not None:
                 print(f"[register_remaining_frames] Aligning frame {next_frame_idx} with SAM3D mesh using depth")
-                _align_frame_with_mesh_depth(image_info_work, next_frame_idx, sam3d_mesh, 
+                sucess = _align_frame_with_mesh_depth(image_info_work, next_frame_idx, sam3d_mesh, 
                                              debug_dir=output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
                                              )
+                if not sucess:
+                    image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True
+                    print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to large reprojection error and failed depth-mesh alignment")
+                    invalid_cnt["reproj_err"] += 1
+                    save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
+                    print_image_info_stats(image_info_work, invalid_cnt)
+                    continue                    
         
-        mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
+                # mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
 
 
         image_info_work["registered"][next_frame_idx] = True
