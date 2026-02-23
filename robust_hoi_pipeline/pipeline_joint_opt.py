@@ -551,6 +551,37 @@ def _save_depth_alignment_debug(image_info_work, frame_idx, depth_map, K, masks,
     _trimesh.PointCloud(pts_dbg.astype(np.float32), colors=colors_dbg).export(ply_path)
 
 
+def _save_icp_iteration_debug(debug_dir, it, pts_obj, p, c):
+    if debug_dir is None:
+        return
+
+    import trimesh as _trimesh
+
+    _debug_dir = Path(debug_dir)
+    _debug_dir.mkdir(parents=True, exist_ok=True)
+
+    # all object-space depth points (blue)
+    colors_all = np.zeros((len(pts_obj), 4), dtype=np.uint8)
+    colors_all[:, 2] = 255
+    colors_all[:, 3] = 255
+    _trimesh.PointCloud(pts_obj.astype(np.float32), colors=colors_all).export(
+        _debug_dir / f"pts_obj_iter{it:03d}.ply")
+
+    # inlier points (green)
+    colors_p = np.zeros((len(p), 4), dtype=np.uint8)
+    colors_p[:, 1] = 255
+    colors_p[:, 3] = 255
+    _trimesh.PointCloud(p.astype(np.float32), colors=colors_p).export(
+        _debug_dir / f"inlier_iter{it:03d}.ply")
+
+    # closest mesh surface points (red)
+    colors_c = np.zeros((len(c), 4), dtype=np.uint8)
+    colors_c[:, 0] = 255
+    colors_c[:, 3] = 255
+    _trimesh.PointCloud(c.astype(np.float32), colors=colors_c).export(
+        _debug_dir / f"closest_iter{it:03d}.ply")
+
+
 def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000, num_iters=60, inlier_thresh=0.3, debug_dir=None):
     """Align a single frame to the SAM3D mesh using depth-based ICP.
 
@@ -694,24 +725,13 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
         t = t - R_new @ dt_obj
 
         if debug_dir is not None and (it % 5 == 0 or it == num_iters - 1):
-            import trimesh as _trimesh
-            _debug_dir = Path(debug_dir)
-            _debug_dir.mkdir(parents=True, exist_ok=True)
-            # all object-space depth points (blue)
-            colors_all = np.zeros((len(pts_obj), 4), dtype=np.uint8)
-            colors_all[:, 2] = 255; colors_all[:, 3] = 255
-            _trimesh.PointCloud(pts_obj.astype(np.float32), colors=colors_all).export(
-                _debug_dir / f"pts_obj_iter{it:03d}.ply")
-            # inlier points (green)
-            colors_p = np.zeros((len(p), 4), dtype=np.uint8)
-            colors_p[:, 1] = 255; colors_p[:, 3] = 255
-            _trimesh.PointCloud(p.astype(np.float32), colors=colors_p).export(
-                _debug_dir / f"inlier_iter{it:03d}.ply")
-            # closest mesh surface points (red)
-            colors_c = np.zeros((len(c), 4), dtype=np.uint8)
-            colors_c[:, 0] = 255; colors_c[:, 3] = 255
-            _trimesh.PointCloud(c.astype(np.float32), colors=colors_c).export(
-                _debug_dir / f"closest_iter{it:03d}.ply")
+            _save_icp_iteration_debug(
+                debug_dir=debug_dir,
+                it=it,
+                pts_obj=pts_obj,
+                p=p,
+                c=c,
+            )
 
     # Write back
     R_final = ScipyRotation.from_rotvec(acc_rotvec).as_matrix()
