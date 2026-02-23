@@ -4,6 +4,7 @@ import pickle
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from types import SimpleNamespace
+from tqdm import tqdm
 
 import numpy as np
 
@@ -494,6 +495,131 @@ def mask_track_for_outliers(image_info, frame_idx, reproj_thresh, min_track_numb
               f"with reproj error > {reproj_thresh}px")
 
 
+def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000, num_iters=30, inlier_thresh=0.5, debug_dir=None):
+    """Align a single frame to the SAM3D mesh using depth-based ICP.
+
+    Back-projects masked depth pixels to 3D in camera space, transforms to object
+    space, then iteratively refines the pose by matching depth points to the nearest
+    surface on the mesh with outlier rejection.
+
+    Modifies image_info_work["extrinsics"][frame_idx] in-place.
+
+    Returns:
+        True if alignment succeeded, False otherwise.
+    """
+    depth_priors = image_info_work.get("depth_priors")
+    intrinsics = image_info_work.get("intrinsics")
+    extrinsics = image_info_work.get("extrinsics")
+
+    d = depth_priors[frame_idx]
+    if d is None:
+        print(f"[align_depth] Frame {frame_idx}: no depth, skipping")
+        return False
+
+    K = intrinsics[frame_idx] if intrinsics.ndim == 3 else intrinsics
+
+    # Build depth point cloud in camera space (masked by object mask)
+    vmask = d > 0.01
+    masks = image_info_work.get("image_masks")
+    if masks is not None and masks[frame_idx] is not None:
+        vmask = vmask & (masks[frame_idx] > 0)
+    ys, xs = np.where(vmask)
+    if len(ys) < 50:
+        print(f"[align_depth] Frame {frame_idx}: only {len(ys)} depth pixels, skipping")
+        return False
+
+    if len(ys) > max_pts:
+        sel = np.random.choice(len(ys), max_pts, replace=False)
+        ys, xs = ys[sel], xs[sel]
+
+    zs = d[ys, xs].astype(np.float64)
+    xc = (xs.astype(np.float64) - K[0, 2]) * zs / K[0, 0]
+    yc = (ys.astype(np.float64) - K[1, 2]) * zs / K[1, 1]
+    pts_cam = np.stack([xc, yc, zs], axis=-1)  # (N, 3)
+
+    # Current extrinsic (o2c)
+    ext = extrinsics[frame_idx].astype(np.float64)
+    R = ext[:3, :3].copy()
+    t = ext[:3, 3].copy()
+
+    mesh_fn = np.array(mesh.face_normals, dtype=np.float64)
+    for it in tqdm(range(num_iters), desc=f"Aligning frame {frame_idx} with depth"):
+        # Transform depth cloud to object space: p_obj = R^T (p_cam - t)
+        pts_obj = (R.T @ (pts_cam - t).T).T  # (N, 3)
+
+        # Find nearest surface points on mesh
+        closest, _, tri_ids = mesh.nearest.on_surface(pts_obj.astype(np.float32))
+        closest = closest.astype(np.float64)
+        normals = mesh_fn[tri_ids].astype(np.float64)
+
+        # Point-to-plane residuals
+        diff = pts_obj - closest
+        signed_dist = (diff * normals).sum(axis=-1)
+
+        # Outlier rejection
+        inlier = np.abs(signed_dist) < inlier_thresh
+        if inlier.sum() < 30:
+            print(f"[align_depth] Frame {frame_idx}: iter {it}, only {inlier.sum()} inliers, stopping")
+            break
+
+        # Solve for pose correction using inlier point-to-plane
+        # Linearised: n_i^T (dR * p_obj_i + dt - c_i) ≈ 0
+        # dR ≈ I + [w]_x  =>  n^T ([w]_x p + dt) = n^T (c - p)
+        # Build A x = b where x = [wx, wy, wz, tx, ty, tz]
+        p = pts_obj[inlier]
+        n = normals[inlier]
+        c = closest[inlier]
+        b_vec = (n * (c - p)).sum(axis=-1)  # (K,)
+
+        # n^T [w]_x p = n^T (w x p) = w . (p x n)
+        pxn = np.cross(p, n)  # (K, 3)
+        A = np.hstack([pxn, n])  # (K, 6)
+
+        # Solve least-squares
+        result = np.linalg.lstsq(A, b_vec, rcond=None)
+        x = result[0]  # [wx, wy, wz, tx, ty, tz]
+        w = x[:3]
+        dt_obj = x[3:6]
+
+        # Convert small rotation to matrix: dR ≈ I + [w]_x
+        wx = np.array([
+            [0, -w[2], w[1]],
+            [w[2], 0, -w[0]],
+            [-w[1], w[0], 0],
+        ])
+        dR_obj = np.eye(3) + wx
+
+        # Update extrinsic: R_new = R @ dR_obj^T,  t_new = t - R @ dt_obj
+        R = R @ dR_obj.T
+        t = t - R @ dt_obj
+
+        if debug_dir is not None and it % 5 == 0:
+            import trimesh as _trimesh
+            _debug_dir = Path(debug_dir)
+            _debug_dir.mkdir(parents=True, exist_ok=True)
+            # all object-space depth points (blue)
+            colors_all = np.zeros((len(pts_obj), 4), dtype=np.uint8)
+            colors_all[:, 2] = 255; colors_all[:, 3] = 255
+            _trimesh.PointCloud(pts_obj.astype(np.float32), colors=colors_all).export(
+                _debug_dir / f"pts_obj_iter{it:03d}.ply")
+            # inlier points (green)
+            colors_p = np.zeros((len(p), 4), dtype=np.uint8)
+            colors_p[:, 1] = 255; colors_p[:, 3] = 255
+            _trimesh.PointCloud(p.astype(np.float32), colors=colors_p).export(
+                _debug_dir / f"inlier_iter{it:03d}.ply")
+            # closest mesh surface points (red)
+            colors_c = np.zeros((len(c), 4), dtype=np.uint8)
+            colors_c[:, 0] = 255; colors_c[:, 3] = 255
+            _trimesh.PointCloud(c.astype(np.float32), colors=colors_c).export(
+                _debug_dir / f"closest_iter{it:03d}.ply")
+
+    # Write back
+    extrinsics[frame_idx, :3, :3] = R.astype(np.float32)
+    extrinsics[frame_idx, :3, 3] = t.astype(np.float32)
+    print(f"[align_depth] Frame {frame_idx}: alignment done, {int(inlier.sum())} inliers")
+    return True
+
+
 def _joint_optimize_keyframes(
     image_info_work, neus_mesh_path, cond_local_idx,
     num_iters=30, lr_pose=5e-4, lr_points=1e-4,
@@ -831,6 +957,16 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
     num_frames = len(frame_indices)
     latest_neus_mesh = neus_init_mesh
 
+    sam_3d_mesh_file = f"{sam3d_root_dir}/mesh.obj"
+
+    # Load the SAM3D mesh for depth-based alignment
+    sam3d_mesh = None
+    if sam3d_root_dir is not None and Path(sam_3d_mesh_file).exists():
+        import trimesh
+        sam3d_mesh = trimesh.load(str(sam_3d_mesh_file), process=False)
+        print(f"Loaded SAM3D mesh: {len(sam3d_mesh.vertices)} vertices")
+
+
     while image_info_work["registered"].sum() + image_info_work["invalid"].sum() < num_frames:
         next_frame_idx = find_next_frame(image_info_work)
         if next_frame_idx is None:
@@ -845,8 +981,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             min_inlier_per_frame=args.min_inlier_per_frame,
             min_depth_pixels=args.min_depth_pixels,
         ):
-            image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True
-            image_info["c2o"] = np.linalg.inv(image_info_work["extrinsics"]).astype(np.float32)     
+            image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True  
             print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to insufficient inliers/depth pixels")
             invalid_cnt["insufficient_pixel"] += 1
             save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
@@ -866,13 +1001,31 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         #     continue
         
         if check_reprojection_error(image_info_work, next_frame_idx, args):
-            image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True
-            image_info["c2o"] = np.linalg.inv(image_info_work["extrinsics"]).astype(np.float32)
-            print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to large reprojection error")
-            invalid_cnt["reproj_err"] += 1
-            save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
-            print_image_info_stats(image_info_work, invalid_cnt)
-            continue
+            print(f"[register_remaining_frames] Frame {next_frame_idx} align depth to mesh due to high reprojection error")
+            # Reset pose to nearest registered frame
+            registered = np.asarray(image_info_work["registered"]).astype(bool)
+            invalid = np.asarray(image_info_work["invalid"]).astype(bool)
+            valid_reg = registered & (~invalid)
+            reg_idx = np.where(valid_reg)[0]
+            if reg_idx.size > 0:
+                nearest_idx = reg_idx[np.argmin(np.abs(reg_idx - next_frame_idx))]
+                image_info_work["extrinsics"][next_frame_idx] = image_info_work["extrinsics"][nearest_idx].copy()
+                print(f"[reproj_recovery] Reset frame {next_frame_idx} pose to nearest registered frame {nearest_idx}")
+
+            # # Mask tracks without valid (finite) 3D points
+            # finite_3d = np.isfinite(image_info_work["points_3d"]).all(axis=-1)
+            # image_info_work["track_mask"][next_frame_idx] = (
+            #     np.asarray(image_info_work["track_mask"][next_frame_idx]).astype(bool) & finite_3d
+            # ).astype(image_info_work["track_mask"].dtype)
+
+            # Align the frame with SAM3D mesh using depth with outlier rejection
+            if sam3d_mesh is not None:
+                print(f"[register_remaining_frames] Aligning frame {next_frame_idx} with SAM3D mesh using depth")
+                _align_frame_with_mesh_depth(image_info_work, next_frame_idx, sam3d_mesh, 
+                                             debug_dir=output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}"
+                                             )
+        
+        mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
 
 
         image_info_work["registered"][next_frame_idx] = True
