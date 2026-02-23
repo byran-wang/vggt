@@ -583,18 +583,17 @@ def _save_icp_iteration_debug(debug_dir, it, pts_obj, p, c):
 
 
 def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000, num_iters=60, inlier_thresh=0.3, debug_dir=None):
-    """Align a single frame to the SAM3D mesh using depth-based ICP.
+    """Align a frame by optimizing pose with rendered-vs-observed depth/normal losses."""
+    import torch
+    import torch.nn.functional as F
+    import nvdiffrast.torch as dr
+    from scipy.spatial.transform import Rotation as ScipyRotation
+    from utils_simba.render import diff_renderer, projection_matrix_from_intrinsics
 
-    Back-projects masked depth pixels to 3D in camera space, transforms to object
-    space, then iteratively refines the pose by matching depth points to the nearest
-    surface on the mesh with outlier rejection.
+    del inlier_thresh  # kept in signature for compatibility
 
-    Modifies image_info_work["extrinsics"][frame_idx] in-place.
-
-    Returns:
-        True if alignment succeeded, False otherwise.
-    """
     depth_priors = image_info_work.get("depth_priors")
+    normal_priors = image_info_work.get("normal_priors")
     intrinsics = image_info_work.get("intrinsics")
     extrinsics = image_info_work.get("extrinsics")
 
@@ -604,14 +603,18 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
         return False
 
     K = intrinsics[frame_idx] if intrinsics.ndim == 3 else intrinsics
+    n_obs = None
+    if normal_priors is not None and frame_idx < len(normal_priors):
+        n_obs = normal_priors[frame_idx]
 
-    # Build depth point cloud in camera space (masked by object mask)
     vmask = d > 0.01
     masks = image_info_work.get("image_masks")
     if masks is not None and masks[frame_idx] is not None:
         vmask = vmask & (masks[frame_idx] > 0)
-    ys, xs = np.where(vmask)
+    if n_obs is not None:
+        vmask = vmask & np.isfinite(n_obs).all(axis=-1) & (np.linalg.norm(n_obs, axis=-1) > 1e-6)
 
+    ys, xs = np.where(vmask)
     if debug_dir is not None:
         _save_depth_alignment_debug(
             image_info_work=image_info_work,
@@ -628,116 +631,163 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
         print(f"[align_depth] Frame {frame_idx}: only {len(ys)} depth pixels, skipping")
         return False
 
-
-
-
     zs = d[ys, xs].astype(np.float64)
     xc = (xs.astype(np.float64) - K[0, 2]) * zs / K[0, 0]
     yc = (ys.astype(np.float64) - K[1, 2]) * zs / K[1, 1]
-    pts_cam = np.stack([xc, yc, zs], axis=-1)  # (N, 3)
+    pts_cam = np.stack([xc, yc, zs], axis=-1)
 
-    # Current extrinsic (o2c) used to transform depth points to object space.
-    ext = extrinsics[frame_idx].astype(np.float64)
-    R0 = ext[:3, :3]
-    t0 = ext[:3, 3]
-
+    ext0 = extrinsics[frame_idx].astype(np.float64)
+    R0 = ext0[:3, :3]
+    t0 = ext0[:3, 3]
     pts_obj0 = (R0.T @ (pts_cam - t0).T).T
     bbox_min = np.array([-0.8, -0.8, -0.8], dtype=np.float64)
     bbox_max = np.array([0.8, 0.8, 0.8], dtype=np.float64)
     in_bbox = np.all((pts_obj0 >= bbox_min) & (pts_obj0 <= bbox_max), axis=1)
-    pts_cam = pts_cam[in_bbox]
+    ys = ys[in_bbox]
+    xs = xs[in_bbox]
 
-    if len(pts_cam) < max_pts:
+    if len(ys) < max_pts:
         print(
-            f"[align_depth] Frame {frame_idx}: only {len(pts_cam)} points in object bbox, "
+            f"[align_depth] Frame {frame_idx}: only {len(ys)} points in object bbox, "
             f"need at least {max_pts}, skipping"
         )
         return False
 
-    if len(pts_cam) > max_pts:
-        sel = np.random.choice(len(pts_cam), max_pts, replace=False)
-        pts_cam = pts_cam[sel]
+    if len(ys) > max_pts:
+        sel = np.random.choice(len(ys), max_pts, replace=False)
+        ys, xs = ys[sel], xs[sel]
 
-    # Current extrinsic (o2c) — maintain pose as axis-angle + translation
-    # so R is always reconstructed via Rodrigues (exact SO(3), no drift).
-    from scipy.spatial.transform import Rotation as ScipyRotation
-    acc_rotvec = ScipyRotation.from_matrix(ext[:3, :3]).as_rotvec()
-    t = ext[:3, 3].copy()
+    if not torch.cuda.is_available():
+        print(f"[align_depth] Frame {frame_idx}: CUDA unavailable, skipping depth-normal optimization")
+        return False
 
-    mesh_verts = np.array(mesh.vertices, dtype=np.float64)
-    mesh_vnormals = np.array(mesh.vertex_normals, dtype=np.float64)
-    from scipy.spatial import cKDTree
-    kd_tree = cKDTree(mesh_verts)
+    H, W = d.shape
+    device = "cuda"
+    glctx = dr.RasterizeCudaContext()
+
+    verts = torch.tensor(mesh.vertices, dtype=torch.float32, device=device)[None]
+    tri = torch.tensor(mesh.faces, dtype=torch.int32, device=device)
+    vnormals = torch.tensor(mesh.vertex_normals, dtype=torch.float32, device=device)[None]
+    if mesh.visual.vertex_colors is not None:
+        colors_np = np.asarray(mesh.visual.vertex_colors[:, :3], dtype=np.float32) / 255.0
+    else:
+        colors_np = np.full((len(mesh.vertices), 3), 0.5, dtype=np.float32)
+    color = torch.tensor(colors_np, dtype=torch.float32, device=device)[None]
+
+    proj_np = projection_matrix_from_intrinsics(K.astype(np.float64), height=H, width=W, znear=0.1, zfar=100.0)
+    projection = torch.tensor(proj_np, dtype=torch.float32, device=device)
+
+    obs_depth = torch.tensor(d.astype(np.float32), dtype=torch.float32, device=device)
+    obs_mask = torch.zeros((H, W), dtype=torch.bool, device=device)
+    obs_mask[torch.tensor(ys, device=device), torch.tensor(xs, device=device)] = True
+
+    obs_normal = None
+    if n_obs is not None:
+        n_obs_f = n_obs.astype(np.float32)
+        obs_normal = torch.tensor(n_obs_f, dtype=torch.float32, device=device)
+        obs_normal = F.normalize(obs_normal, dim=-1)
+
+    init_rot = ScipyRotation.from_matrix(ext0[:3, :3]).as_rotvec().astype(np.float32)
+    rotvec = torch.tensor(init_rot, dtype=torch.float32, device=device, requires_grad=True)
+    trans = torch.tensor(ext0[:3, 3].astype(np.float32), dtype=torch.float32, device=device, requires_grad=True)
+
+    def rodrigues(aa):
+        aa_b = aa[None]
+        th = aa_b.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        k = aa_b / th
+        Kx = torch.zeros(1, 3, 3, device=device, dtype=torch.float32)
+        Kx[:, 0, 1] = -k[:, 2]
+        Kx[:, 0, 2] = k[:, 1]
+        Kx[:, 1, 0] = k[:, 2]
+        Kx[:, 1, 2] = -k[:, 0]
+        Kx[:, 2, 0] = -k[:, 1]
+        Kx[:, 2, 1] = k[:, 0]
+        c = torch.cos(th).unsqueeze(-1)
+        s = torch.sin(th).unsqueeze(-1)
+        I3 = torch.eye(3, device=device, dtype=torch.float32).unsqueeze(0)
+        return (c * I3 + s * Kx + (1 - c) * k.unsqueeze(-1) @ k.unsqueeze(-2))[0]
+
+    optimizer = torch.optim.Adam([rotvec, trans], lr=2e-3)
+    best = {"loss": float("inf"), "R": ext0[:3, :3].copy(), "t": ext0[:3, 3].copy(), "valid": 0}
 
     for it in range(num_iters):
-        # Reconstruct R from axis-angle (always exact SO(3))
-        R = ScipyRotation.from_rotvec(acc_rotvec).as_matrix()
+        optimizer.zero_grad()
+        R = rodrigues(rotvec)
+        o2c = torch.eye(4, dtype=torch.float32, device=device)
+        o2c[:3, :3] = R
+        o2c[:3, 3] = trans
 
-        # Transform depth cloud to object space: p_obj = R^T (p_cam - t)
-        pts_obj = (R.T @ (pts_cam - t).T).T  # (N, 3)
+        if obs_normal is not None:
+            _, depth_r, normal_r = diff_renderer(
+                verts=verts,
+                tri=tri,
+                color=color,
+                projection=projection,
+                ob_in_cvcams=o2c,
+                resolution=np.asarray([H, W]),
+                glctx=glctx,
+                get_normal=True,
+                vnormals=vnormals,
+            )
+            normal_r = torch.flip(normal_r[0], dims=[0])
+            normal_r = F.normalize(normal_r, dim=-1)
+        else:
+            _, depth_r = diff_renderer(
+                verts=verts,
+                tri=tri,
+                color=color,
+                projection=projection,
+                ob_in_cvcams=o2c,
+                resolution=np.asarray([H, W]),
+                glctx=glctx,
+            )
+            normal_r = None
 
-        # Find nearest vertices by KD-tree (much faster than mesh.nearest.on_surface)
-        _, vid = kd_tree.query(pts_obj, k=1)
-        closest = mesh_verts[vid]     # (N, 3)
-        normals = mesh_vnormals[vid]  # (N, 3)
+        depth_r = torch.flip(depth_r[0], dims=[0])
+        valid = obs_mask & (depth_r > 0) & torch.isfinite(depth_r)
+        valid_count = int(valid.sum().item())
+        if valid_count < 100:
+            print(f"[align_depth] Frame {frame_idx}: iter {it}, only {valid_count} valid rendered pixels")
+            continue
 
-        # Point-to-plane residuals
-        diff = pts_obj - closest
-        if it % 5 == 0 or it == num_iters - 1:
-            diff_norm = np.linalg.norm(diff, axis=-1)
+        depth_res = depth_r[valid] - obs_depth[valid]
+        depth_abs = depth_res.abs()
+        loss_depth = torch.where(depth_abs < 0.02, 0.5 * depth_res ** 2, 0.02 * (depth_abs - 0.01)).mean()
+
+        if obs_normal is not None and normal_r is not None:
+            dot = (normal_r[valid] * obs_normal[valid]).sum(dim=-1).clamp(-1.0, 1.0)
+            loss_normal = (1.0 - dot).mean()
+        else:
+            loss_normal = torch.tensor(0.0, device=device)
+
+        loss = loss_depth + 0.2 * loss_normal
+        if torch.isfinite(loss):
+            loss.backward()
+            optimizer.step()
+
+        loss_val = float(loss.detach().item())
+        if loss_val < best["loss"]:
+            best["loss"] = loss_val
+            best["R"] = R.detach().cpu().numpy().astype(np.float64)
+            best["t"] = trans.detach().cpu().numpy().astype(np.float64)
+            best["valid"] = valid_count
+
+        if it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1:
             print(
-                f"[align_depth] Frame {frame_idx}: iter {it}/{num_iters}, "
-                f"diff_norm mean={diff_norm.mean():.6f}, "
-                f"median={np.median(diff_norm):.6f}, max={diff_norm.max():.6f}"
+                f"[align_depth] Frame {frame_idx}: iter {it+1}/{num_iters}, "
+                f"loss_d={loss_depth.item():.6f}, loss_n={loss_normal.item():.6f}, valid={valid_count}"
             )
 
+    if not np.isfinite(best["loss"]) or best["valid"] < 100:
+        print(f"[align_depth] Frame {frame_idx}: optimization failed (best_valid={best['valid']})")
+        return False
 
-        # Outlier rejection on signed point-to-plane distance (1D mask over points)
-        signed_dist = (diff * normals).sum(axis=-1)
-        inlier = np.abs(signed_dist) < inlier_thresh
-        if inlier.sum() < 1000:
-            print(f"[align_depth] Frame {frame_idx}: iter {it}, only {inlier.sum()} inliers, stopping")
-            return False
-
-        # Solve for pose correction using inlier point-to-plane
-        # Linearised: n_i^T (dR * p_obj_i + dt - c_i) ≈ 0
-        # dR ≈ I + [w]_x  =>  n^T ([w]_x p + dt) = n^T (c - p)
-        # Build A x = b where x = [wx, wy, wz, tx, ty, tz]
-        p = pts_obj[inlier]
-        n = normals[inlier]
-        c = closest[inlier]
-        b_vec = (n * (c - p)).sum(axis=-1)  # (K,)
-
-        # n^T [w]_x p = n^T (w x p) = w . (p x n)
-        pxn = np.cross(p, n)  # (K, 3)
-        A = np.hstack([pxn, n])  # (K, 6)
-
-        # Solve least-squares
-        result = np.linalg.lstsq(A, b_vec, rcond=None)
-        x = result[0]  # [wx, wy, wz, tx, ty, tz]
-        w = x[:3]
-        dt_obj = x[3:6]
-
-        # Compose rotation in SO(3): R_new = R @ dR_obj^T = R @ R(-w)
-        # Accumulate in axis-angle space, then reconstruct R next iteration.
-        acc_rotvec = (ScipyRotation.from_rotvec(acc_rotvec) * ScipyRotation.from_rotvec(-w)).as_rotvec()
-        R_new = ScipyRotation.from_rotvec(acc_rotvec).as_matrix()
-        t = t - R_new @ dt_obj
-
-        if debug_dir is not None and (it % 5 == 0 or it == num_iters - 1):
-            _save_icp_iteration_debug(
-                debug_dir=debug_dir,
-                it=it,
-                pts_obj=pts_obj,
-                p=p,
-                c=c,
-            )
-
-    # Write back
-    R_final = ScipyRotation.from_rotvec(acc_rotvec).as_matrix()
-    extrinsics[frame_idx, :3, :3] = R_final.astype(np.float32)
-    extrinsics[frame_idx, :3, 3] = t.astype(np.float32)
-    print(f"[align_depth] Frame {frame_idx}: alignment done, {int(inlier.sum())} inliers")
+    extrinsics[frame_idx, :3, :3] = best["R"].astype(np.float32)
+    extrinsics[frame_idx, :3, 3] = best["t"].astype(np.float32)
+    print(
+        f"[align_depth] Frame {frame_idx}: alignment done, "
+        f"best_loss={best['loss']:.6f}, valid={best['valid']}"
+    )
     return True
 
 
@@ -1068,6 +1118,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         "extrinsics": extrinsics,
         "intrinsics": intrinsics,
         "depth_priors": depth_priors,
+        "normal_priors": preprocessed_data.get("normals"),
         "images": preprocessed_data["images"],
         "image_masks": preprocessed_data.get("masks_obj"),
         "keyframe": np.array(image_info["keyframe"], dtype=bool),
