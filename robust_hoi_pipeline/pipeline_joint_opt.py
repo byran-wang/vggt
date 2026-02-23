@@ -876,7 +876,7 @@ def _joint_optimize_keyframes(
 
         optimizer.step()
 
-        if it == 0 or (it + 1) % 1 == 0:
+        if it == 0 or (it + 1) % 5 == 0:
             print(f"[joint_opt] {it+1}/{num_iters}  reproj={loss_r.item():.3f}  "
                   f"p2plane={loss_p.item():.5f}  p2depth={loss_d.item():.5f}  total={loss.item():.3f}")
 
@@ -898,7 +898,7 @@ def _joint_optimize_keyframes(
     
 def print_image_info_stats(image_info, invalid_cnt):
     print(
-        f"total : {len(image_info['frame_indices'])}, "
+        f"stats {np.array(image_info['registered']).sum() + np.array(image_info['invalid']).sum() - 1}/{len(image_info['frame_indices'])} :, " # -1 for the first condition frame
         f"registered: {np.array(image_info['registered']).sum()}, "
         f"keyframes: {np.array(image_info['keyframe']).sum()}, "
         f"invalid: {np.array(image_info['invalid']).sum()}"
@@ -1004,7 +1004,8 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         #     print_image_info_stats(image_info_work, invalid_cnt)
         #     continue
         
-        if check_reprojection_error(image_info_work, next_frame_idx, args):
+        sucess, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args)
+        if not sucess:
             print(f"[register_remaining_frames] Frame {next_frame_idx} align depth to mesh due to high reprojection error")
             # Reset pose to nearest registered frame
             registered = np.asarray(image_info_work["registered"]).astype(bool)
@@ -1034,15 +1035,20 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                     invalid_cnt["reproj_err"] += 1
                     save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
                     print_image_info_stats(image_info_work, invalid_cnt)
-                    continue                    
+                    continue
+                else:
+                    sucess, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args, skip_check=True)
+                    print(f"[register_remaining_frames] After depth-mesh alignment, reprojection error for frame {next_frame_idx}: {mean_error:.2f}")
+
+
         
                 # mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
 
 
         image_info_work["registered"][next_frame_idx] = True
         print(f"Successfully registered frame {image_info['frame_indices'][next_frame_idx]}")
-
-        if 1:
+        key_frame_min_reproj_thresh = 2.0
+        if mean_error <= key_frame_min_reproj_thresh:
             if check_key_frame(
                 image_info_work,
                 next_frame_idx,
@@ -1087,6 +1093,8 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                         latest_neus_mesh = neus_mesh
                     except Exception as exc:
                         print(f"[register_remaining_frames] NeuS resume failed: {exc}")
+        else:
+            print(f"Frame {image_info['frame_indices'][next_frame_idx]} not marked as keyframe due to high reprojection error ({mean_error:.2f} > {key_frame_min_reproj_thresh})")     
 
 
 

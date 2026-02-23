@@ -235,7 +235,7 @@ def check_key_frame(image_info, frame_idx, rot_thresh, trans_thresh, depth_thres
     return True
 
 
-def check_reprojection_error(image_info, frame_idx, args, min_valid_points=150):
+def check_reprojection_error(image_info, frame_idx, args, min_valid_points=100, skip_check=False):
     """Check if frame has high reprojection error using low-uncertainty 3D points.
 
     Reprojects 3D points (filtered by uncertainty threshold) to the frame and
@@ -256,10 +256,11 @@ def check_reprojection_error(image_info, frame_idx, args, min_valid_points=150):
     extrinsics = image_info.get("extrinsics")
     intrinsics = image_info.get("intrinsics")
     uncertainties = image_info.get("uncertainties")
+    mean_error = np.inf
 
     if points_3d is None or pred_tracks is None or track_mask is None:
         print(f"[check_reprjection_error] Missing required data, skipping check")
-        return True
+        return False, mean_error
 
     # Get frame-specific data
     frame_track_mask = np.asarray(track_mask[frame_idx]).astype(bool)
@@ -269,9 +270,9 @@ def check_reprojection_error(image_info, frame_idx, args, min_valid_points=150):
 
     num_valid = np.sum(valid_mask)
     print(f"[check_reprjection_error] Frame {frame_idx}: {num_valid} valid points for reprojection error check")
-    if num_valid < min_valid_points:
+    if (not skip_check) and (num_valid < min_valid_points):
         print(f"[check_reprjection_error] Frame {frame_idx}: insufficient valid points ({num_valid} < {min_valid_points}), skipping check")
-        return True
+        return False, mean_error
 
     # Get 3D points and 2D tracks for valid points
     pts_3d = np.asarray(points_3d)[valid_mask]
@@ -289,9 +290,9 @@ def check_reprojection_error(image_info, frame_idx, args, min_valid_points=150):
 
     # Filter points behind camera
     valid_z = cam_pts[:, 2] > 0
-    if np.sum(valid_z) < 10:
+    if (not skip_check) and (np.sum(valid_z) < 10):
         print(f"[check_reprjection_error] Frame {frame_idx}: insufficient points in front of camera, marking invalid")
-        return True
+        return False, mean_error
 
     cam_pts = cam_pts[valid_z]
     tracks_2d = tracks_2d[valid_z]
@@ -314,11 +315,11 @@ def check_reprojection_error(image_info, frame_idx, args, min_valid_points=150):
     if mean_error > max_reproj_error:
         print(f"[check_reprjection_error] Frame {frame_idx} invalid: high reprojection error "
               f"(mean={mean_error:.2f}, median={median_error:.2f} > {max_reproj_error})")
-        return True
+        return False, mean_error
 
     print(f"[check_reprjection_error] Frame {frame_idx} passed: reprojection error "
           f"(mean={mean_error:.2f}, median={median_error:.2f})")
-    return False
+    return True, mean_error
 
 
 def _predict_new_tracks(images, image_masks, frame_idx, args, dtype):
