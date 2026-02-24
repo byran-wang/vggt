@@ -15,7 +15,8 @@ sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
 from utils_simba.depth import get_depth, depth2xyzmap
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_sam3d_transform
-
+import os
+RUN_ON_PC = os.getenv("RUN_ON_PC", "").lower() == "true"
 
 class TeeStream:
     """Duplicate writes to multiple streams."""
@@ -403,6 +404,9 @@ def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir:
 
 def _build_default_joint_opt_args(output_dir: Path, cond_index: int) -> SimpleNamespace:
     """Create a minimal args namespace for frame management helpers."""
+    only_save_register_order = True
+    if RUN_ON_PC:
+        only_save_register_order = False
     return SimpleNamespace(
         output_dir=str(output_dir),
         cond_index=cond_index,
@@ -426,7 +430,7 @@ def _build_default_joint_opt_args(output_dir: Path, cond_index: int) -> SimpleNa
         pnp_reproj_thresh=4.0,
         joint_opt_reproj_thresh=4.0,
         no_optimize_with_point_to_plane=False,
-        only_save_register_order=True,
+        only_save_register_order=only_save_register_order,
     )
 
 
@@ -1263,10 +1267,13 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             # ).astype(image_info_work["track_mask"].dtype)
 
             # Align the frame with SAM3D mesh using depth with outlier rejection
+            debug_dir = None
+            if RUN_ON_PC:
+                debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
             if sam3d_mesh is not None:
                 print(f"[register_remaining_frames] Aligning frame {next_frame_idx} with SAM3D mesh using depth")
                 sucess = _align_frame_with_mesh_depth(image_info_work, next_frame_idx, sam3d_mesh, 
-                                             debug_dir=output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
+                                             debug_dir=debug_dir
                                              )
                 if not sucess:
                     image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True
