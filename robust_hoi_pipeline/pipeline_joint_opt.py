@@ -582,6 +582,41 @@ def _save_icp_iteration_debug(debug_dir, it, pts_obj, p, c):
         _debug_dir / f"closest_iter{it:03d}.ply")
 
 
+def _save_obj_depth_points_debug(debug_dir, frame_idx, pts_obj, filename_prefix, color_rgba):
+    if debug_dir is None or pts_obj is None or len(pts_obj) == 0:
+        return
+
+    import trimesh as _trimesh
+
+    _debug_dir = Path(debug_dir)
+    _debug_dir.mkdir(parents=True, exist_ok=True)
+    colors_obj = np.zeros((len(pts_obj), 4), dtype=np.uint8)
+    colors_obj[:, :] = np.array(color_rgba, dtype=np.uint8)
+    _trimesh.PointCloud(pts_obj.astype(np.float32), colors=colors_obj).export(
+        _debug_dir / f"{filename_prefix}_frame_{frame_idx:04d}.ply"
+    )
+
+
+def _save_normal_map_debug(debug_dir, frame_idx, normal_map, filename_prefix, it=None):
+    if debug_dir is None or normal_map is None:
+        return
+
+    from PIL import Image
+
+    normal_np = np.asarray(normal_map)
+    if normal_np.ndim != 3 or normal_np.shape[2] != 3:
+        return
+
+    normal_u8 = np.clip((normal_np + 1.0) * 0.5 * 255.0, 0, 255).astype(np.uint8)
+    _debug_dir = Path(debug_dir)
+    _debug_dir.mkdir(parents=True, exist_ok=True)
+    if it is None:
+        out_name = f"{filename_prefix}_frame_{frame_idx:04d}.png"
+    else:
+        out_name = f"{filename_prefix}_frame_{frame_idx:04d}_iter{it:03d}.png"
+    Image.fromarray(normal_u8, mode="RGB").save(_debug_dir / out_name)
+
+
 def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000, num_iters=60, inlier_thresh=0.3, debug_dir=None):
     """Align a frame by optimizing pose with rendered-vs-observed depth/normal losses."""
     import torch
@@ -606,6 +641,12 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
     n_obs = None
     if normal_priors is not None and frame_idx < len(normal_priors):
         n_obs = normal_priors[frame_idx]
+        _save_normal_map_debug(
+            debug_dir=debug_dir,
+            frame_idx=frame_idx,
+            normal_map=n_obs,
+            filename_prefix="normal_prior_raw",
+        )
 
     vmask = d > 0.01
     masks = image_info_work.get("image_masks")
@@ -640,6 +681,14 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
     R0 = ext0[:3, :3]
     t0 = ext0[:3, 3]
     pts_obj0 = (R0.T @ (pts_cam - t0).T).T
+    _save_obj_depth_points_debug(
+        debug_dir=debug_dir,
+        frame_idx=frame_idx,
+        pts_obj=pts_obj0,
+        filename_prefix="depth_obj",
+        color_rgba=(255, 255, 0, 255),
+    )
+
     bbox_min = np.array([-0.8, -0.8, -0.8], dtype=np.float64)
     bbox_max = np.array([0.8, 0.8, 0.8], dtype=np.float64)
     in_bbox = np.all((pts_obj0 >= bbox_min) & (pts_obj0 <= bbox_max), axis=1)
@@ -656,6 +705,11 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
     if len(ys) > max_pts:
         sel = np.random.choice(len(ys), max_pts, replace=False)
         ys, xs = ys[sel], xs[sel]
+
+    zs_sel = d[ys, xs].astype(np.float64)
+    xc_sel = (xs.astype(np.float64) - K[0, 2]) * zs_sel / K[0, 0]
+    yc_sel = (ys.astype(np.float64) - K[1, 2]) * zs_sel / K[1, 1]
+    pts_cam_sel = np.stack([xc_sel, yc_sel, zs_sel], axis=-1)
 
     if not torch.cuda.is_available():
         print(f"[align_depth] Frame {frame_idx}: CUDA unavailable, skipping depth-normal optimization")
@@ -773,6 +827,14 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
             best["valid"] = valid_count
 
         if it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1:
+            if normal_r is not None:
+                _save_normal_map_debug(
+                    debug_dir=debug_dir,
+                    frame_idx=frame_idx,
+                    normal_map=normal_r.detach().cpu().numpy(),
+                    filename_prefix="normal_rendered",
+                    it=it + 1,
+                )
             print(
                 f"[align_depth] Frame {frame_idx}: iter {it+1}/{num_iters}, "
                 f"loss_d={loss_depth.item():.6f}, loss_n={loss_normal.item():.6f}, valid={valid_count}"
@@ -781,6 +843,15 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
     if not np.isfinite(best["loss"]) or best["valid"] < 100:
         print(f"[align_depth] Frame {frame_idx}: optimization failed (best_valid={best['valid']})")
         return False
+
+    pts_obj_opt = (best["R"].T @ (pts_cam_sel - best["t"]).T).T
+    _save_obj_depth_points_debug(
+        debug_dir=debug_dir,
+        frame_idx=frame_idx,
+        pts_obj=pts_obj_opt,
+        filename_prefix="depth_obj_optimized",
+        color_rgba=(0, 255, 0, 255),
+    )
 
     extrinsics[frame_idx, :3, :3] = best["R"].astype(np.float32)
     extrinsics[frame_idx, :3, 3] = best["t"].astype(np.float32)
