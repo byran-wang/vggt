@@ -60,9 +60,11 @@ def load_preprocessed_data(data_preprocess_dir: Path, frame_indices: List[int]) 
         - normals: list of (H, W, 3) normal maps
         - intrinsics: list of (3, 3) camera intrinsic matrices
         - hand_poses: list of hand pose data (or None)
+        - hand_meshes: list of hand meshes {'vertices': (V,3), 'faces': (F,3)} or None
     """
     from PIL import Image
     from utils_simba.depth import get_depth, get_normal
+    import trimesh
 
     data = {
         'frame_indices': frame_indices,
@@ -73,6 +75,8 @@ def load_preprocessed_data(data_preprocess_dir: Path, frame_indices: List[int]) 
         'normals': [],
         'intrinsics': [],
         'hand_poses': [],
+        'hand_meshes_right': [],
+        'hand_meshes_left': [],
     }
 
     for frame_idx in frame_indices:
@@ -127,6 +131,22 @@ def load_preprocessed_data(data_preprocess_dir: Path, frame_indices: List[int]) 
             data['intrinsics'].append(None)
             data['hand_poses'].append(None)
 
+        # Load sealed hand mesh generated in preprocessing.
+        for key in ["right", "left"]:
+            hand_mesh_path = data_preprocess_dir / "hand" / f"{frame_idx:04d}_{key}.obj"
+            if hand_mesh_path.exists():
+                try:
+                    hand_mesh = trimesh.load(str(hand_mesh_path), process=False, force="mesh")
+                    data[f'hand_meshes_{key}'].append(
+                        {
+                            "vertices": np.asarray(hand_mesh.vertices, dtype=np.float32),
+                            "faces": np.asarray(hand_mesh.faces, dtype=np.int32),
+                        }
+                    )
+                except Exception:
+                    data[f'hand_meshes_{key}'].append(None)
+            else:
+                data[f'hand_meshes_{key}'].append(None)
     return data
 
 
@@ -1282,8 +1302,12 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         "intrinsics": intrinsics,
         "depth_priors": depth_priors,
         "normal_priors": preprocessed_data.get("normals"),
+        "hand_poses": preprocessed_data.get("hand_poses"),
+        "hand_meshes_right": preprocessed_data.get("hand_meshes_right"),
+        "hand_meshes_left": preprocessed_data.get("hand_meshes_left"),
         "images": preprocessed_data["images"],
         "image_masks": preprocessed_data.get("masks_obj"),
+        "image_masks_hand": preprocessed_data.get("masks_hand"),
         "keyframe": np.array(image_info["keyframe"], dtype=bool),
         "registered": np.array(image_info["register"], dtype=bool),
         "invalid": np.array(image_info["invalid"], dtype=bool),
