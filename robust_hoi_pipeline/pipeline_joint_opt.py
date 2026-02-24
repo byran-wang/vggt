@@ -889,6 +889,16 @@ def rodrigues(aa):
     I3 = torch.eye(3, device=device, dtype=torch.float32).unsqueeze(0)
     return (c * I3 + s * Kx + (1 - c) * k.unsqueeze(-1) @ k.unsqueeze(-2))[0]
 
+def gmof(x, sigma):
+    """
+    Geman-McClure error function
+    """
+    x_squared = x**2
+    sigma_squared = sigma**2
+    # loss_val = (sigma_squared * x_squared) / (sigma_squared + x_squared + 1e-8)
+    loss_val = (x_squared) / (sigma_squared + x_squared + 1e-8)
+    return loss_val
+
 def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2000, num_iters=60, inlier_thresh=0.3, debug_dir=None):
     """Align a frame by optimizing pose with rendered-vs-observed depth/normal losses."""
 
@@ -1037,7 +1047,8 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
 
         depth_res = depth_r[valid] - obs_depth[valid]
         depth_abs = depth_res.abs()
-        loss_depth = torch.where(depth_abs < 0.02, 0.5 * depth_res ** 2, 0.02 * (depth_abs - 0.01)).mean()
+        # loss_depth = torch.where(depth_abs < 0.02, 0.5 * depth_res ** 2, 0.02 * (depth_abs - 0.01)).mean()
+        loss_depth = gmof(depth_abs, sigma=0.1).mean(dim=-1)
 
         if obs_normal is not None and normal_r is not None:
             dot = (normal_r[valid] * obs_normal[valid]).sum(dim=-1).clamp(-1.0, 1.0)
