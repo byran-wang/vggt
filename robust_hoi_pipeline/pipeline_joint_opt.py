@@ -7,6 +7,11 @@ from types import SimpleNamespace
 from tqdm import tqdm
 
 import numpy as np
+import torch
+import torch.nn.functional as F
+import nvdiffrast.torch as dr
+from scipy.spatial.transform import Rotation as ScipyRotation
+
 
 import sys
 project_root = Path(__file__).parent.parent
@@ -14,9 +19,11 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
 from utils_simba.depth import get_depth, depth2xyzmap
+from utils_simba.render import diff_renderer, projection_matrix_from_intrinsics
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_sam3d_transform
 import os
 RUN_ON_PC = os.getenv("RUN_ON_PC", "").lower() == "true"
+device = "cuda"
 
 class TeeStream:
     """Duplicate writes to multiple streams."""
@@ -650,16 +657,59 @@ def _smooth_normal_map_masked(normal_map, valid_mask, num_iters=2, kernel_size=3
     return normal_chw[0].permute(1, 2, 0)
 
 
-def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000, num_iters=60, inlier_thresh=0.3, debug_dir=None):
-    """Align a frame by optimizing pose with rendered-vs-observed depth/normal losses."""
+def _depth_pixels_to_cam_points(depth_map, K, ys, xs):
+    """Back-project selected depth pixels to camera-space points (N, 3)."""
+    zs = depth_map[ys, xs].astype(np.float64)
+    xc = (xs.astype(np.float64) - K[0, 2]) * zs / K[0, 0]
+    yc = (ys.astype(np.float64) - K[1, 2]) * zs / K[1, 1]
+    return np.stack([xc, yc, zs], axis=-1)
+
+
+def _cam_points_to_object_points(pts_cam, extrinsic):
+    """Transform camera-space points to object space using o2c extrinsic."""
+    R = extrinsic[:3, :3]
+    t = extrinsic[:3, 3]
+    return (R.T @ (pts_cam - t).T).T
+
+
+def _build_observation_mask(height, width, ys, xs, device):
+    """Create boolean HxW observation mask from selected pixel indices."""
     import torch
-    import torch.nn.functional as F
-    import nvdiffrast.torch as dr
-    from scipy.spatial.transform import Rotation as ScipyRotation
-    from utils_simba.render import diff_renderer, projection_matrix_from_intrinsics
 
-    del inlier_thresh  # kept in signature for compatibility
+    obs_mask = torch.zeros((height, width), dtype=torch.bool, device=device)
+    obs_mask[torch.tensor(ys, device=device), torch.tensor(xs, device=device)] = True
+    return obs_mask
 
+
+def _filter_pixels_in_object_bbox(depth_map, K, extrinsics, frame_idx, ys, xs, bbox_min=None, bbox_max=None):
+    """Keep only depth pixels whose object-space points are inside a 3D bbox."""
+    ext0 = extrinsics[frame_idx].astype(np.float64)
+    pts_cam = _depth_pixels_to_cam_points(depth_map, K, ys, xs)
+    pts_obj0 = _cam_points_to_object_points(pts_cam, ext0)
+
+    if bbox_min is None:
+        bbox_min = np.array([-0.8, -0.8, -0.8], dtype=np.float64)
+    else:
+        bbox_min = np.asarray(bbox_min, dtype=np.float64)
+    if bbox_max is None:
+        bbox_max = np.array([0.8, 0.8, 0.8], dtype=np.float64)
+    else:
+        bbox_max = np.asarray(bbox_max, dtype=np.float64)
+
+    in_bbox = np.all((pts_obj0 >= bbox_min) & (pts_obj0 <= bbox_max), axis=1)
+    return ys[in_bbox], xs[in_bbox], ext0
+
+
+def _prepare_frame_observations(
+    image_info_work,
+    frame_idx,
+    torch_device=None,
+    normal_smooth_iters=5,
+    normal_kernel_size=5,
+    normal_eps=1e-6,
+    debug_dir=None,
+):
+    """Collect per-frame observations and optionally prepare smoothed normal tensor."""
     depth_priors = image_info_work.get("depth_priors")
     normal_priors = image_info_work.get("normal_priors")
     intrinsics = image_info_work.get("intrinsics")
@@ -668,12 +718,10 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
     d = depth_priors[frame_idx]
     if d is None:
         print(f"[align_depth] Frame {frame_idx}: no depth, skipping")
-        return False
+        return None
 
     K = intrinsics[frame_idx] if intrinsics.ndim == 3 else intrinsics
-    n_obs = None
-    if normal_priors is not None and frame_idx < len(normal_priors):
-        n_obs = normal_priors[frame_idx]
+    n_obs = normal_priors[frame_idx] if (normal_priors is not None and frame_idx < len(normal_priors)) else None
 
     vmask = d > 0.01
     masks = image_info_work.get("image_masks")
@@ -683,6 +731,84 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
         vmask = vmask & np.isfinite(n_obs).all(axis=-1) & (np.linalg.norm(n_obs, axis=-1) > 1e-6)
 
     ys, xs = np.where(vmask)
+
+    obs_normal = None
+    if n_obs is not None and torch_device is not None:
+        n_obs_f = n_obs.astype(np.float32)
+        obs_normal = torch.tensor(n_obs_f, dtype=torch.float32, device=torch_device)
+        obs_normal = F.normalize(obs_normal, dim=-1)
+        obs_normal = _smooth_normal_map_masked(
+            obs_normal,
+            vmask,
+            num_iters=normal_smooth_iters,
+            kernel_size=normal_kernel_size,
+            eps=normal_eps,
+        )
+        _save_normal_map_debug(
+            debug_dir=debug_dir,
+            frame_idx=frame_idx,
+            normal_map=obs_normal,
+            filename_prefix="normal_prior_smoothed",
+        )
+
+    return d, K, n_obs, vmask, masks, ys, xs, extrinsics, obs_normal
+
+
+def _prepare_render_inputs(mesh, K, H, W, device):
+    """Prepare renderer context, mesh tensors, and camera projection tensor."""
+    glctx = dr.RasterizeCudaContext()
+
+    verts = torch.tensor(mesh.vertices, dtype=torch.float32, device=device)[None]
+    tri = torch.tensor(mesh.faces, dtype=torch.int32, device=device)
+    vnormals = torch.tensor(mesh.vertex_normals, dtype=torch.float32, device=device)[None]
+
+    if mesh.visual.vertex_colors is not None:
+        colors_np = np.asarray(mesh.visual.vertex_colors[:, :3], dtype=np.float32) / 255.0
+    else:
+        colors_np = np.full((len(mesh.vertices), 3), 0.5, dtype=np.float32)
+    color = torch.tensor(colors_np, dtype=torch.float32, device=device)[None]
+
+    proj_np = projection_matrix_from_intrinsics(K.astype(np.float64), height=H, width=W, znear=0.1, zfar=100.0)
+    projection = torch.tensor(proj_np, dtype=torch.float32, device=device)
+    return glctx, verts, tri, vnormals, color, projection
+
+
+def rodrigues(aa):
+    aa_b = aa[None]
+    th = aa_b.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+    k = aa_b / th
+    Kx = torch.zeros(1, 3, 3, device=device, dtype=torch.float32)
+    Kx[:, 0, 1] = -k[:, 2]
+    Kx[:, 0, 2] = k[:, 1]
+    Kx[:, 1, 0] = k[:, 2]
+    Kx[:, 1, 2] = -k[:, 0]
+    Kx[:, 2, 0] = -k[:, 1]
+    Kx[:, 2, 1] = k[:, 0]
+    c = torch.cos(th).unsqueeze(-1)
+    s = torch.sin(th).unsqueeze(-1)
+    I3 = torch.eye(3, device=device, dtype=torch.float32).unsqueeze(0)
+    return (c * I3 + s * Kx + (1 - c) * k.unsqueeze(-1) @ k.unsqueeze(-2))[0]
+
+def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000, num_iters=60, inlier_thresh=0.3, debug_dir=None):
+    """Align a frame by optimizing pose with rendered-vs-observed depth/normal losses."""
+
+
+    del inlier_thresh  # kept in signature for compatibility
+
+    normal_device = device if torch.cuda.is_available() else "cpu"
+    frame_obs = _prepare_frame_observations(
+        image_info_work,
+        frame_idx,
+        torch_device=normal_device,
+        normal_smooth_iters=5,
+        normal_kernel_size=5,
+        normal_eps=1e-6,
+        debug_dir=debug_dir,
+    )
+    if frame_obs is None:
+        return False
+
+    d, K, n_obs, vmask, masks, ys, xs, extrinsics, obs_normal = frame_obs
     if debug_dir is not None:
         _save_depth_alignment_debug(
             image_info_work=image_info_work,
@@ -695,29 +821,11 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
             debug_dir=debug_dir,
         )
 
-    zs = d[ys, xs].astype(np.float64)
-    xc = (xs.astype(np.float64) - K[0, 2]) * zs / K[0, 0]
-    yc = (ys.astype(np.float64) - K[1, 2]) * zs / K[1, 1]
-    pts_cam = np.stack([xc, yc, zs], axis=-1)
-
-    ext0 = extrinsics[frame_idx].astype(np.float64)
-    R0 = ext0[:3, :3]
-    t0 = ext0[:3, 3]
-    pts_obj0 = (R0.T @ (pts_cam - t0).T).T
-
-
-    bbox_min = np.array([-0.8, -0.8, -0.8], dtype=np.float64)
-    bbox_max = np.array([0.8, 0.8, 0.8], dtype=np.float64)
-    in_bbox = np.all((pts_obj0 >= bbox_min) & (pts_obj0 <= bbox_max), axis=1)
-    ys = ys[in_bbox]
-    xs = xs[in_bbox]
+    ys, xs, ext0 = _filter_pixels_in_object_bbox(d, K, extrinsics, frame_idx, ys, xs)
 
     if debug_dir is not None:
-        zs = d[ys, xs].astype(np.float64)
-        xc = (xs.astype(np.float64) - K[0, 2]) * zs / K[0, 0]
-        yc = (ys.astype(np.float64) - K[1, 2]) * zs / K[1, 1]
-        pts_cam = np.stack([xc, yc, zs], axis=-1)
-        pts_obj0 = (R0.T @ (pts_cam - t0).T).T
+        pts_cam = _depth_pixels_to_cam_points(d, K, ys, xs)
+        pts_obj0 = _cam_points_to_object_points(pts_cam, ext0)
         _save_obj_depth_points_debug(
             debug_dir=debug_dir,
             frame_idx=frame_idx,
@@ -737,68 +845,21 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
         sel = np.random.choice(len(ys), max_pts, replace=False)
         ys, xs = ys[sel], xs[sel]
 
-    zs_sel = d[ys, xs].astype(np.float64)
-    xc_sel = (xs.astype(np.float64) - K[0, 2]) * zs_sel / K[0, 0]
-    yc_sel = (ys.astype(np.float64) - K[1, 2]) * zs_sel / K[1, 1]
-    pts_cam_sel = np.stack([xc_sel, yc_sel, zs_sel], axis=-1)
+    pts_cam_sel = _depth_pixels_to_cam_points(d, K, ys, xs)
 
     if not torch.cuda.is_available():
         print(f"[align_depth] Frame {frame_idx}: CUDA unavailable, skipping depth-normal optimization")
         return False
 
     H, W = d.shape
-    device = "cuda"
-    glctx = dr.RasterizeCudaContext()
-
-    verts = torch.tensor(mesh.vertices, dtype=torch.float32, device=device)[None]
-    tri = torch.tensor(mesh.faces, dtype=torch.int32, device=device)
-    vnormals = torch.tensor(mesh.vertex_normals, dtype=torch.float32, device=device)[None]
-    if mesh.visual.vertex_colors is not None:
-        colors_np = np.asarray(mesh.visual.vertex_colors[:, :3], dtype=np.float32) / 255.0
-    else:
-        colors_np = np.full((len(mesh.vertices), 3), 0.5, dtype=np.float32)
-    color = torch.tensor(colors_np, dtype=torch.float32, device=device)[None]
-
-    proj_np = projection_matrix_from_intrinsics(K.astype(np.float64), height=H, width=W, znear=0.1, zfar=100.0)
-    projection = torch.tensor(proj_np, dtype=torch.float32, device=device)
+    glctx, verts, tri, vnormals, color, projection = _prepare_render_inputs(mesh, K, H, W, device)
 
     obs_depth = torch.tensor(d.astype(np.float32), dtype=torch.float32, device=device)
-    obs_mask = torch.zeros((H, W), dtype=torch.bool, device=device)
-    obs_mask[torch.tensor(ys, device=device), torch.tensor(xs, device=device)] = True
-
-    obs_normal = None
-    if n_obs is not None:
-        n_obs_f = n_obs.astype(np.float32)
-        obs_normal = torch.tensor(n_obs_f, dtype=torch.float32, device=device)
-        obs_normal = F.normalize(obs_normal, dim=-1)
-        obs_normal = _smooth_normal_map_masked(obs_normal, vmask, num_iters=5, kernel_size=5, eps=1e-6)
-
-        _save_normal_map_debug(
-            debug_dir=debug_dir,
-            frame_idx=frame_idx,
-            normal_map=obs_normal,
-            filename_prefix="normal_prior_smoothed",
-        )        
+    obs_mask = _build_observation_mask(H, W, ys, xs, device)
 
     init_rot = ScipyRotation.from_matrix(ext0[:3, :3]).as_rotvec().astype(np.float32)
     rotvec = torch.tensor(init_rot, dtype=torch.float32, device=device, requires_grad=True)
     trans = torch.tensor(ext0[:3, 3].astype(np.float32), dtype=torch.float32, device=device, requires_grad=True)
-
-    def rodrigues(aa):
-        aa_b = aa[None]
-        th = aa_b.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-        k = aa_b / th
-        Kx = torch.zeros(1, 3, 3, device=device, dtype=torch.float32)
-        Kx[:, 0, 1] = -k[:, 2]
-        Kx[:, 0, 2] = k[:, 1]
-        Kx[:, 1, 0] = k[:, 2]
-        Kx[:, 1, 2] = -k[:, 0]
-        Kx[:, 2, 0] = -k[:, 1]
-        Kx[:, 2, 1] = k[:, 0]
-        c = torch.cos(th).unsqueeze(-1)
-        s = torch.sin(th).unsqueeze(-1)
-        I3 = torch.eye(3, device=device, dtype=torch.float32).unsqueeze(0)
-        return (c * I3 + s * Kx + (1 - c) * k.unsqueeze(-1) @ k.unsqueeze(-2))[0]
 
     optimizer = torch.optim.Adam([rotvec, trans], lr=2e-3)
     best = {"loss": float("inf"), "R": ext0[:3, :3].copy(), "t": ext0[:3, 3].copy(), "valid": 0}
@@ -810,33 +871,23 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
         o2c[:3, :3] = R
         o2c[:3, 3] = trans
 
-        if obs_normal is not None:
-            _, depth_r, normal_r = diff_renderer(
-                verts=verts,
-                tri=tri,
-                color=color,
-                projection=projection,
-                ob_in_cvcams=o2c,
-                resolution=np.asarray([H, W]),
-                glctx=glctx,
-                get_normal=True,
-                vnormals=vnormals,
-            )
-            normal_r = torch.flip(normal_r[0], dims=[0])
-            normal_r = F.normalize(normal_r, dim=-1)
-            # permute last two channels to match OpenCV convention
-            normal_r = normal_r[:, :, [0, 2, 1]]
-        else:
-            _, depth_r = diff_renderer(
-                verts=verts,
-                tri=tri,
-                color=color,
-                projection=projection,
-                ob_in_cvcams=o2c,
-                resolution=np.asarray([H, W]),
-                glctx=glctx,
-            )
-            normal_r = None
+
+        _, depth_r, normal_r = diff_renderer(
+            verts=verts,
+            tri=tri,
+            color=color,
+            projection=projection,
+            ob_in_cvcams=o2c,
+            resolution=np.asarray([H, W]),
+            glctx=glctx,
+            get_normal=True,
+            vnormals=vnormals,
+        )
+        normal_r = torch.flip(normal_r[0], dims=[0])
+        normal_r = F.normalize(normal_r, dim=-1)
+        # permute last two channels to match OpenCV convention
+        normal_r = normal_r[:, :, [0, 2, 1]]
+
 
         depth_r = torch.flip(depth_r[0], dims=[0])
         valid = obs_mask & (depth_r > 0) & torch.isfinite(depth_r)
