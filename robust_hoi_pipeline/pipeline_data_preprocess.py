@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
+import trimesh
 
 # Add project root to path
 import sys
@@ -22,6 +23,15 @@ from utils_simba.depth import load_filtered_depth, depth2xyzmap, get_depth, save
 from robust_hoi_pipeline.geometry_utils import compute_normals_from_depth
 from robust_hoi_pipeline.pipeline_utils import load_intrinsics_from_meta
 
+try:
+    from viewer.viewer_step import HandDataProvider
+except Exception:
+    HandDataProvider = None
+
+try:
+    from common.body_models import seal_mano_mesh_np
+except Exception:
+    seal_mano_mesh_np = None
 
 
 
@@ -103,6 +113,41 @@ def save_point_cloud_ply(points: np.ndarray, colors: np.ndarray, output_path: Pa
                     f"{int(colors[i, 0])} {int(colors[i, 1])} {int(colors[i, 2])}\n")
 
 
+def _get_hand_mesh_cam(hand_provider, frame_idx: int, mode="trans"):
+    """Load right-hand mesh in camera space for one frame."""
+    if hand_provider is None:
+        return None, None
+
+
+    faces = hand_provider.get_hand_faces(mode)
+    verts = hand_provider.get_hand_verts_cam(mode, frame_idx)
+
+    verts = np.asarray(verts, dtype=np.float32)
+    faces = np.asarray(faces, dtype=np.int32)
+    if verts.ndim == 2 and verts.shape[1] == 3 and faces.ndim == 2 and faces.shape[1] == 3:
+        return verts, faces
+    return None, None
+
+
+def _save_sealed_right_hand_mesh(hand_dir: Path, frame_idx: int, verts_cam: np.ndarray, faces: np.ndarray, obj_scale: Optional[float]):
+    """Scale, seal and save right-hand MANO mesh."""
+    verts_scaled = np.asarray(verts_cam, dtype=np.float32).copy()
+    if obj_scale is not None and obj_scale != 0:
+        # Match depth preprocessing convention (depth is divided by obj_scale).
+        verts_scaled = verts_scaled / float(obj_scale)
+
+    verts_batch = verts_scaled[None]  # (1, V, 3)
+    faces_np = np.asarray(faces, dtype=np.int32)
+    if seal_mano_mesh_np is not None:
+        sealed_verts, sealed_faces = seal_mano_mesh_np(verts_batch, faces_np, is_rhand=True)
+        sealed_verts = sealed_verts[0]
+    else:
+        sealed_verts, sealed_faces = verts_batch[0], faces_np
+
+    mesh = trimesh.Trimesh(vertices=sealed_verts, faces=sealed_faces, process=False)
+    mesh.export(hand_dir / f"{frame_idx:04d}_right.obj")
+
+
 def pipeline_data_preprocess(args):
     """Master orchestration function for data preprocessing pipeline.
 
@@ -131,7 +176,8 @@ def pipeline_data_preprocess(args):
     mask_hand_dir = data_dir / "mask_hand"
     intrinsic_dir = data_dir / "meta"
     depth_dir = data_dir / "depth"
-    hand_pose_file = data_dir / "hands" / "hold_fit.init.npy"
+    hand_dir = data_dir 
+    hand_pose_file = hand_dir / "hold_fit.init.npy"
     sam3d_transform_file = data_dir/ "SAM3D_aligned_post_process" /f"{args.cond_index:04d}" / "aligned_transform.json" # such as output/SM2/gen_3d_aligned_SAM3D/aligned_transform.json
 
     out_dir = Path(args.output_dir)
@@ -166,6 +212,18 @@ def pipeline_data_preprocess(args):
             print(f"Loaded hand poses as dict with {len(hand_poses)} keys")
         else:
             print(f"Loaded hand poses type: {type(hand_poses)}")
+
+    hand_provider = None
+    if HandDataProvider is not None and hand_dir.exists():
+        try:
+            hand_provider = HandDataProvider(hand_dir)
+            if getattr(hand_provider, "has_hand", False):
+                print(f"Loaded HandDataProvider from {hand_dir}")
+            else:
+                hand_provider = None
+                print(f"Warning: HandDataProvider found no hand fits under {hand_dir}")
+        except Exception as e:
+            print(f"Warning: Failed to initialize HandDataProvider from {hand_dir}: {e}")
 
     # Load SAM3D scale for transforming depth to object space
     obj_scale = None
@@ -335,6 +393,7 @@ def pipeline_data_preprocess(args):
     (out_dir / "mask_hand").mkdir(exist_ok=True)
     (out_dir / "depth_filtered").mkdir(exist_ok=True)
     (out_dir / "normal").mkdir(exist_ok=True)
+    (out_dir / "hand").mkdir(exist_ok=True)
     (out_dir / "meta").mkdir(exist_ok=True)
 
     # Save each frame's data
@@ -364,6 +423,21 @@ def pipeline_data_preprocess(args):
         }
         with open(out_dir / "meta" / f"{frame_idx:04d}.pkl", 'wb') as f:
             pickle.dump(meta, f)
+
+        # Save sealed right-hand mesh (camera space, scaled by obj_scale)
+        if hand_provider is not None:
+            verts_cam, faces = _get_hand_mesh_cam(hand_provider, frame_idx, mode="trans") # mode choice "intrinsic" or "trans" or "rot"
+            if verts_cam is not None and faces is not None:
+                try:
+                    _save_sealed_right_hand_mesh(
+                        hand_dir=out_dir / "hand",
+                        frame_idx=frame_idx,
+                        verts_cam=verts_cam,
+                        faces=faces,
+                        obj_scale=obj_scale,
+                    )
+                except Exception as e:
+                    print(f"  Warning: Failed to save sealed right hand mesh for frame {frame_idx}: {e}")
 
     # Save frame list
     frame_list_path = out_dir / "frame_list.txt"
