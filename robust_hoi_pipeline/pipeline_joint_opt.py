@@ -652,6 +652,58 @@ def _save_normal_map_debug(debug_dir, frame_idx, normal_map, filename_prefix, it
     Image.fromarray(normal_u8, mode="RGB").save(_debug_dir / out_name)
 
 
+def _save_binary_mask_debug(debug_dir, frame_idx, mask, filename_prefix, it=None):
+    if debug_dir is None or mask is None:
+        return
+
+    from PIL import Image
+
+    if torch.is_tensor(mask):
+        mask_np = mask.detach().float().cpu().numpy()
+    else:
+        mask_np = np.asarray(mask)
+    if mask_np.ndim != 2:
+        return
+
+    _debug_dir = Path(debug_dir)
+    _debug_dir.mkdir(parents=True, exist_ok=True)
+    if it is None:
+        out_name = f"{filename_prefix}_frame_{frame_idx:04d}.png"
+    else:
+        out_name = f"{filename_prefix}_frame_{frame_idx:04d}_iter{it:03d}.png"
+    Image.fromarray((np.clip(mask_np, 0.0, 1.0) * 255.0).astype(np.uint8), mode="L").save(_debug_dir / out_name)
+
+
+def _save_mesh_debug(debug_dir, frame_idx, vertices, faces, filename_prefix, it=None):
+    if debug_dir is None or vertices is None or faces is None:
+        return
+    import trimesh as _trimesh
+
+    if torch.is_tensor(vertices):
+        verts_np = vertices.detach().cpu().numpy()
+    else:
+        verts_np = np.asarray(vertices)
+    if torch.is_tensor(faces):
+        faces_np = faces.detach().cpu().numpy()
+    else:
+        faces_np = np.asarray(faces)
+
+    if verts_np.ndim == 3:
+        verts_np = verts_np[0]
+    if faces_np.ndim != 2 or verts_np.ndim != 2:
+        return
+
+    _debug_dir = Path(debug_dir)
+    _debug_dir.mkdir(parents=True, exist_ok=True)
+    if it is None:
+        out_name = f"{filename_prefix}_frame_{frame_idx:04d}.obj"
+    else:
+        out_name = f"{filename_prefix}_frame_{frame_idx:04d}_iter{it:03d}.obj"
+    _trimesh.Trimesh(vertices=verts_np.astype(np.float32), faces=faces_np.astype(np.int32), process=False).export(
+        _debug_dir / out_name
+    )
+
+
 def _smooth_normal_map_masked(normal_map, valid_mask, num_iters=2, kernel_size=3, eps=1e-6):
     """Smooth an HxWx3 normal map with masked local averaging and renormalization."""
     import torch
@@ -793,6 +845,34 @@ def _prepare_render_inputs(mesh, K, H, W, device):
     return glctx, verts, tri, vnormals, color, projection
 
 
+
+
+
+def _build_observed_hoi_mask(image_info_work, frame_idx, H, W, device, debug_dir=None):
+    """Build observed HOI mask as union of object/hand masks."""
+    mask_union = np.zeros((H, W), dtype=bool)
+    masks_obj = image_info_work.get("image_masks")
+    masks_hand = image_info_work.get("image_masks_hand")
+
+    if masks_obj is not None and frame_idx < len(masks_obj) and masks_obj[frame_idx] is not None:
+        mask_union |= (np.asarray(masks_obj[frame_idx]) > 0)
+    if masks_hand is not None and frame_idx < len(masks_hand) and masks_hand[frame_idx] is not None:
+        mask_union |= (np.asarray(masks_hand[frame_idx]) > 0)
+
+    if not mask_union.any():
+        return None
+
+    if debug_dir is not None:
+        from PIL import Image
+
+        _debug_dir = Path(debug_dir)
+        _debug_dir.mkdir(parents=True, exist_ok=True)
+        mask_u8 = (mask_union.astype(np.uint8) * 255)
+        Image.fromarray(mask_u8, mode="L").save(_debug_dir / f"hoi_mask_union_frame_{frame_idx:04d}.png")
+
+    return torch.tensor(mask_union.astype(np.float32), dtype=torch.float32, device=device)
+
+
 def rodrigues(aa):
     aa_b = aa[None]
     th = aa_b.norm(dim=-1, keepdim=True).clamp(min=1e-8)
@@ -809,7 +889,7 @@ def rodrigues(aa):
     I3 = torch.eye(3, device=device, dtype=torch.float32).unsqueeze(0)
     return (c * I3 + s * Kx + (1 - c) * k.unsqueeze(-1) @ k.unsqueeze(-2))[0]
 
-def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000, num_iters=60, inlier_thresh=0.3, debug_dir=None):
+def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2000, num_iters=60, inlier_thresh=0.3, debug_dir=None):
     """Align a frame by optimizing pose with rendered-vs-observed depth/normal losses."""
 
 
@@ -872,7 +952,25 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
         return False
 
     H, W = d.shape
-    glctx, verts, tri, vnormals, color, projection = _prepare_render_inputs(mesh, K, H, W, device)
+    glctx, obj_verts, obj_tri, vnormals, color, projection = _prepare_render_inputs(obj_mesh, K, H, W, device)
+    obs_hoi_mask = _build_observed_hoi_mask(image_info_work, frame_idx, H, W, device, debug_dir=debug_dir)
+    obj_nv = int(obj_verts.shape[1])
+
+    # Load hand mesh in camera space (prefer preprocessed right-hand mesh, fallback to pose payload).
+    hand_verts_in_cam = hand_tri = hand_color = None
+    hand_meshes_right = image_info_work.get("hand_meshes_right")
+    hv_np = hf_np = None
+    if hand_meshes_right is not None and frame_idx < len(hand_meshes_right) and hand_meshes_right[frame_idx] is not None:
+        hand_mesh_data = hand_meshes_right[frame_idx]
+        hv_np = np.asarray(hand_mesh_data.get("vertices"), dtype=np.float32)
+        hf_np = np.asarray(hand_mesh_data.get("faces"), dtype=np.int32)
+
+
+    if hv_np is not None and hf_np is not None and hv_np.ndim == 2 and hf_np.ndim == 2:
+        hand_verts_in_cam = torch.tensor(hv_np, dtype=torch.float32, device=device)[None]  # (1, Nh, 3), camera space
+        hand_tri = torch.tensor(hf_np, dtype=torch.int32, device=device)  # (Fh, 3)
+        hand_color = torch.ones((1, hv_np.shape[0], 3), dtype=torch.float32, device=device)
+
 
     obs_depth = torch.tensor(d.astype(np.float32), dtype=torch.float32, device=device)
     obs_mask = _build_observation_mask(H, W, ys, xs, device)
@@ -892,9 +990,9 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
         o2c[:3, 3] = trans
 
 
-        _, depth_r, normal_r = diff_renderer(
-            verts=verts,
-            tri=tri,
+        obj_img, depth_r, normal_r = diff_renderer(
+            verts=obj_verts,
+            tri=obj_tri,
             color=color,
             projection=projection,
             ob_in_cvcams=o2c,
@@ -908,6 +1006,28 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
         # permute last two channels to match OpenCV convention
         normal_r = normal_r[:, :, [0, 2, 1]]
 
+        # Render merged foreground mask from object mesh + hand mesh.
+        hand_verts_in_obj = None
+        if hand_verts_in_cam is not None:
+            # Transform hand vertices from camera space to object space using current pose.
+            # For row vectors: v_obj = (v_cam - t) @ R, where o2c = [R|t].
+            hand_verts_in_obj = ((hand_verts_in_cam[0] - trans[None, :]) @ R).unsqueeze(0)
+            fg_verts = torch.cat([obj_verts, hand_verts_in_obj], dim=1)
+            fg_tri = torch.cat([obj_tri, hand_tri + obj_nv], dim=0)
+            fg_color = torch.cat([color, hand_color], dim=1)
+            fg_img, _ = diff_renderer(
+                verts=fg_verts,
+                tri=fg_tri,
+                color=fg_color,
+                projection=projection,
+                ob_in_cvcams=o2c,
+                resolution=np.asarray([H, W]),
+                glctx=glctx,
+            )
+            sil_pred = fg_img[..., 1]  # Green channel as silhouette
+            render_union = sil_pred
+        else:
+            render_union = obj_img.mean(dim=-1).clamp(0.0, 1.0)
 
         depth_r = torch.flip(depth_r[0], dims=[0])
         valid = obs_mask & (depth_r > 0) & torch.isfinite(depth_r)
@@ -926,7 +1046,15 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
         else:
             loss_normal = torch.tensor(0.0, device=device)
 
-        loss = 100 * loss_depth + loss_normal
+        if obs_hoi_mask is not None:
+            inter = (render_union * obs_hoi_mask).sum()
+            union = (render_union + obs_hoi_mask - render_union * obs_hoi_mask).sum()
+            iou = inter / (union + 1e-6)
+            loss_iou = 1.0 - iou
+        else:
+            loss_iou = torch.tensor(0.0, device=device)
+
+        loss = loss_depth + 0.01 * loss_normal + 1.0 * loss_iou
         if torch.isfinite(loss):
             loss.backward()
             optimizer.step()
@@ -947,9 +1075,26 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
                     filename_prefix="normal_rendered",
                     it=it + 1,
                 )
+            _save_binary_mask_debug(
+                debug_dir=debug_dir,
+                frame_idx=frame_idx,
+                mask=render_union,
+                filename_prefix="mask_render_union",
+                it=it + 1,
+            )
+            if hand_verts_in_obj is not None:
+                _save_mesh_debug(
+                    debug_dir=debug_dir,
+                    frame_idx=frame_idx,
+                    vertices=hand_verts_in_obj,
+                    faces=hand_tri,
+                    filename_prefix="hand_mesh_obj",
+                    it=it + 1,
+                )
             print(
                 f"[align_depth] Frame {frame_idx}: iter {it+1}/{num_iters}, "
-                f"loss_d={loss_depth.item():.6f}, loss_n={loss_normal.item():.6f}, valid={valid_count}"
+                f"loss_d={loss_depth.item():.6f}, loss_n={loss_normal.item():.6f}, "
+                f"loss_iou={loss_iou.item():.6f}, valid={valid_count}"
             )
 
     if not np.isfinite(best["loss"]) or best["valid"] < 100:
