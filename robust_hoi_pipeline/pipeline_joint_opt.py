@@ -952,7 +952,7 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
         return False
 
     H, W = d.shape
-    glctx, obj_verts, obj_tri, vnormals, color, projection = _prepare_render_inputs(obj_mesh, K, H, W, device)
+    glctx, obj_verts, obj_tri, vnormals, obj_color, projection = _prepare_render_inputs(obj_mesh, K, H, W, device)
     obs_hoi_mask = _build_observed_hoi_mask(image_info_work, frame_idx, H, W, device, debug_dir=debug_dir)
     obj_nv = int(obj_verts.shape[1])
 
@@ -993,7 +993,7 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
         obj_img, depth_r, normal_r = diff_renderer(
             verts=obj_verts,
             tri=obj_tri,
-            color=color,
+            color=obj_color,
             projection=projection,
             ob_in_cvcams=o2c,
             resolution=np.asarray([H, W]),
@@ -1014,7 +1014,7 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
             hand_verts_in_obj = ((hand_verts_in_cam[0] - trans[None, :]) @ R).unsqueeze(0)
             fg_verts = torch.cat([obj_verts, hand_verts_in_obj], dim=1)
             fg_tri = torch.cat([obj_tri, hand_tri + obj_nv], dim=0)
-            fg_color = torch.cat([color, hand_color], dim=1)
+            fg_color = torch.cat([torch.ones_like(obj_color), hand_color], dim=1)
             fg_img, _ = diff_renderer(
                 verts=fg_verts,
                 tri=fg_tri,
@@ -1054,7 +1054,7 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
         else:
             loss_iou = torch.tensor(0.0, device=device)
 
-        loss = loss_depth + 0.01 * loss_normal + 1.0 * loss_iou
+        loss = loss_depth + 0.01 * loss_normal + 20.0 * loss_iou
         if torch.isfinite(loss):
             loss.backward()
             optimizer.step()
