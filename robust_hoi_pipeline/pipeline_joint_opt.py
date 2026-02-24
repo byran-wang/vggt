@@ -606,12 +606,16 @@ def _save_normal_map_debug(debug_dir, frame_idx, normal_map, filename_prefix, it
         return
 
     from PIL import Image
+    import torch
 
-    normal_np = np.asarray(normal_map)
+    if torch.is_tensor(normal_map):
+        normal_np = normal_map.detach().cpu().numpy()
+    else:
+        normal_np = np.asarray(normal_map)
     if normal_np.ndim != 3 or normal_np.shape[2] != 3:
         return
-
-    normal_u8 = np.clip((normal_np + 1.0) * 0.5 * 255.0, 0, 255).astype(np.uint8)
+    normal_np = (normal_np + 1.0) * 0.5
+    normal_u8 = np.clip(normal_np * 255.0, 0, 255).astype(np.uint8)
     _debug_dir = Path(debug_dir)
     _debug_dir.mkdir(parents=True, exist_ok=True)
     if it is None:
@@ -619,6 +623,31 @@ def _save_normal_map_debug(debug_dir, frame_idx, normal_map, filename_prefix, it
     else:
         out_name = f"{filename_prefix}_frame_{frame_idx:04d}_iter{it:03d}.png"
     Image.fromarray(normal_u8, mode="RGB").save(_debug_dir / out_name)
+
+
+def _smooth_normal_map_masked(normal_map, valid_mask, num_iters=2, kernel_size=3, eps=1e-6):
+    """Smooth an HxWx3 normal map with masked local averaging and renormalization."""
+    import torch
+    import torch.nn.functional as F
+
+    if normal_map is None:
+        return None
+
+    normal_valid = torch.as_tensor(valid_mask, dtype=torch.float32, device=normal_map.device)[None, None]
+    normal_chw = normal_map.permute(2, 0, 1)[None]
+
+    for _ in range(int(num_iters)):
+        smoothed_sum = F.avg_pool2d(normal_chw * normal_valid, kernel_size=kernel_size, stride=1, padding=kernel_size // 2)
+        smoothed_w = F.avg_pool2d(normal_valid, kernel_size=kernel_size, stride=1, padding=kernel_size // 2)
+        normal_chw = torch.where(
+            smoothed_w > eps,
+            smoothed_sum / (smoothed_w + eps),
+            normal_chw,
+        )
+        normal_chw = F.normalize(normal_chw, dim=1, eps=eps)
+        normal_chw = torch.where(normal_valid > 0, normal_chw, torch.zeros_like(normal_chw))
+
+    return normal_chw[0].permute(1, 2, 0)
 
 
 def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000, num_iters=60, inlier_thresh=0.3, debug_dir=None):
@@ -645,12 +674,6 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
     n_obs = None
     if normal_priors is not None and frame_idx < len(normal_priors):
         n_obs = normal_priors[frame_idx]
-        _save_normal_map_debug(
-            debug_dir=debug_dir,
-            frame_idx=frame_idx,
-            normal_map=n_obs,
-            filename_prefix="normal_prior_raw",
-        )
 
     vmask = d > 0.01
     masks = image_info_work.get("image_masks")
@@ -672,10 +695,6 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
             debug_dir=debug_dir,
         )
 
-    if len(ys) < 50:
-        print(f"[align_depth] Frame {frame_idx}: only {len(ys)} depth pixels, skipping")
-        return False
-
     zs = d[ys, xs].astype(np.float64)
     xc = (xs.astype(np.float64) - K[0, 2]) * zs / K[0, 0]
     yc = (ys.astype(np.float64) - K[1, 2]) * zs / K[1, 1]
@@ -685,19 +704,27 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
     R0 = ext0[:3, :3]
     t0 = ext0[:3, 3]
     pts_obj0 = (R0.T @ (pts_cam - t0).T).T
-    _save_obj_depth_points_debug(
-        debug_dir=debug_dir,
-        frame_idx=frame_idx,
-        pts_obj=pts_obj0,
-        filename_prefix="depth_obj",
-        color_rgba=(255, 255, 0, 255),
-    )
+
 
     bbox_min = np.array([-0.8, -0.8, -0.8], dtype=np.float64)
     bbox_max = np.array([0.8, 0.8, 0.8], dtype=np.float64)
     in_bbox = np.all((pts_obj0 >= bbox_min) & (pts_obj0 <= bbox_max), axis=1)
     ys = ys[in_bbox]
     xs = xs[in_bbox]
+
+    if debug_dir is not None:
+        zs = d[ys, xs].astype(np.float64)
+        xc = (xs.astype(np.float64) - K[0, 2]) * zs / K[0, 0]
+        yc = (ys.astype(np.float64) - K[1, 2]) * zs / K[1, 1]
+        pts_cam = np.stack([xc, yc, zs], axis=-1)
+        pts_obj0 = (R0.T @ (pts_cam - t0).T).T
+        _save_obj_depth_points_debug(
+            debug_dir=debug_dir,
+            frame_idx=frame_idx,
+            pts_obj=pts_obj0,
+            filename_prefix="depth_obj",
+            color_rgba=(255, 255, 0, 255),
+        )
 
     if len(ys) < max_pts:
         print(
@@ -744,6 +771,14 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
         n_obs_f = n_obs.astype(np.float32)
         obs_normal = torch.tensor(n_obs_f, dtype=torch.float32, device=device)
         obs_normal = F.normalize(obs_normal, dim=-1)
+        obs_normal = _smooth_normal_map_masked(obs_normal, vmask, num_iters=5, kernel_size=5, eps=1e-6)
+
+        _save_normal_map_debug(
+            debug_dir=debug_dir,
+            frame_idx=frame_idx,
+            normal_map=obs_normal,
+            filename_prefix="normal_prior_smoothed",
+        )        
 
     init_rot = ScipyRotation.from_matrix(ext0[:3, :3]).as_rotvec().astype(np.float32)
     rotvec = torch.tensor(init_rot, dtype=torch.float32, device=device, requires_grad=True)
@@ -789,6 +824,8 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
             )
             normal_r = torch.flip(normal_r[0], dims=[0])
             normal_r = F.normalize(normal_r, dim=-1)
+            # permute last two channels to match OpenCV convention
+            normal_r = normal_r[:, :, [0, 2, 1]]
         else:
             _, depth_r = diff_renderer(
                 verts=verts,
@@ -818,7 +855,7 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, mesh, max_pts=2000,
         else:
             loss_normal = torch.tensor(0.0, device=device)
 
-        loss = loss_depth + 0.2 * loss_normal
+        loss = 100 * loss_depth + loss_normal
         if torch.isfinite(loss):
             loss.backward()
             optimizer.step()
