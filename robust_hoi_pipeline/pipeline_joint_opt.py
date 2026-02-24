@@ -1008,26 +1008,25 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
 
         # Render merged foreground mask from object mesh + hand mesh.
         hand_verts_in_obj = None
-        if hand_verts_in_cam is not None:
-            # Transform hand vertices from camera space to object space using current pose.
-            # For row vectors: v_obj = (v_cam - t) @ R, where o2c = [R|t].
-            hand_verts_in_obj = ((hand_verts_in_cam[0] - trans[None, :]) @ R).unsqueeze(0)
-            fg_verts = torch.cat([obj_verts, hand_verts_in_obj], dim=1)
-            fg_tri = torch.cat([obj_tri, hand_tri + obj_nv], dim=0)
-            fg_color = torch.cat([torch.ones_like(obj_color), hand_color], dim=1)
-            fg_img, _ = diff_renderer(
-                verts=fg_verts,
-                tri=fg_tri,
-                color=fg_color,
-                projection=projection,
-                ob_in_cvcams=o2c,
-                resolution=np.asarray([H, W]),
-                glctx=glctx,
-            )
-            sil_pred = fg_img[..., 1]  # Green channel as silhouette
-            render_union = sil_pred
-        else:
-            render_union = obj_img.mean(dim=-1).clamp(0.0, 1.0)
+
+        # Transform hand vertices from camera space to object space using current pose.
+        # For row vectors: v_obj = (v_cam - t) @ R, where o2c = [R|t].
+        hand_verts_in_obj = ((hand_verts_in_cam[0] - trans[None, :]) @ R).unsqueeze(0)
+        fg_verts = torch.cat([obj_verts, hand_verts_in_obj], dim=1)
+        fg_tri = torch.cat([obj_tri, hand_tri + obj_nv], dim=0)
+        fg_color = torch.cat([torch.ones_like(obj_color), hand_color], dim=1)
+        fg_img, _ = diff_renderer(
+            verts=fg_verts,
+            tri=fg_tri,
+            color=fg_color,
+            projection=projection,
+            ob_in_cvcams=o2c,
+            resolution=np.asarray([H, W]),
+            glctx=glctx,
+        )
+        sil_pred = fg_img[..., 1]  # Green channel as silhouette
+        render_union = sil_pred
+
 
         depth_r = torch.flip(depth_r[0], dims=[0])
         valid = obs_mask & (depth_r > 0) & torch.isfinite(depth_r)
