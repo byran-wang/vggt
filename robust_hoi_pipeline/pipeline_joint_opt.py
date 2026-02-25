@@ -631,6 +631,33 @@ def _save_obj_depth_points_debug(debug_dir, frame_idx, pts_obj, filename_prefix,
     )
 
 
+def _save_colored_points_debug(debug_dir, frame_idx, pts, image, ys, xs, filename_prefix):
+    """Save a colored point cloud using pixel colors from the image."""
+    if debug_dir is None or pts is None or len(pts) == 0:
+        return
+
+    import trimesh as _trimesh
+
+    _debug_dir = Path(debug_dir)
+    _debug_dir.mkdir(parents=True, exist_ok=True)
+
+    if image is not None and image.ndim == 3 and image.shape[2] >= 3:
+        colors = image[ys, xs, :3].copy()
+        if np.issubdtype(colors.dtype, np.floating) and colors.max(initial=0.0) <= 1.0:
+            colors = (colors * 255.0).astype(np.uint8)
+        else:
+            colors = np.clip(colors, 0, 255).astype(np.uint8)
+        colors_rgba = np.zeros((len(pts), 4), dtype=np.uint8)
+        colors_rgba[:, :3] = colors
+        colors_rgba[:, 3] = 255
+    else:
+        colors_rgba = np.full((len(pts), 4), [128, 128, 128, 255], dtype=np.uint8)
+
+    _trimesh.PointCloud(pts.astype(np.float32), colors=colors_rgba).export(
+        _debug_dir / f"{filename_prefix}_frame_{frame_idx:04d}.ply"
+    )
+
+
 def _save_normal_map_debug(debug_dir, frame_idx, normal_map, filename_prefix, it=None):
     if debug_dir is None or normal_map is None:
         return
@@ -1022,6 +1049,26 @@ def _prepare_track_reproj_data(image_info_work, frame_idx, K, device):
     return trk_pts3d, trk_pts2d, K_tensor
 
 
+def _save_depth_debug_stages(debug_dir, frame_idx, d, K, extrinsics, ys, xs, dbg_image):
+    """Save 3D point clouds at raw and masked depth filtering stages for debugging."""
+    # Raw 3D points (all depth > 0, before mask) in camera and object space
+    raw_mask = d > 0
+    raw_ys, raw_xs = np.where(raw_mask)
+    if len(raw_ys) > 0:
+        ext_raw = extrinsics[frame_idx].astype(np.float64)
+        raw_pts_cam = _depth_pixels_to_cam_points(d, K, raw_ys, raw_xs)
+        raw_pts_obj = _cam_points_to_object_points(raw_pts_cam, ext_raw)
+        _save_colored_points_debug(debug_dir, frame_idx, raw_pts_cam, dbg_image, raw_ys, raw_xs, "depth_raw_in_cam")
+        _save_colored_points_debug(debug_dir, frame_idx, raw_pts_obj, dbg_image, raw_ys, raw_xs, "depth_raw_in_obj")
+
+    # Masked 3D points (after vmask, before bbox filter) in object space
+    if len(ys) > 0:
+        ext_masked = extrinsics[frame_idx].astype(np.float64)
+        masked_pts_cam = _depth_pixels_to_cam_points(d, K, ys, xs)
+        masked_pts_obj = _cam_points_to_object_points(masked_pts_cam, ext_masked)
+        _save_colored_points_debug(debug_dir, frame_idx, masked_pts_obj, dbg_image, ys, xs, "depth_after_masked_in_obj")
+
+
 def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2000, num_iters=60, inlier_thresh=0.3, debug_dir=None):
     """Align a frame by optimizing pose with rendered-vs-observed depth/normal losses."""
 
@@ -1042,30 +1089,21 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
         return False
 
     d, K, n_obs, vmask, masks, ys, xs, extrinsics, obs_normal = frame_obs
+
+    # Debug: save depth points at various filtering stages
+    _dbg_image = None
     if debug_dir is not None:
-        _save_depth_alignment_debug(
-            image_info_work=image_info_work,
-            frame_idx=frame_idx,
-            depth_map=d,
-            K=K,
-            masks=masks,
-            ys=ys,
-            xs=xs,
-            debug_dir=debug_dir,
-        )
+        images = image_info_work.get("images")
+        if images is not None and frame_idx < len(images):
+            _dbg_image = images[frame_idx]
+        _save_depth_debug_stages(debug_dir, frame_idx, d, K, extrinsics, ys, xs, _dbg_image)
 
     ys, xs, ext0 = _filter_pixels_in_object_bbox(d, K, extrinsics, frame_idx, ys, xs)
 
-    if debug_dir is not None:
-        pts_cam = _depth_pixels_to_cam_points(d, K, ys, xs)
-        pts_obj0 = _cam_points_to_object_points(pts_cam, ext0)
-        _save_obj_depth_points_debug(
-            debug_dir=debug_dir,
-            frame_idx=frame_idx,
-            pts_obj=pts_obj0,
-            filename_prefix="depth_obj",
-            color_rgba=(255, 255, 0, 255),
-        )
+    if debug_dir is not None and len(ys) > 0:
+        bbox_pts_cam = _depth_pixels_to_cam_points(d, K, ys, xs)
+        bbox_pts_obj = _cam_points_to_object_points(bbox_pts_cam, ext0)
+        _save_colored_points_debug(debug_dir, frame_idx, bbox_pts_obj, _dbg_image, ys, xs, "depth_after_bbox_in_obj")
 
     if len(ys) < max_pts:
         print(
@@ -1173,8 +1211,14 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
         loss_normal = _compute_normal_loss(normal_r, obs_normal, valid)
         loss_iou = _compute_iou_loss(render_union, obs_hoi_mask)
         loss_reproj = _compute_reproj_loss(R, trans, trk_pts3d_t, trk_pts2d_t, K_t)
+        
+        w_depth = 1.0
+        w_normal = 0.0
+        w_mask = 20.0
+        w_reproj = 0.0
 
-        loss = 1.0 * loss_depth + 0.0 * loss_normal + 20.0 * loss_iou + 0.1 * loss_reproj
+        loss = w_depth * loss_depth + w_normal * loss_normal + w_mask * loss_iou + w_reproj * loss_reproj
+
         if torch.isfinite(loss):
             loss.backward()
             optimizer.step()

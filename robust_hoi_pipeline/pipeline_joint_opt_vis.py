@@ -610,7 +610,7 @@ if __name__ == "__main__":
                         help="Minimum track visibility count for green coloring")
     parser.add_argument("--vis_all_cameras", action="store_true", default=True,
                         help="Visualize all camera poses from image_info, not just the current frame")
-    parser.add_argument("--vis_hand", action="store_true", default=False,
+    parser.add_argument("--vis_hand", action="store_true", default=True,
                         help="Visualize hand mesh in object space")
 
     args = parser.parse_args()
