@@ -39,7 +39,7 @@ def get_frame_image_info(image_info: Dict, frame_idx: int) -> Optional[Dict]:
         local_idx = frame_indices.index(frame_idx)
     except ValueError:
         return None
-    return {
+    result = {
         "tracks": image_info["tracks"][local_idx],
         "vis_scores": image_info["vis_scores"][local_idx],
         "tracks_mask": image_info["tracks_mask"][local_idx],
@@ -48,7 +48,12 @@ def get_frame_image_info(image_info: Dict, frame_idx: int) -> Optional[Dict]:
         "is_register": image_info.get("register", [False] * len(frame_indices))[local_idx],
         "is_invalid": image_info.get("invalid", [False] * len(frame_indices))[local_idx],
         "c2o": image_info["c2o"][local_idx],
+        "depth_points_obj": None,
     }
+    depth_pts = image_info.get("depth_points_obj")
+    if depth_pts is not None and local_idx < len(depth_pts):
+        result["depth_points_obj"] = depth_pts[local_idx]
+    return result
 
 
 def load_summary(results_dir: Path) -> Dict:
@@ -256,6 +261,26 @@ def visualize_frame(
             rr.log(
                 f"{frame_entity}/points_3d",
                 rr.Points3D(valid_points_3d, colors=colors_3d, radii=0.003),
+            )
+
+        # Log depth points in object space (from depth-mesh alignment)
+        depth_pts_obj = image_info.get('depth_points_obj')
+        if depth_pts_obj is not None:
+            depth_pts = np.asarray(depth_pts_obj, dtype=np.float32) * scale
+            if align_pred_to_gt is not None:
+                depth_pts = (align_pred_to_gt[:3, :3] @ depth_pts.T).T + align_pred_to_gt[:3, 3]
+            rr.log(
+                f"{frame_entity}/depth_points_obj",
+                rr.Points3D(
+                    depth_pts,
+                    colors=np.broadcast_to(np.array([0, 200, 255], dtype=np.uint8), depth_pts.shape),
+                    radii=0.0003,
+                ),
+            )
+        else:
+            rr.log(
+                f"{frame_entity}/depth_points_obj",
+                rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
             )
 
         # # Valid tracks (in mask)
@@ -524,7 +549,7 @@ if __name__ == "__main__":
                         help="Maximum number of frames to visualize (-1 for all)")
     parser.add_argument("--vis_type", type=str, default="all", choices=["all", "registered_valid", "keyframes"],
                         help="Type of frames to visualize")
-    parser.add_argument("--vis_gt", action="store_true", default=False,
+    parser.add_argument("--vis_gt", action="store_true", default=True,
                         help="Visualize ground truth mesh and camera poses")
     parser.add_argument("--min_track_number", type=int, default=4,
                         help="Minimum track visibility count for green coloring")
