@@ -177,7 +177,7 @@ def pipeline_data_preprocess(args):
     intrinsic_dir = data_dir / "meta"
     depth_dir = data_dir / "depth"
     hand_dir = data_dir 
-    hand_pose_file = hand_dir / "hold_fit.init.npy"
+    hand_pose_file = hand_dir / f"hold_fit.aligned_h_{args.hand_mode}.npy"
     sam3d_transform_file = data_dir/ "SAM3D_aligned_post_process" /f"{args.cond_index:04d}" / "aligned_transform.json" # such as output/SM2/gen_3d_aligned_SAM3D/aligned_transform.json
 
     out_dir = Path(args.output_dir)
@@ -322,20 +322,10 @@ def pipeline_data_preprocess(args):
 
         # Get hand pose for this frame
         hand_pose = None
-        if hand_poses is not None:
-            try:
-                if isinstance(hand_poses, dict):
-                    # Dict format: keys might be frame indices or strings
-                    key = frame_idx if frame_idx in hand_poses else str(frame_idx)
-                    hand_pose = hand_poses.get(key, None)
-                elif isinstance(hand_poses, np.ndarray) and hand_poses.ndim >= 1:
-                    if frame_idx < len(hand_poses):
-                        hand_pose = hand_poses[frame_idx]
-                elif isinstance(hand_poses, list):
-                    if frame_idx < len(hand_poses):
-                        hand_pose = hand_poses[frame_idx]
-            except Exception as e:
-                print(f"  Warning: Could not get hand pose for frame {frame_idx}: {e}")
+
+
+
+
 
         # Save debug point clouds for first few frames
         if idx < 5:
@@ -384,7 +374,6 @@ def pipeline_data_preprocess(args):
             'hand_pose': hand_pose,
         }
         preprocessed_data.append(frame_data)
-
     # 4. Save preprocessed data to output directory
     print(f"\nSaving preprocessed data to {out_dir}...")
     # Create output subdirectories
@@ -426,7 +415,7 @@ def pipeline_data_preprocess(args):
 
         # Save sealed right-hand mesh (camera space, scaled by obj_scale)
         if hand_provider is not None:
-            verts_cam, faces = _get_hand_mesh_cam(hand_provider, frame_idx, mode="trans") # mode choice "intrinsic" or "trans" or "rot"
+            verts_cam, faces = _get_hand_mesh_cam(hand_provider, frame_idx, mode=args.hand_mode) # mode choice "intrinsic" or "trans" or "rot"
             if verts_cam is not None and faces is not None:
                 try:
                     _save_sealed_right_hand_mesh(
@@ -467,6 +456,8 @@ if __name__ == "__main__":
                         help="Frame sampling interval")
     parser.add_argument("--cond_index", type=int, default=0,
                         help="Condition image index (must be included)")
+    parser.add_argument("--hand_mode", type=str, default="trans",
+                        help="Hand pose mode for loading and saving (e.g., 'trans' or 'intrinsic' or 'rot')")
 
     args = parser.parse_args()
     pipeline_data_preprocess(args)
