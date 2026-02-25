@@ -772,6 +772,42 @@ def _filter_pixels_in_object_bbox(depth_map, K, extrinsics, frame_idx, ys, xs, b
     return ys[in_bbox], xs[in_bbox], ext0
 
 
+def _filter_depth_by_object_bbox(image_info_work, frame_idx, bbox_min=[-0.8, -0.8, -0.8], bbox_max=[0.8, 0.8, 0.8]):
+    """Zero out depth pixels whose object-space 3D points fall outside a bounding box."""
+    depth_priors = image_info_work.get("depth_priors")
+    if depth_priors is None or depth_priors[frame_idx] is None:
+        return
+
+    d = depth_priors[frame_idx]
+    intrinsics = image_info_work.get("intrinsics")
+    extrinsics = image_info_work.get("extrinsics")
+    K = intrinsics[frame_idx] if intrinsics.ndim == 3 else intrinsics
+
+    vmask = d > 0
+    masks = image_info_work.get("image_masks")
+    if masks is not None and masks[frame_idx] is not None:
+        vmask = vmask & (masks[frame_idx] > 0)
+
+    ys, xs = np.where(vmask)
+    if len(ys) == 0:
+        return
+
+    pts_cam = _depth_pixels_to_cam_points(d, K, ys, xs)
+    ext = extrinsics[frame_idx].astype(np.float64)
+    pts_obj = _cam_points_to_object_points(pts_cam, ext)
+
+
+    bbox_min = np.array(bbox_min, dtype=np.float64)
+
+    bbox_max = np.array(bbox_max, dtype=np.float64)
+
+
+    outside = ~np.all((pts_obj >= bbox_min) & (pts_obj <= bbox_max), axis=1)
+    if outside.any():
+        d[ys[outside], xs[outside]] = 0
+        print(f"[filter_depth_bbox] Frame {frame_idx}: zeroed {int(outside.sum())}/{len(ys)} depth pixels outside object bbox")
+
+
 def _prepare_frame_observations(
     image_info_work,
     frame_idx,
@@ -1587,6 +1623,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
         register_new_frame_by_PnP(image_info_work, next_frame_idx, args)
         mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
+        # _filter_depth_by_object_bbox(image_info_work, next_frame_idx)
         
 
         # if not _refine_frame_pose_3d(image_info_work, next_frame_idx, args):
