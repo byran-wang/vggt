@@ -13,11 +13,8 @@ import vggt.utils.eval_modules as eval_m
 import vggt.utils.gt as gt
 import torch
 import trimesh
-import smplx
 from robust_hoi_pipeline.frame_management import load_register_indices
 from robust_hoi_pipeline.pipeline_utils import load_sam3d_transform, load_preprocessed_frame
-from viewer.viewer_step import HandDataProvider
-from utils_simba.geometry import transform_points
 device = "cuda:0"
 
 eval_fn_dict = {
@@ -26,8 +23,9 @@ eval_fn_dict = {
     "add_auc": eval_m.eval_add_auc_object,
     "add_s_auc": eval_m.eval_add_s_auc_object,
     "image_info": eval_m.eval_image_info,
-    "mpjpe_ra_r": eval_m.eval_mpjpe_right,
-    "cd_f_right": eval_m.eval_cd_f_right,
+    # "mrrpe_ho": eval_m.eval_mrrpe_ho_right,
+    # "cd_f_ra": eval_m.eval_cd_f_ra,
+    # "cd_f_right": eval_m.eval_cd_f_right,
 }
 
 
@@ -126,8 +124,6 @@ def parse_args():
                          help="Whether to evaluate Chamfer/F-score metrics for available meshes")
     parser.add_argument("--vis_gt_pred", action="store_true", default=False,
                          help="Whether to visualize GT and predicted poses with rotated 3D points in rerun")
-    parser.add_argument("--hand_mode", type=str, default="trans",
-                         help="Hand fit mode for HandDataProvider (e.g. 'rot', 'trans', 'intrinsic')")
     
     args = parser.parse_args()
     from easydict import EasyDict
@@ -427,15 +423,10 @@ def filter_invalid_gt_frames(data_gt, data_pred):
         elif isinstance(v, np.ndarray) and v.ndim >= 1 and v.shape[0] == n:
             dict.__setitem__(data_gt, k, v[gt_valid_mask])
 
-    # Filter per-frame entries in data_pred whose first dim matches
-    n_pred = len(data_pred["is_valid"])
-    mask_tensor_pred = torch.from_numpy(gt_valid_mask)
-    for k in list(data_pred.keys()):
-        v = data_pred[k]
-        if isinstance(v, np.ndarray) and v.ndim >= 1 and v.shape[0] == n_pred:
-            data_pred[k] = v[gt_valid_mask]
-        elif torch.is_tensor(v) and v.ndim >= 1 and v.shape[0] == n_pred:
-            data_pred[k] = v[mask_tensor_pred]
+    # Filter data_pred to match
+    data_pred["extrinsics"] = data_pred["extrinsics"][gt_valid_mask]
+    data_pred["valid_frame_indices"] = data_pred["valid_frame_indices"][gt_valid_mask]
+    data_pred["is_valid"] = data_pred["is_valid"][gt_valid_mask]
 
     return data_gt, data_pred
 
@@ -488,93 +479,7 @@ def load_pred_data(results_dir, SAM3D_dir, cond_index):
         "invalid_frames": int(invalid_flags.sum()),
     }
 
-    return (data_pred, frame_indices, register_indices, c2o, scale, sam3d_to_cond_cam, valid_flags)
-
-
-def load_hand_predictions(results_dir, hand_mode, frame_indices, valid_flags, device="cuda:0"):
-    """Load hand MANO predictions and compute j3d_ra.right and root.right.
-
-    Hand fit data covers all original dataset frames. We first select the
-    pipeline frames using ``frame_indices`` (like ``gt.load_data`` uses
-    ``selected_fids``), then filter to valid frames using ``valid_flags``.
-
-    Args:
-        results_dir: Path to pipeline_joint_opt results directory
-        hand_mode: Hand fit mode (e.g. 'trans', 'rot', 'intrinsic')
-        frame_indices: (N,) array of frame IDs used by the pipeline
-        valid_flags: (N,) boolean mask for valid frames within pipeline frames
-        device: Torch device string
-
-    Returns:
-        Dict with 'j3d_ra.right' (torch, M,21,3) and 'root.right' (numpy, M,3)
-        for valid frames, or None if hand data is unavailable.
-    """
-    hand_provider = HandDataProvider(results_dir)
-    if not hand_provider.has_hand:
-        print("[hand] No hand data available, skip hand metrics")
-        return None
-
-    hand_poses = hand_provider.get_hand_poses(hand_mode)
-    beta = hand_provider.get_hand_beta(hand_mode)
-    h2c_transls = hand_provider.get_hand_transls(hand_mode)
-    h2c_rots = hand_provider.get_hand_rots(hand_mode)
-
-    if hand_poses is None or beta is None or h2c_transls is None or h2c_rots is None:
-        print(f"[hand] Missing hand parameters for mode '{hand_mode}', skip hand metrics")
-        return None
-
-    # Select only the pipeline frames from the full hand data (like gt.load_data)
-    max_fid = max(int(np.max(frame_indices)), 0)
-    if len(hand_poses) <= max_fid:
-        print(f"[hand] Hand data length {len(hand_poses)} too short for max frame index {max_fid}, skip")
-        return None
-
-    hand_poses = hand_poses[frame_indices]
-    h2c_transls = np.asarray(h2c_transls)[frame_indices]
-    h2c_rots = np.asarray(h2c_rots)[frame_indices]
-
-    hand_poses_t = torch.as_tensor(hand_poses, device=device, dtype=torch.float32)
-    beta_t = torch.as_tensor(beta, device=device, dtype=torch.float32)
-    betas_t = beta_t.unsqueeze(0).repeat(hand_poses_t.shape[0], 1)
-    h2c_transls_np = np.asarray(h2c_transls)
-    h2c_rots_t = torch.as_tensor(h2c_rots, device=device, dtype=torch.float32)
-
-    mano_layer = smplx.create(
-        model_path='./body_models/MANO_RIGHT.pkl',
-        model_type="mano", use_pca=False, is_rhand=True,
-    ).to(torch.device(device))
-
-    with torch.no_grad():
-        hand_out = mano_layer(
-            betas=betas_t,
-            hand_pose=hand_poses_t,
-            transl=torch.zeros_like(
-                torch.as_tensor(h2c_transls_np, device=device, dtype=torch.float32)),
-            global_orient=h2c_rots_t,
-        )
-
-    hand_jnts_can = hand_out.joints.cpu().numpy()  # (N, 21, 3)
-
-    # Root-aligned canonical joints
-    j3d_ra_right = hand_jnts_can - hand_jnts_can[:, 0:1, :]  # (N, 21, 3)
-
-    # Hand joints in camera space
-    if h2c_transls_np.ndim == 2 and h2c_transls_np.shape[1] == 3:
-        h2c_transforms = np.repeat(np.eye(4)[None], h2c_transls_np.shape[0], axis=0)
-        h2c_transforms[:, :3, 3] = h2c_transls_np
-    else:
-        h2c_transforms = h2c_transls_np
-    hand_jnts_c = transform_points(hand_jnts_can, h2c_transforms)  # (N, 21, 3)
-    root_right = hand_jnts_c[:, 0, :]  # (N, 3)
-
-    # Select valid frames
-    j3d_ra_right = j3d_ra_right[valid_flags]
-    root_right = root_right[valid_flags]
-
-    return {
-        "j3d_ra.right": torch.from_numpy(j3d_ra_right).float(),
-        "root.right": root_right.astype(np.float32),
-    }
+    return (data_pred, frame_indices, register_indices, c2o, scale, sam3d_to_cond_cam)
 
 
 def main():
@@ -583,16 +488,11 @@ def main():
 
     results_dir = Path(args.result_folder)
     SAM3D_dir = Path(args.SAM3D_dir)
+
     (data_pred, frame_indices, register_indices, c2o_pred, scale,
-     sam3d_to_cond_cam, valid_flags) = load_pred_data(results_dir, SAM3D_dir, args.cond_index)
+     sam3d_to_cond_cam) = load_pred_data(results_dir, SAM3D_dir, args.cond_index)
 
     seq_name = results_dir.parent.name
-
-    # Load hand predictions (before GT filtering so they get filtered together)
-    hand_data = load_hand_predictions(SAM3D_dir.parent, args.hand_mode, frame_indices, valid_flags)
-    if hand_data is not None:
-        data_pred["j3d_ra.right"] = hand_data["j3d_ra.right"]
-        data_pred["root.right"] = hand_data["root.right"]
 
     def get_image_fids():
         return data_pred["valid_frame_indices"].tolist()
@@ -609,24 +509,6 @@ def main():
     )
 
     data_pred["extrinsics"] = aligned_pred_extrinsics
-
-    # Compute v3d_right.object (object verts relative to hand root) if hand data available
-    if "root.right" in data_pred:
-        v3d_can = data_gt.get("v3d_can.object")
-        if v3d_can is not None:
-            v3d_can_np = v3d_can.numpy() if torch.is_tensor(v3d_can) else np.array(v3d_can)
-            root_right = data_pred["root.right"]
-            if torch.is_tensor(root_right):
-                root_right = root_right.numpy()
-            v3d_right_list = []
-            for i in range(len(aligned_pred_extrinsics)):
-                o2c_i = aligned_pred_extrinsics[i]
-                v_can_i = v3d_can_np[0] if v3d_can_np.ndim == 3 else v3d_can_np
-                v_cam = (o2c_i[:3, :3] @ v_can_i.T).T + o2c_i[:3, 3]
-                v_right = v_cam - root_right[i]
-                v3d_right_list.append(torch.from_numpy(v_right.astype(np.float32)))
-            data_pred["v3d_right.object"] = v3d_right_list
-
     if args.vis_gt_pred:
         visualize_gt_and_pred_in_rerun(
             data_gt, aligned_pred_extrinsics, data_pred["valid_frame_indices"], SAM3D_dir,
@@ -639,20 +521,14 @@ def main():
 
     print("------------------")
     print("Involving the following eval_fn:")
-    active_eval_fns = {}
-    hand_eval_keys = {"mpjpe_ra_r", "cd_f_right"}
-    for eval_fn_name, eval_fn in eval_fn_dict.items():
-        if eval_fn_name in hand_eval_keys and "j3d_ra.right" not in data_pred:
-            print(f"  {eval_fn_name} (SKIPPED - no hand data)")
-            continue
-        active_eval_fns[eval_fn_name] = eval_fn
-        print(f"  {eval_fn_name}")
+    for eval_fn_name in eval_fn_dict.keys():
+        print(eval_fn_name)
     print("------------------")
 
     # Initialize the metrics dictionaries
     metric_dict = {}
     # Evaluate each metric using the corresponding function
-    pbar = tqdm(active_eval_fns.items())
+    pbar = tqdm(eval_fn_dict.items())
     for eval_fn_name, eval_fn in pbar:
         pbar.set_description(f"Evaluating {eval_fn_name}")
         metric_dict = eval_fn(data_pred, data_gt, metric_dict)
