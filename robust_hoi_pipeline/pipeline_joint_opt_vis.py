@@ -20,6 +20,33 @@ from robust_hoi_pipeline.frame_management import load_register_indices
 from robust_hoi_pipeline.pipeline_utils import load_sam3d_transform
 
 
+def compute_vertex_normals(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """Compute per-vertex normals by averaging adjacent face normals."""
+    v0 = vertices[faces[:, 0]]
+    v1 = vertices[faces[:, 1]]
+    v2 = vertices[faces[:, 2]]
+    face_normals = np.cross(v1 - v0, v2 - v0)
+    vertex_normals = np.zeros_like(vertices)
+    np.add.at(vertex_normals, faces[:, 0], face_normals)
+    np.add.at(vertex_normals, faces[:, 1], face_normals)
+    np.add.at(vertex_normals, faces[:, 2], face_normals)
+    norms = np.linalg.norm(vertex_normals, axis=1, keepdims=True)
+    norms = np.maximum(norms, 1e-8)
+    return vertex_normals / norms
+
+
+def load_hand_mesh(data_preprocess_dir: Path, frame_idx: int) -> Optional[trimesh.Trimesh]:
+    """Load preprocessed hand mesh (camera space, scaled by 1/obj_scale)."""
+    hand_path = data_preprocess_dir / "hand" / f"{frame_idx:04d}_right.obj"
+    if not hand_path.exists():
+        return None
+    try:
+        return trimesh.load(str(hand_path), force='mesh', process=False)
+    except Exception as e:
+        print(f"Warning: Failed to load hand mesh {hand_path}: {e}")
+        return None
+
+
 def load_image_info(results_dir: Path) -> Optional[Dict]:
     """Load image info from pipeline_joint_opt.py output."""
     info_path = results_dir / "image_info.npy"
@@ -186,6 +213,8 @@ def visualize_frame(
     track_vis_count: Optional[np.ndarray] = None,
     min_track_number: int = 4,
     align_pred_to_gt: Optional[np.ndarray] = None,
+    hand_mesh: Optional[trimesh.Trimesh] = None,
+    vis_hand: bool = True,
 ):
 
     frame_entity = "world/current_frame"
@@ -309,7 +338,30 @@ def visualize_frame(
         #         ),
         #     )
 
-    
+
+    # Log hand mesh in object space
+    if vis_hand and hand_mesh is not None and c2o is not None:
+        hand_verts = np.array(hand_mesh.vertices, dtype=np.float32)
+        hand_faces = np.array(hand_mesh.faces, dtype=np.int32)
+        # c2o translation is already scaled; scale vertices to match
+        hand_verts_obj = (c2o[:3, :3] @ hand_verts.T).T * scale + c2o[:3, 3]
+        vertex_normals = compute_vertex_normals(hand_verts_obj, hand_faces)
+        rr.log(
+            f"{frame_entity}/hand_mesh",
+            rr.Mesh3D(
+                vertex_positions=hand_verts_obj,
+                triangle_indices=hand_faces,
+                vertex_normals=vertex_normals,
+                mesh_material=rr.Material(albedo_factor=[200, 180, 220]),
+            ),
+            static=False,
+        )
+    else:
+        rr.log(
+            f"{frame_entity}/hand_mesh",
+            rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
+        )
+
     # Log camera pose and intrinsics
     if preprocess_data.get('intrinsics') is not None and preprocess_data.get('image') is not None and c2o is not None:
         K = preprocess_data['intrinsics']
@@ -505,6 +557,7 @@ def main(args):
             continue
 
         preprocess_data = load_preprocessed_frame(data_preprocess_dir, frame_idx)
+        hand_mesh = load_hand_mesh(data_preprocess_dir, frame_idx)
         # Visualize
         c2o = image_info['c2o']
 
@@ -518,6 +571,8 @@ def main(args):
             track_vis_count=track_vis_count,
             min_track_number=args.min_track_number,
             align_pred_to_gt=align_pred_to_gt,
+            hand_mesh=hand_mesh,
+            vis_hand=args.vis_hand,
         )
 
         # Visualize all camera poses
@@ -555,6 +610,8 @@ if __name__ == "__main__":
                         help="Minimum track visibility count for green coloring")
     parser.add_argument("--vis_all_cameras", action="store_true", default=True,
                         help="Visualize all camera poses from image_info, not just the current frame")
+    parser.add_argument("--vis_hand", action="store_true", default=False,
+                        help="Visualize hand mesh in object space")
 
     args = parser.parse_args()
     main(args)
