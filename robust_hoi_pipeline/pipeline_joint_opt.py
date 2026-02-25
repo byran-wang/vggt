@@ -390,10 +390,13 @@ def save_reproj_errors(image_info: Dict, register_idx: int, image: np.ndarray, r
     img_path = results_dir / "reproj_error.png"
     # Draw stats text on image
     if len(valid_errs) > 0:
-        text = (f"mean={valid_errs.mean():.2f}px max={valid_errs.max():.2f}px "
-                f"val_n/pts_n {len(valid_errs)}/{points_3d.shape[0]}")
-        cv2.putText(vis_img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        cv2.putText(vis_img, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
+        text1 = f"frame={register_idx} local={local_idx}"
+        text2 = (f"mean={valid_errs.mean():.2f}px max={valid_errs.max():.2f}px "
+                 f"val_n/pts_n {len(valid_errs)}/{points_3d.shape[0]}")
+        cv2.putText(vis_img, text1, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(vis_img, text1, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
+        cv2.putText(vis_img, text2, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        cv2.putText(vis_img, text2, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
     Image.fromarray(vis_img).save(img_path)
     print(f"Saved reproj error image to {img_path}")
 
