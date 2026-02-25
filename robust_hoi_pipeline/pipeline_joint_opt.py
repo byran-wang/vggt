@@ -1230,6 +1230,11 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
         color_rgba=(0, 255, 0, 255),
     )
 
+    # Store optimized depth points in object space
+    depth_pts_obj = image_info_work.get("depth_points_obj")
+    if depth_pts_obj is not None:
+        depth_pts_obj[frame_idx] = pts_obj_opt.astype(np.float32)
+
     extrinsics[frame_idx, :3, :3] = best["R"].astype(np.float32)
     extrinsics[frame_idx, :3, 3] = best["t"].astype(np.float32)
     print(
@@ -1588,6 +1593,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         "keyframe": np.array(image_info["keyframe"], dtype=bool),
         "registered": np.array(image_info["register"], dtype=bool),
         "invalid": np.array(image_info["invalid"], dtype=bool),
+        "depth_points_obj": image_info.get("depth_points_obj", [None] * len(frame_indices)),
     }
 
     num_frames = len(frame_indices)
@@ -1748,6 +1754,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         image_info["keyframe"] = image_info_work["keyframe"].tolist()
         image_info["c2o"] = np.linalg.inv(image_info_work["extrinsics"]).astype(np.float32)
         image_info["points_3d"] = image_info_work["points_3d"].astype(np.float32)
+        image_info["depth_points_obj"] = image_info_work["depth_points_obj"]
         print_image_info_stats(image_info_work, invalid_cnt)
         save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
 
@@ -1819,6 +1826,7 @@ def main(args):
             "points_3d": points_3d.astype(np.float32),
             "c2o": c2o_per_frame.astype(np.float32),
             "intrinsics": _stack_intrinsics(preprocessed_data["intrinsics"]),
+            "depth_points_obj": [None] * len(frame_indices),
         }
 
         # 6. Save image info
