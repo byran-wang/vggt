@@ -146,7 +146,7 @@ def load_preprocessed_data(data_preprocess_dir: Path, frame_indices: List[int]) 
                 except Exception:
                     data[f'hand_meshes_{key}'].append(None)
             else:
-                raise FileNotFoundError(f"Hand mesh not found: {hand_mesh_path}")
+                data[f'hand_meshes_{key}'].append(None)
     return data
 
 
