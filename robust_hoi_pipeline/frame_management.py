@@ -235,7 +235,7 @@ def check_key_frame(image_info, frame_idx, rot_thresh, trans_thresh, depth_thres
     return True
 
 
-def check_reprojection_error(image_info, frame_idx, args, min_valid_points=100, skip_check=False):
+def check_reprojection_error(image_info, frame_idx, args, min_valid_points=150, skip_check=False):
     """Check if frame has high reprojection error using low-uncertainty 3D points.
 
     Reprojects 3D points (filtered by uncertainty threshold) to the frame and
