@@ -899,6 +899,90 @@ def gmof(x, sigma):
     loss_val = (x_squared) / (sigma_squared + x_squared + 1e-8)
     return loss_val
 
+def _compute_depth_loss(depth_r, obs_depth, obs_mask):
+    """Rendered-vs-observed depth loss with Geman-McClure robustifier.
+
+    Returns (loss, valid_count) or (None, 0) when too few valid pixels.
+    """
+    valid = obs_mask & (depth_r > 0) & torch.isfinite(depth_r)
+    valid_count = int(valid.sum().item())
+    if valid_count < 100:
+        return None, valid_count
+    depth_res = depth_r[valid] - obs_depth[valid]
+    loss = gmof(depth_res.abs(), sigma=0.1).mean(dim=-1)
+    return loss, valid_count
+
+
+def _compute_normal_loss(normal_r, obs_normal, valid):
+    """Cosine-distance normal loss on valid pixels."""
+    if obs_normal is None or normal_r is None:
+        return torch.tensor(0.0, device=normal_r.device if normal_r is not None else "cuda")
+    dot = (normal_r[valid] * obs_normal[valid]).sum(dim=-1).clamp(-1.0, 1.0)
+    return (1.0 - dot).mean()
+
+
+def _compute_iou_loss(render_union, obs_hoi_mask):
+    """Silhouette IoU loss between rendered union mask and observed HOI mask."""
+    if obs_hoi_mask is None:
+        return torch.tensor(0.0, device=render_union.device)
+    inter = (render_union * obs_hoi_mask).sum()
+    union = (render_union + obs_hoi_mask - render_union * obs_hoi_mask).sum()
+    iou = inter / (union + 1e-6)
+    return 1.0 - iou
+
+
+def _compute_reproj_loss(R, trans, trk_pts3d, trk_pts2d, K, sigma=4.0):
+    """Reprojection loss from 3D track points projected via current pose.
+
+    Returns scalar loss (0 when inputs are None or no points in front of camera).
+    """
+    if trk_pts3d is None:
+        return torch.tensor(0.0, device=R.device)
+    cam_trk = (R @ trk_pts3d.T).T + trans[None, :]
+    front = cam_trk[:, 2] > 1e-6
+    if front.sum() == 0:
+        return torch.tensor(0.0, device=R.device)
+    z = cam_trk[front, 2:3]
+    proj_x = K[0, 0] * cam_trk[front, 0:1] / z + K[0, 2]
+    proj_y = K[1, 1] * cam_trk[front, 1:2] / z + K[1, 2]
+    proj = torch.cat([proj_x, proj_y], dim=-1)
+    err = (proj - trk_pts2d[front]).norm(dim=-1)
+    return gmof(err, sigma=sigma).mean()
+
+
+def _prepare_track_reproj_data(image_info_work, frame_idx, K, device):
+    """Extract valid 3D track points and their 2D observations for reprojection loss.
+
+    Returns (trk_pts3d, trk_pts2d, K_tensor) or (None, None, None) if insufficient data.
+    """
+    pred_tracks_all = image_info_work.get("pred_tracks")
+    track_mask_all = image_info_work.get("track_mask")
+    points_3d_all = image_info_work.get("points_3d")
+
+    if pred_tracks_all is None or track_mask_all is None or points_3d_all is None:
+        return None, None, None
+
+    frame_tmask = np.asarray(track_mask_all[frame_idx]).astype(bool)
+    finite_mask = np.isfinite(points_3d_all).all(axis=-1)
+    # Only use tracks with well-established 3D points (visible in multiple keyframes)
+    well_observed = np.ones_like(finite_mask)
+    kf_mask_arr = image_info_work.get("keyframe")
+    if kf_mask_arr is not None:
+        kf_indices_arr = np.where(np.asarray(kf_mask_arr).astype(bool))[0]
+        if len(kf_indices_arr) > 0:
+            trk_vis_count = np.asarray(track_mask_all)[kf_indices_arr].astype(bool).sum(axis=0)
+            well_observed = trk_vis_count >= 2
+    trk_valid = frame_tmask & finite_mask & well_observed
+    if trk_valid.sum() < 10:
+        return None, None, None
+
+    trk_pts3d = torch.tensor(points_3d_all[trk_valid], dtype=torch.float32, device=device)
+    trk_pts2d = torch.tensor(pred_tracks_all[frame_idx][trk_valid], dtype=torch.float32, device=device)
+    K_tensor = torch.tensor(K.astype(np.float32), dtype=torch.float32, device=device)
+    print(f"[align_depth] Frame {frame_idx}: using {int(trk_valid.sum())} tracks for reprojection loss")
+    return trk_pts3d, trk_pts2d, K_tensor
+
+
 def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2000, num_iters=60, inlier_thresh=0.3, debug_dir=None):
     """Align a frame by optimizing pose with rendered-vs-observed depth/normal losses."""
 
@@ -965,6 +1049,8 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
     glctx, obj_verts, obj_tri, vnormals, obj_color, projection = _prepare_render_inputs(obj_mesh, K, H, W, device)
     obs_hoi_mask = _build_observed_hoi_mask(image_info_work, frame_idx, H, W, device, debug_dir=debug_dir)
     obj_nv = int(obj_verts.shape[1])
+
+    trk_pts3d_t, trk_pts2d_t, K_t = _prepare_track_reproj_data(image_info_work, frame_idx, K, device)
 
     # Load hand mesh in camera space (prefer preprocessed right-hand mesh, fallback to pose payload).
     hand_verts_in_cam = hand_tri = hand_color = None
@@ -1039,32 +1125,17 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
 
 
         depth_r = torch.flip(depth_r[0], dims=[0])
-        valid = obs_mask & (depth_r > 0) & torch.isfinite(depth_r)
-        valid_count = int(valid.sum().item())
-        if valid_count < 100:
+        loss_depth, valid_count = _compute_depth_loss(depth_r, obs_depth, obs_mask)
+        if loss_depth is None:
             print(f"[align_depth] Frame {frame_idx}: iter {it}, only {valid_count} valid rendered pixels")
             continue
+        valid = obs_mask & (depth_r > 0) & torch.isfinite(depth_r)
 
-        depth_res = depth_r[valid] - obs_depth[valid]
-        depth_abs = depth_res.abs()
-        # loss_depth = torch.where(depth_abs < 0.02, 0.5 * depth_res ** 2, 0.02 * (depth_abs - 0.01)).mean()
-        loss_depth = gmof(depth_abs, sigma=0.1).mean(dim=-1)
+        loss_normal = _compute_normal_loss(normal_r, obs_normal, valid)
+        loss_iou = _compute_iou_loss(render_union, obs_hoi_mask)
+        loss_reproj = _compute_reproj_loss(R, trans, trk_pts3d_t, trk_pts2d_t, K_t)
 
-        if obs_normal is not None and normal_r is not None:
-            dot = (normal_r[valid] * obs_normal[valid]).sum(dim=-1).clamp(-1.0, 1.0)
-            loss_normal = (1.0 - dot).mean()
-        else:
-            loss_normal = torch.tensor(0.0, device=device)
-
-        if obs_hoi_mask is not None:
-            inter = (render_union * obs_hoi_mask).sum()
-            union = (render_union + obs_hoi_mask - render_union * obs_hoi_mask).sum()
-            iou = inter / (union + 1e-6)
-            loss_iou = 1.0 - iou
-        else:
-            loss_iou = torch.tensor(0.0, device=device)
-
-        loss = loss_depth + 0.01 * loss_normal + 20.0 * loss_iou
+        loss = 1.0 * loss_depth + 0.0 * loss_normal + 20.0 * loss_iou + 0.1 * loss_reproj
         if torch.isfinite(loss):
             loss.backward()
             optimizer.step()
@@ -1104,7 +1175,7 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
             print(
                 f"[align_depth] Frame {frame_idx}: iter {it+1}/{num_iters}, "
                 f"loss_d={loss_depth.item():.6f}, loss_n={loss_normal.item():.6f}, "
-                f"loss_iou={loss_iou.item():.6f}, valid={valid_count}"
+                f"loss_iou={loss_iou.item():.6f}, loss_reproj={loss_reproj.item():.6f}, valid={valid_count}"
             )
 
     if not np.isfinite(best["loss"]) or best["valid"] < 100:
@@ -1401,6 +1472,18 @@ def _joint_optimize_keyframes(
     print(f"[joint_opt] Done. Refined {int(opt_mask.sum())} poses, "
           f"{int(finite_mask.sum())} 3D points.")
     
+def _reset_pose_to_nearest_registered(image_info_work, frame_idx):
+    """Reset a frame's pose to that of the nearest valid registered frame."""
+    registered = np.asarray(image_info_work["registered"]).astype(bool)
+    invalid = np.asarray(image_info_work["invalid"]).astype(bool)
+    valid_reg = registered & (~invalid)
+    reg_idx = np.where(valid_reg)[0]
+    if reg_idx.size > 0:
+        nearest_idx = reg_idx[np.argmin(np.abs(reg_idx - frame_idx))]
+        image_info_work["extrinsics"][frame_idx] = image_info_work["extrinsics"][nearest_idx].copy()
+        print(f"[reproj_recovery] Reset frame {frame_idx} pose to nearest registered frame {nearest_idx}")
+
+
 def print_image_info_stats(image_info, invalid_cnt):
     print(
         f"stats {np.array(image_info['registered']).sum() + np.array(image_info['invalid']).sum() - 1}/{len(image_info['frame_indices'])} :, " # -1 for the first condition frame
@@ -1517,15 +1600,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         sucess, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args)
         if not sucess:
             print(f"[register_remaining_frames] Frame {next_frame_idx} align depth to mesh due to high reprojection error")
-            # Reset pose to nearest registered frame
-            registered = np.asarray(image_info_work["registered"]).astype(bool)
-            invalid = np.asarray(image_info_work["invalid"]).astype(bool)
-            valid_reg = registered & (~invalid)
-            reg_idx = np.where(valid_reg)[0]
-            if reg_idx.size > 0:
-                nearest_idx = reg_idx[np.argmin(np.abs(reg_idx - next_frame_idx))]
-                image_info_work["extrinsics"][next_frame_idx] = image_info_work["extrinsics"][nearest_idx].copy()
-                print(f"[reproj_recovery] Reset frame {next_frame_idx} pose to nearest registered frame {nearest_idx}")
+            _reset_pose_to_nearest_registered(image_info_work, next_frame_idx)
 
             # # Mask tracks without valid (finite) 3D points
             # finite_3d = np.isfinite(image_info_work["points_3d"]).all(axis=-1)
