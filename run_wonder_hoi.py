@@ -99,6 +99,7 @@ class run_wonder_hoi:
                 "hoi_pipeline_data_preprocess": self.hoi_pipeline_data_preprocess,
                 "hoi_pipeline_data_preprocess_sam3d_neus": self.hoi_pipeline_data_preprocess_sam3d_neus,
                 "hoi_pipeline_get_corres": self.hoi_pipeline_get_corres,
+                "hoi_pipeline_eval_corres": self.hoi_pipeline_eval_corres,
                 "hoi_pipeline_align_SAM3D_with_HY": self.hoi_pipeline_align_SAM3D_with_HY,
                 "hoi_pipeline_3D_points_align_with_HY": self.hoi_pipeline_3D_points_align_with_HY,
                 "hoi_pipeline_HY_to_SAM3D": self.hoi_pipeline_HY_to_SAM3D,
@@ -1537,6 +1538,26 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
+    def hoi_pipeline_eval_corres(self, scene_name, **kwargs):
+        self.print_header(f"hoi pipeline evaluate correspondences for {scene_name}")
+        data_dir = f"{self.dataset_dir}/{scene_name}/pipeline_preprocess"
+        corres_dir = f"{self.dataset_dir}/{scene_name}/pipeline_corres"
+        out_dir = f"{self.dataset_dir}/{scene_name}/pipeline_corres/eval_corres_vis"
+
+        if self.rebuild:
+            cmd = f"rm -rf {out_dir}"
+            print(cmd)
+            os.system(cmd)
+
+        cmd = f"cd {vggt_code_dir} && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_eval_corres.py "
+        cmd += f"--data_dir {data_dir} "
+        cmd += f"--corres_dir {corres_dir} "
+        cmd += f"--out_dir {out_dir} "
+        cmd += f"--cond_index 850 "
+        print(cmd)
+        os.system(cmd)
+
     def hoi_pipeline_neus_init(self, scene_name, **kwargs):
         self.print_header(f"hoi pipeline neus initialization for {scene_name}")
         data_dir = f"{self.dataset_dir}/{scene_name}"
@@ -1954,6 +1975,7 @@ if __name__ == "__main__":
                 "hoi_pipeline_data_preprocess",
                 "hoi_pipeline_data_preprocess_sam3d_neus",
                 "hoi_pipeline_get_corres",
+                "hoi_pipeline_eval_corres",
                 "hoi_pipeline_align_SAM3D_with_HY",
                 "hoi_pipeline_3D_points_align_with_HY",
                 "hoi_pipeline_HY_to_SAM3D",
