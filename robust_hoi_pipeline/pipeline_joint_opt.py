@@ -146,7 +146,7 @@ def load_preprocessed_data(data_preprocess_dir: Path, frame_indices: List[int]) 
                 except Exception:
                     data[f'hand_meshes_{key}'].append(None)
             else:
-                    data[f'hand_meshes_{key}'].append(None)
+                data[f'hand_meshes_{key}'].append(None)
     return data
 
 
