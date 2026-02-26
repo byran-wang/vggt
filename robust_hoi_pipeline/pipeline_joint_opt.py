@@ -21,6 +21,7 @@ sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 from utils_simba.depth import get_depth, depth2xyzmap
 from utils_simba.render import diff_renderer, projection_matrix_from_intrinsics
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_sam3d_transform
+from robust_hoi_pipeline.geometry_utils import compute_reproj_errors
 import os
 RUN_ON_PC = os.getenv("RUN_ON_PC", "").lower() == "true"
 device = "cuda"
@@ -346,17 +347,7 @@ def save_reproj_errors(image_info: Dict, register_idx: int, image: np.ndarray, r
     pts_3d = points_3d[valid].astype(np.float64)
     pts_2d = tracks[local_idx][valid].astype(np.float64)
 
-    cam = (o2c[:3, :3] @ pts_3d.T).T + o2c[:3, 3]
-    in_front = cam[:, 2] > 0
-
-    errs = np.full(valid.sum(), np.nan, dtype=np.float64)
-    proj_2d_all = np.full((valid.sum(), 2), np.nan, dtype=np.float64)
-    if in_front.any():
-        proj_x = K[0, 0] * cam[in_front, 0] / cam[in_front, 2] + K[0, 2]
-        proj_y = K[1, 1] * cam[in_front, 1] / cam[in_front, 2] + K[1, 2]
-        proj_2d = np.stack([proj_x, proj_y], axis=1)
-        errs[in_front] = np.linalg.norm(proj_2d - pts_2d[in_front], axis=1)
-        proj_2d_all[in_front] = proj_2d
+    errs, proj_2d_all = compute_reproj_errors(pts_3d, pts_2d, o2c, K)
 
     valid_errs = errs[np.isfinite(errs)]
 
@@ -474,6 +465,27 @@ def _stack_intrinsics(intrinsics_list: List[np.ndarray]) -> np.ndarray:
     return np.stack(stacked, axis=0)
 
 
+def print_frame_reproj_error(image_info_work, frame_idx, tag="joint_opt"):
+    """Print reprojection error stats for a single frame."""
+    fm = np.asarray(image_info_work["track_mask"][frame_idx]).astype(bool)
+    pts_3d = image_info_work.get("points_3d")
+    if pts_3d is None or not fm.any():
+        return
+    ext = image_info_work["extrinsics"][frame_idx]
+    K = image_info_work["intrinsics"][frame_idx] if image_info_work["intrinsics"].ndim == 3 else image_info_work["intrinsics"]
+    p3 = np.asarray(pts_3d)[fm].astype(np.float64)
+    p2 = np.asarray(image_info_work["pred_tracks"][frame_idx])[fm].astype(np.float64)
+    fin = np.isfinite(p3).all(axis=1)
+    if not fin.any():
+        return
+    errs, _ = compute_reproj_errors(p3[fin], p2[fin], ext, K)
+    valid_errs = errs[np.isfinite(errs)]
+    if len(valid_errs) > 0:
+        print(f"[{tag}] Frame {frame_idx}: reproj_error mean={valid_errs.mean():.2f} "
+              f"median={np.median(valid_errs):.2f} max={valid_errs.max():.2f} "
+              f"({len(valid_errs)}/{fm.sum()} pts)")
+
+
 def mask_track_for_outliers(image_info, frame_idx, reproj_thresh, min_track_number=1):
     """Mask tracks whose reprojection error exceeds a threshold for a given frame.
 
@@ -510,15 +522,8 @@ def mask_track_for_outliers(image_info, frame_idx, reproj_thresh, min_track_numb
     if not finite.any():
         return
 
-    cam = (ext[:3, :3] @ pts_3d[finite].T).T + ext[:3, 3]
-    in_front = cam[:, 2] > 0
-
-    errs = np.zeros(finite.sum(), dtype=np.float64)
-    if in_front.any():
-        proj_x = K[0, 0] * cam[in_front, 0] / cam[in_front, 2] + K[0, 2]
-        proj_y = K[1, 1] * cam[in_front, 1] / cam[in_front, 2] + K[1, 2]
-        proj_2d = np.stack([proj_x, proj_y], axis=1)
-        errs[in_front] = np.linalg.norm(proj_2d - pts_2d[finite][in_front], axis=1)
+    errs, _ = compute_reproj_errors(pts_3d[finite], pts_2d[finite], ext, K)
+    errs = np.nan_to_num(errs, nan=0.0)
 
     visible_idx = np.where(frame_mask)[0]
     finite_idx = visible_idx[finite]
@@ -1256,9 +1261,9 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
                     it=it + 1,
                 )
             print(
-                f"[align_depth] Frame {frame_idx}: iter {it+1}/{num_iters}, "
+                f"[align_depth] Frame {frame_idx}: iter {it+1}/{num_iters}, total {loss.item():.6f} "
                 f"loss_d={loss_depth.item():.6f}, loss_n={loss_normal.item():.6f}, "
-                f"loss_iou={loss_iou.item():.6f}, loss_reproj={loss_reproj.item():.6f}, valid={valid_count}"
+                f"loss_iou={loss_iou.item():.6f}, loss_reproj={loss_reproj.item():.6f}, valid={valid_count}, "
             )
 
     if not np.isfinite(best["loss"]) or best["valid"] < 100:
@@ -1785,8 +1790,10 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                     image_info_work, mesh_path, cond_local_idx,
                     min_track_number=args.min_track_number,
                 )
-                # Mask tracks with reprojection error > joint_opt_reproj_thresh
+                # Print reprojection error after joint optimization for the newly registered frame
                 kf_indices_arr = np.where(image_info_work["keyframe"].astype(bool))[0]
+                print_frame_reproj_error(image_info_work, next_frame_idx, tag="joint_opt")
+                # Mask tracks with reprojection error > joint_opt_reproj_thresh
                 for ki in kf_indices_arr:
                     mask_track_for_outliers(image_info_work, ki, args.joint_opt_reproj_thresh,
                                            min_track_number=args.min_track_number)
