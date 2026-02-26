@@ -60,7 +60,6 @@ def load_preprocessed_data(data_preprocess_dir: Path, frame_indices: List[int]) 
         - depths: list of (H, W) filtered depth maps (in object space)
         - normals: list of (H, W, 3) normal maps
         - intrinsics: list of (3, 3) camera intrinsic matrices
-        - hand_poses: list of hand pose data (or None)
         - hand_meshes: list of hand meshes {'vertices': (V,3), 'faces': (F,3)} or None
     """
     from PIL import Image
@@ -75,7 +74,6 @@ def load_preprocessed_data(data_preprocess_dir: Path, frame_indices: List[int]) 
         'depths': [],
         'normals': [],
         'intrinsics': [],
-        'hand_poses': [],
         'hand_meshes_right': [],
         'hand_meshes_left': [],
     }
@@ -127,10 +125,8 @@ def load_preprocessed_data(data_preprocess_dir: Path, frame_indices: List[int]) 
             with open(meta_path, "rb") as f:
                 meta = pickle.load(f)
             data['intrinsics'].append(meta.get('intrinsics'))
-            data['hand_poses'].append(meta.get('hand_pose'))
         else:
             data['intrinsics'].append(None)
-            data['hand_poses'].append(None)
 
         # Load sealed hand mesh generated in preprocessing.
         for key in ["right", "left"]:
@@ -1710,7 +1706,6 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         "intrinsics": intrinsics,
         "depth_priors": depth_priors,
         "normal_priors": preprocessed_data.get("normals"),
-        "hand_poses": preprocessed_data.get("hand_poses"),
         "hand_meshes_right": preprocessed_data.get("hand_meshes_right"),
         "hand_meshes_left": preprocessed_data.get("hand_meshes_left"),
         "images": preprocessed_data["images"],
