@@ -182,6 +182,7 @@ def prepare_joint_opt_inputs(
     tracks_dir: Path,
     sam3d_dir: Path,
     cond_idx: int,
+    vis_thresh: float,
 ) -> Tuple[List[int], Dict, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
     """Load preprocessing, tracks, and SAM3D transform for joint optimization."""
     print("Loading preprocessed data...")
@@ -195,7 +196,7 @@ def prepare_joint_opt_inputs(
     vis_scores = track_data['vis_scores']
     tracks_mask = track_data['tracks_mask']
     # Mask out tracks with low visibility scores
-    tracks_mask = tracks_mask & (vis_scores >= 0.5)
+    tracks_mask = tracks_mask & (vis_scores >= vis_thresh)
     print(f"Loaded tracks: {tracks.shape[0]} frames, {tracks.shape[1]} tracks")
 
     print("Loading SAM3D transformation...")
@@ -1922,6 +1923,7 @@ def main(args):
             tracks_dir=tracks_dir,
             sam3d_dir=SAM3D_dir,
             cond_idx=cond_idx,
+            vis_thresh=args.vis_thresh,
         )
 
         # 5. Lift 2D tracks to 3D points using depth and transformation
@@ -2006,6 +2008,8 @@ if __name__ == "__main__":
                         help="Number of NeuS training steps used in pipeline_neus_init.py (for resuming)")
     parser.add_argument("--no_optimize_with_point_to_plane", action="store_true", default=True,
                         help="Disable point-to-plane loss and skip NeuS mesh loading")
+    parser.add_argument("--vis_thresh", type=float, default=0.3,
+                        help="Visibility score threshold for filtering tracks in the condition frame")
 
     args = parser.parse_args()
     main(args)
