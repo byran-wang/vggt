@@ -158,6 +158,41 @@ def _load_vggsfm_sequence_images(
     return images_tensor, masks_tensor
 
 
+def _build_anchor_sequence(cond_pos: int, num_frames: int, interval: int) -> List[int]:
+    """Build anchor frame indices: forward from cond_pos, then backward from cond_pos.
+
+    Args:
+        cond_pos: Condition frame position (first anchor).
+        num_frames: Total number of frames.
+        interval: Step size between anchors.
+
+    Returns:
+        Ordered list of unique anchor indices.
+    """
+    anchors = [cond_pos]
+    # Move forward from cond_pos
+    pos = cond_pos + interval
+    while pos < num_frames:
+        anchors.append(pos)
+        pos += interval
+    # Move backward from cond_pos
+    pos = cond_pos - interval
+    while pos >= 0:
+        anchors.append(pos)
+        pos -= interval
+    return anchors
+
+
+def _get_window_indices(anchor: int, window_size: int, num_frames: int) -> List[int]:
+    """Get frame indices for a window centered on anchor, clamped to [0, num_frames)."""
+    half = window_size // 2
+    start = max(0, anchor - half)
+    end = min(num_frames, start + window_size)
+    # Adjust start if end hit the boundary
+    start = max(0, end - window_size)
+    return list(range(start, end))
+
+
 def main(args):
     data_dir = Path(args.data_dir)  # the out_dir of pipeline_data_preprocess.py
     out_dir = Path(args.out_dir)
@@ -177,29 +212,98 @@ def main(args):
         return
 
     cond_pos = _resolve_condition_pos(image_paths, args.cond_index)
+    num_frames = len(image_paths)
 
-    print("Running VGGSfM tracking once on all images (with masked background)...")
+    # Build anchor sequence and sliding windows
+    anchors = _build_anchor_sequence(cond_pos, num_frames, args.anchor_interval)
+    print(f"Sliding window tracking: {len(anchors)} anchors, window_size={args.window_size}, interval={args.anchor_interval}")
+    print(f"Anchor positions: {anchors}")
+
+    # Save anchor indices and their window ranges
+    anchor_window_path = corres_dir / "anchor_window.txt"
+    with open(anchor_window_path, "w") as f:
+        f.write("# anchor_frame window_start_frame window_end_frame\n")
+        for anchor in anchors:
+            win = _get_window_indices(anchor, args.window_size, num_frames)
+            f.write(f"{image_paths[anchor].stem} {image_paths[win[0]].stem} {image_paths[win[-1]].stem}\n")
+    print(f"Saved anchor/window info to {anchor_window_path}")
+
+    # Load all images once (shared across windows)
+    print("Loading all images (with masked background)...")
     images_all, image_masks = _load_vggsfm_sequence_images(image_paths, args.device, mask_dir)
-    with torch.inference_mode():
-        pred_tracks, pred_vis_scores, _, _, _ = predict_tracks(
-            images_all,
-            image_masks=image_masks,
-            max_query_pts=args.vggsfm_max_query_pts,
-            query_frame_num=1,
-            keypoint_extractor=args.vggsfm_keypoint_extractor,
-            max_points_num=args.vggsfm_max_points_num,
-            fine_tracking=args.vggsfm_fine_tracking,
-            complete_non_vis=True,
-            query_frame_indexes=[cond_pos],
-        )
+
+    # Accumulate tracks from all windows
+    # Global arrays: pred_tracks (num_frames, N_total, 2), pred_vis_scores (num_frames, N_total)
+    # pred_tracks_mask (num_frames, N_total) - only valid within window frames
+    all_tracks = []       # list of (num_frames, N_w, 2) arrays
+    all_vis_scores = []   # list of (num_frames, N_w) arrays
+    all_window_masks = [] # list of (num_frames, N_w) bool arrays
+
+    for anchor in tqdm(anchors, desc="Sliding window tracking"):
+        win_indices = _get_window_indices(anchor, args.window_size, num_frames)
+        win_size = len(win_indices)
+        if win_size < 2:
+            continue
+
+        # Find anchor position within the window
+        anchor_in_win = win_indices.index(anchor)
+
+        # Extract window subset of images and masks
+        images_win = images_all[win_indices]   # (win_size, 3, H, W)
+        masks_win = image_masks[win_indices]    # (win_size, 1, H, W)
+
+        print(f"  Anchor {anchor} (frames {win_indices[0]}-{win_indices[-1]}), "
+              f"query_frame_index={anchor_in_win}")
+
+        with torch.inference_mode():
+            win_tracks, win_vis, _, _, _ = predict_tracks(
+                images_win,
+                image_masks=masks_win,
+                max_query_pts=args.vggsfm_max_query_pts,
+                query_frame_num=1,
+                keypoint_extractor=args.vggsfm_keypoint_extractor,
+                max_points_num=args.vggsfm_max_points_num,
+                fine_tracking=args.vggsfm_fine_tracking,
+                complete_non_vis=False,
+                query_frame_indexes=[anchor_in_win],
+            )
+        # win_tracks: (win_size, N_w, 2), win_vis: (win_size, N_w)
+        n_w = win_tracks.shape[1]
+
+        # Expand to global frame dimension, fill non-window frames with zeros
+        global_tracks = np.zeros((num_frames, n_w, 2), dtype=win_tracks.dtype)
+        global_vis = np.zeros((num_frames, n_w), dtype=win_vis.dtype)
+        global_win_mask = np.zeros((num_frames, n_w), dtype=bool)
+
+        for local_idx, global_idx in enumerate(win_indices):
+            global_tracks[global_idx] = win_tracks[local_idx]
+            global_vis[global_idx] = win_vis[local_idx]
+            global_win_mask[global_idx] = True  # only valid within window
+
+        all_tracks.append(global_tracks)
+        all_vis_scores.append(global_vis)
+        all_window_masks.append(global_win_mask)
+
+    if not all_tracks:
+        print("No tracks produced from any window.")
+        return
+
+    # Concatenate tracks from all windows along the track dimension
+    pred_tracks = np.concatenate(all_tracks, axis=1)       # (num_frames, N_total, 2)
+    pred_vis_scores = np.concatenate(all_vis_scores, axis=1)  # (num_frames, N_total)
+    window_valid = np.concatenate(all_window_masks, axis=1)   # (num_frames, N_total)
+
+    print(f"Total tracks from all windows: {pred_tracks.shape[1]}")
 
     # Check if each track point is in foreground (mask > 0)
     in_foreground = compute_vggsfm_foreground_mask(pred_tracks, image_paths, mask_dir)
     depth_dir = data_dir / "depth_filtered"
-    depth_valid = compute_vggsfm_depth_mask(pred_tracks, image_paths, depth_dir)
+    # depth_valid = compute_vggsfm_depth_mask(pred_tracks, image_paths, depth_dir)
 
     vis_valid = pred_vis_scores > args.vggsfm_vis_thresh
-    pred_tracks_mask = in_foreground & depth_valid & vis_valid
+    
+    # Combine: must be in window, in foreground, have valid depth, and pass visibility threshold
+    pred_tracks_mask = window_valid & in_foreground & vis_valid #& depth_valid
 
     print(f"Track validity stats: {pred_tracks_mask.sum()} / {pred_tracks_mask.size} valid track-frame pairs")
     min_tracks = 5
@@ -218,12 +322,12 @@ def main(args):
     print(f"Saved VGGSfM tracking results to {tracks_path}")
 
     print("Exporting VGGSfM correspondences...")
-    vggsfm_pairs = [(cond_pos, j) for j in range(len(image_paths)) if j != cond_pos]
+    vggsfm_pairs = [(cond_pos, j) for j in range(num_frames) if j != cond_pos]
 
     for i, j in tqdm(vggsfm_pairs, desc="VGGSfM matching"):
         image0_path = image_paths[i]
         image1_path = image_paths[j]
-        # Use combined validity mask (visibility + foreground)
+        # Use combined validity mask (visibility + foreground + window)
         keep = pred_tracks_mask[i] & pred_tracks_mask[j]
         if int(keep.sum()) == 0:
             print(f"No matches between {image0_path.name} and {image1_path.name}, skipping.")
@@ -252,11 +356,13 @@ if __name__ == "__main__":
     parser.add_argument("--pair_mode", type=str, default="condition_to_all",
                         choices=["condition_to_all", "consecutive", "all"])
     parser.add_argument("--cond_index", type=int, default=0, help="Condition frame index used by condition_to_all mode")
-    parser.add_argument("--vggsfm_vis_thresh", type=float, default=0.3, help="Minimum VGGSfM visibility score")
-    parser.add_argument("--vggsfm_max_query_pts", type=int, default=2048)
+    parser.add_argument("--vggsfm_vis_thresh", type=float, default=0.0, help="Minimum VGGSfM visibility score")
+    parser.add_argument("--vggsfm_max_query_pts", type=int, default=1024)
     parser.add_argument("--vggsfm_keypoint_extractor", type=str, default="aliked+sp")
     parser.add_argument("--vggsfm_max_points_num", type=int, default=163840)
     parser.add_argument("--vggsfm_fine_tracking", action="store_true", default=False)
     parser.add_argument("--max_vis_matches", type=int, default=200)
+    parser.add_argument("--window_size", type=int, default=20, help="Number of frames per sliding window")
+    parser.add_argument("--anchor_interval", type=int, default=10, help="Interval between anchor frames")
 
     main(parser.parse_args())

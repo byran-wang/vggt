@@ -173,7 +173,7 @@ if __name__ == "__main__":
                         help="Condition frame index to visualize correspondences from")
     parser.add_argument("--max_vis_matches", type=int, default=2000,
                         help="Maximum number of correspondences to draw per pair")
-    parser.add_argument("--vis_thresh", type=float, default=0.5,
+    parser.add_argument("--vis_thresh", type=float, default=0.3,
                         help="Minimum visibility score threshold for valid correspondences")
 
     main(parser.parse_args())
