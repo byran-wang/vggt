@@ -177,7 +177,6 @@ def pipeline_data_preprocess(args):
     intrinsic_dir = data_dir / "meta"
     depth_dir = data_dir / "depth"
     hand_dir = data_dir 
-    hand_pose_file = hand_dir / f"hold_fit.aligned_h_{args.hand_mode}.npy"
     sam3d_transform_file = data_dir/ "SAM3D_aligned_post_process" /f"{args.cond_index:04d}" / "aligned_transform.json" # such as output/SM2/gen_3d_aligned_SAM3D/aligned_transform.json
 
     out_dir = Path(args.output_dir)
@@ -197,21 +196,6 @@ def pipeline_data_preprocess(args):
     print(f"Selected {len(frame_indices)} frames: {frame_indices[:10]}{'...' if len(frame_indices) > 10 else ''}")
 
     # 2. Load hand poses (if available)
-    hand_poses = None
-    if hand_pose_file.exists():
-        print(f"Loading hand poses from {hand_pose_file}")
-        hand_poses_raw = np.load(hand_pose_file, allow_pickle=True)
-        # Handle different numpy array formats (0-dim arrays contain the actual data)
-        if hand_poses_raw.ndim == 0:
-            hand_poses = hand_poses_raw.item()  # Extract the actual object
-        else:
-            hand_poses = hand_poses_raw
-        if isinstance(hand_poses, np.ndarray):
-            print(f"Loaded hand poses shape: {hand_poses.shape}")
-        elif isinstance(hand_poses, dict):
-            print(f"Loaded hand poses as dict with {len(hand_poses)} keys")
-        else:
-            print(f"Loaded hand poses type: {type(hand_poses)}")
 
     hand_provider = None
     if HandDataProvider is not None and hand_dir.exists():
@@ -320,10 +304,6 @@ def pipeline_data_preprocess(args):
         normal_map = compute_normals_from_depth(depth_batch, intrinsics_batch)
         normal_map = normal_map.squeeze(0).permute(1, 2, 0).numpy()  # (H, W, 3)
 
-        # Get hand pose for this frame
-        hand_pose = None
-
-
 
 
 
@@ -371,7 +351,6 @@ def pipeline_data_preprocess(args):
             'intrinsics': intrinsics,
             'depth_filtered': filtered_depth,
             'normal_map': normal_map,
-            'hand_pose': hand_pose,
         }
         preprocessed_data.append(frame_data)
     # 4. Save preprocessed data to output directory
@@ -408,7 +387,6 @@ def pipeline_data_preprocess(args):
         meta = {
             'frame_idx': frame_idx,
             'intrinsics': frame_data['intrinsics'],
-            'hand_pose': frame_data['hand_pose'],
         }
         with open(out_dir / "meta" / f"{frame_idx:04d}.pkl", 'wb') as f:
             pickle.dump(meta, f)
