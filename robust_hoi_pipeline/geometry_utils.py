@@ -56,6 +56,35 @@ def compute_normals_from_depth(depth_map, intrinsics):
     return normals.permute(0, 3, 1, 2)  # B,3,H,W
 
 
+def compute_reproj_errors(pts_3d, pts_2d, ext, K):
+    """Compute reprojection errors for 3D-2D correspondences.
+
+    Args:
+        pts_3d: (N, 3) 3D points in world/object frame.
+        pts_2d: (N, 2) observed 2D points.
+        ext: (3, 4) or (4, 4) extrinsic matrix (world-to-camera).
+        K: (3, 3) intrinsic matrix.
+
+    Returns:
+        errs: (N,) reprojection errors (NaN for points behind camera).
+        proj_2d: (N, 2) projected 2D points (NaN for points behind camera).
+    """
+    pts_3d = np.asarray(pts_3d, dtype=np.float64)
+    pts_2d = np.asarray(pts_2d, dtype=np.float64)
+    n = len(pts_3d)
+    cam = (ext[:3, :3] @ pts_3d.T).T + ext[:3, 3]
+    in_front = cam[:, 2] > 0
+
+    errs = np.full(n, np.nan, dtype=np.float64)
+    proj_2d = np.full((n, 2), np.nan, dtype=np.float64)
+    if in_front.any():
+        px = K[0, 0] * cam[in_front, 0] / cam[in_front, 2] + K[0, 2]
+        py = K[1, 1] * cam[in_front, 1] / cam[in_front, 2] + K[1, 2]
+        proj_2d[in_front] = np.stack([px, py], axis=1)
+        errs[in_front] = np.linalg.norm(proj_2d[in_front] - pts_2d[in_front], axis=1)
+    return errs, proj_2d
+
+
 def axis_angle_to_matrix(rvecs):
     """Convert batched axis-angle vectors to rotation matrices.
 
