@@ -8,7 +8,7 @@ else:
     home_dir = os.path.expanduser("~")
     conda_dir = f"{home_dir}/miniconda3"
 
-vggt_code_dir = f"{home_dir.rstrip('/')}/Documents/project/vggt"
+vggt_code_dir = f"{home_dir.rstrip('/')}/Documents/project/vggt_wenxuan"
 sequences = {
     # {
     # # reconstruction fail after increase matching scores to 0.5 from 0.3 and retrival image number to top 50%

@@ -642,7 +642,7 @@ class run_wonder_hoi:
     def obj_3D_gen(self, scene_name, **kwargs):
         self.print_header(f"Generate object 3D model from Hunyuan for {scene_name}")
         id = f"{self.seq_config['cond_idx']:04d}"
-        out_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{id}/"
+        out_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{id}"
                    
         if self.rebuild:
             cmd = f"rm -rf {out_dir}/*"
@@ -682,7 +682,7 @@ class run_wonder_hoi:
     def ho3d_obj_3D_gen(self, scene_name, **kwargs):
         self.print_header(f"Generate object 3D model from Hunyuan for {scene_name}")
         id = f"{self.seq_config['cond_idx']:04d}"
-        out_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{id}/"
+        out_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{id}"
                    
         if self.rebuild:
             cmd = f"rm -rf {out_dir}/*"
@@ -725,7 +725,7 @@ class run_wonder_hoi:
         depth_path = f"{self.dataset_dir}/{scene_name}/depth/{id}.png"
         mask_path = f"{self.dataset_dir}/{scene_name}/mask_object/{id}.png"
         meta_path = f"{self.dataset_dir}/{scene_name}/meta/{id}.pkl"
-        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D/{id}/"
+        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D/{id}"
                    
         if self.rebuild:
             cmd = f"rm -rf {out_dir}/*"
@@ -752,7 +752,7 @@ class run_wonder_hoi:
     def ho3d_obj_SAM3D_post_opt_GS(self, scene_name, **kwargs):
         self.print_header(f"Post-optimize SAM3D Gaussian Splatting for {scene_name}")
         id = f"{self.seq_config['cond_idx']:04d}"
-        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D/{id}/"
+        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D/{id}"
 
         cmd = f"cd {home_dir}/Documents/project/sam-3d-objects && "
         cmd += f"LIDRA_SKIP_INIT=1 {self.conda_dir}/envs/sam3d-objects/bin/python post_opt_GS.py "
@@ -769,7 +769,7 @@ class run_wonder_hoi:
         meta_path = f"{self.dataset_dir}/{scene_name}/meta/{id}.pkl"
 
 
-        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_optimized/{id}/"
+        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_optimized/{id}"
                    
         if self.rebuild:
             cmd = f"rm -rf {out_dir}/*"
@@ -809,7 +809,7 @@ class run_wonder_hoi:
         meta_path = f"{self.dataset_dir}/{scene_name}/meta/{id}.pkl"
 
 
-        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_mask/{id}/"
+        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_mask/{id}"
                    
         if self.rebuild:
             cmd = f"rm -rf {out_dir}/*"
@@ -833,7 +833,7 @@ class run_wonder_hoi:
     def ho3d_align_SAM3D_pts(self, scene_name, **kwargs):
         self.print_header(f"Align SAM3D model using 3D points for {scene_name}")
         id = f"{self.seq_config['cond_idx']:04d}"
-        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/{id}/"
+        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/{id}"
                    
         if self.rebuild:
             cmd = f"rm -rf {out_dir}/*"
@@ -857,8 +857,8 @@ class run_wonder_hoi:
     def ho3d_SAM3D_post_process(self, scene_name, **kwargs):
         self.print_header(f"Copy SAM3D results for {scene_name}")
         id = f"{self.seq_config['cond_idx']:04d}"
-        src_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/{id}/"
-        dst_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_post_process/{id}/"
+        src_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/{id}"
+        dst_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_post_process/{id}"
 
         if self.vis:
             cmd = f"cd {home_dir}/Documents/project/vggt && "
@@ -883,8 +883,8 @@ class run_wonder_hoi:
     def align_mesh_image(self, scene_name, **kwargs):
         self.print_header(f"align mesh and image for {scene_name}")
         id = f"{self.seq_config['cond_idx']:04d}"
-        data_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{id}/"
-        out_dir = f"{self.dataset_dir}/{scene_name}/align_mesh_image/{id}/"
+        data_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{id}"
+        out_dir = f"{self.dataset_dir}/{scene_name}/align_mesh_image/{id}"
 
         if self.vis:
             cmd = f"cd {home_dir}/Documents/project/Hunyuan3D-2.1/ && "
@@ -940,7 +940,7 @@ class run_wonder_hoi:
     def align_corres(self, scene_name, **kwargs):
         self.print_header(f"align corres for {scene_name}")
         id = f"{self.seq_config['cond_idx']:04d}"
-        cond_data_dir = f"{self.dataset_dir}/{scene_name}/align_mesh_image/{id}/"
+        cond_data_dir = f"{self.dataset_dir}/{scene_name}/align_mesh_image/{id}"
         query_data_dir = f"{self.dataset_dir}/{scene_name}/pts_observed/"
         out_dir = f"{self.dataset_dir}/{scene_name}/features/"
 
