@@ -621,7 +621,7 @@ def _save_icp_iteration_debug(debug_dir, it, pts_obj, p, c):
         _debug_dir / f"closest_iter{it:03d}.ply")
 
 
-def _save_obj_depth_points_debug(debug_dir, frame_idx, pts_obj, filename_prefix, color_rgba):
+def _save_obj_depth_points_debug(debug_dir, frame_idx, pts_obj, filename_prefix, color_rgba, it=None):
     if debug_dir is None or pts_obj is None or len(pts_obj) == 0:
         return
 
@@ -631,9 +631,44 @@ def _save_obj_depth_points_debug(debug_dir, frame_idx, pts_obj, filename_prefix,
     _debug_dir.mkdir(parents=True, exist_ok=True)
     colors_obj = np.zeros((len(pts_obj), 4), dtype=np.uint8)
     colors_obj[:, :] = np.array(color_rgba, dtype=np.uint8)
+    suffix = f"_iter_{it:03d}" if it is not None else ""
     _trimesh.PointCloud(pts_obj.astype(np.float32), colors=colors_obj).export(
-        _debug_dir / f"{filename_prefix}_frame_{frame_idx:04d}.ply"
+        _debug_dir / f"{filename_prefix}_frame_{frame_idx:04d}{suffix}.ply"
     )
+
+
+def _backproject_depth_torch(depth, K, mask):
+    """Back-project masked depth pixels to 3D camera-space points (differentiable)."""
+    vs, us = torch.where(mask)
+    zs = depth[vs, us]
+    xs = (us.float() - K[0, 2]) * zs / K[0, 0]
+    ys = (vs.float() - K[1, 2]) * zs / K[1, 1]
+    return torch.stack([xs, ys, zs], dim=-1)  # (N, 3)
+
+
+def _depth_map_to_obj_points(depth, K, R, trans, mask=None):
+    """Back-project a depth map to 3D points in object space.
+
+    Args:
+        depth: (H, W) depth map (torch tensor).
+        K: (3, 3) intrinsic matrix (numpy).
+        R: (3, 3) rotation from object to camera (torch tensor).
+        trans: (3,) translation from object to camera (torch tensor).
+        mask: optional (H, W) boolean mask of valid pixels (torch tensor).
+
+    Returns:
+        pts_obj: (N, 3) numpy array of points in object space.
+    """
+    if mask is None:
+        mask = (depth > 0) & torch.isfinite(depth)
+    vs, us = torch.where(mask)
+    zs = depth[vs, us]
+    xs = (us.float() - K[0, 2]) * zs / K[0, 0]
+    ys = (vs.float() - K[1, 2]) * zs / K[1, 1]
+    pts_cam = torch.stack([xs, ys, zs], dim=-1)  # (N, 3)
+    # cam_to_obj: p_obj = R^T @ (p_cam - t)
+    pts_obj = (R.T @ (pts_cam - trans[None, :]).T).T
+    return pts_obj.detach().cpu().numpy()
 
 
 def _save_colored_points_debug(debug_dir, frame_idx, pts, image, ys, xs, filename_prefix):
@@ -970,17 +1005,76 @@ def gmof(x, sigma):
     loss_val = (x_squared) / (sigma_squared + x_squared + 1e-8)
     return loss_val
 
-def _compute_depth_loss(depth_r, obs_depth, obs_mask):
-    """Rendered-vs-observed depth loss with Geman-McClure robustifier.
+def _compute_depth_loss(depth_r, obs_depth, obs_mask, K, sigma=0.1,
+                        max_pts=2000, debug_ctx=None):
+    """KNN-based depth loss between rendered and observed 3D point clouds.
+
+    Each depth map is independently masked by its own valid pixels,
+    back-projected to 3D camera space using intrinsics, then a bidirectional
+    chamfer distance with GMoF robustifier is computed.
 
     Returns (loss, valid_count) or (None, 0) when too few valid pixels.
     """
-    valid = obs_mask & (depth_r > 0) & torch.isfinite(depth_r)
-    valid_count = int(valid.sum().item())
+    render_mask = (depth_r > 0) & torch.isfinite(depth_r)
+    obs_valid = obs_mask & (obs_depth > 0) & torch.isfinite(obs_depth)
+
+    render_count = int(render_mask.sum().item())
+    obs_count = int(obs_valid.sum().item())
+    valid_count = min(render_count, obs_count)
+
     if valid_count < 100:
         return None, valid_count
-    depth_res = depth_r[valid] - obs_depth[valid]
-    loss = gmof(depth_res.abs(), sigma=0.1).mean(dim=-1)
+
+    # Back-project to 3D camera space
+    pts_r = _backproject_depth_torch(depth_r, K, render_mask)
+    pts_o = _backproject_depth_torch(obs_depth, K, obs_valid)
+
+
+    # # Subsample for memory efficiency
+    # if len(pts_r) > max_pts:
+    #     idx = torch.randperm(len(pts_r), device=pts_r.device)[:max_pts]
+    #     pts_r = pts_r[idx]
+    # if len(pts_o) > max_pts:
+    #     idx = torch.randperm(len(pts_o), device=pts_o.device)[:max_pts]
+    #     pts_o = pts_o[idx]
+
+    # Debug: save subsampled point clouds in object space
+    if debug_ctx is not None:
+        R = debug_ctx["R"]
+        trans = debug_ctx["trans"]
+        debug_dir = debug_ctx["debug_dir"]
+        frame_idx = debug_ctx["frame_idx"]
+        it = debug_ctx["it"]
+        with torch.no_grad():
+            pts_r_obj = (R.T @ (pts_r - trans[None, :]).T).T.cpu().numpy()
+            pts_o_obj = (R.T @ (pts_o - trans[None, :]).T).T.cpu().numpy()
+        _save_obj_depth_points_debug(
+            debug_dir, frame_idx, pts_r_obj,
+            "depth_rendered_obj", color_rgba=(0, 0, 255, 255), it=it,
+        )
+        _save_obj_depth_points_debug(
+            debug_dir, frame_idx, pts_o_obj,
+            "depth_observed_obj", color_rgba=(0, 255, 0, 255), it=it,
+        )
+
+    # Bidirectional chamfer with GMoF robustifier
+    dists = torch.cdist(pts_r, pts_o)           # (Nr, No)
+    nn_r2o = dists.min(dim=1).values             # rendered → observed
+    nn_o2r = dists.min(dim=0).values             # observed → rendered
+    # loss = gmof(nn_r2o, sigma=sigma).mean() + gmof(nn_o2r, sigma=sigma).mean()
+    loss = nn_r2o.mean() + nn_o2r.mean()
+
+    # # KNN correspondences: for each observed point find nearest rendered point,
+    # # filter by max distance, then compute L2 loss on matched pairs.
+    # dists = torch.cdist(pts_o, pts_r)              # (No, Nr)
+    # nn_dist, nn_idx = dists.min(dim=1)             # (No,) nearest rendered for each observed
+    # close = nn_dist < 0.05
+    # if close.sum() == 0:
+    #     return torch.tensor(0.0, device=depth_r.device), valid_count
+    # corr_r = pts_r[nn_idx[close]]                  # matched rendered points
+    # corr_dist = (pts_o[close] - corr_r).norm(dim=-1)
+    # loss = gmof(corr_dist, sigma=sigma).mean()
+
     return loss, valid_count
 
 
@@ -1074,20 +1168,15 @@ def _save_depth_debug_stages(debug_dir, frame_idx, d, K, extrinsics, ys, xs, dbg
         _save_colored_points_debug(debug_dir, frame_idx, masked_pts_obj, dbg_image, ys, xs, "depth_after_masked_in_obj")
 
 
-def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2000, num_iters=60, inlier_thresh=0.3, debug_dir=None):
+def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2000, num_iters=100, inlier_thresh=0.3, debug_dir=None):
     """Align a frame by optimizing pose with rendered-vs-observed depth/normal losses."""
 
 
     del inlier_thresh  # kept in signature for compatibility
 
-    normal_device = device if torch.cuda.is_available() else "cpu"
     frame_obs = _prepare_frame_observations(
         image_info_work,
         frame_idx,
-        torch_device=normal_device,
-        normal_smooth_iters=5,
-        normal_kernel_size=5,
-        normal_eps=1e-6,
         debug_dir=debug_dir,
     )
     if frame_obs is None:
@@ -1124,7 +1213,7 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
     pts_cam_sel = _depth_pixels_to_cam_points(d, K, ys, xs)
 
     if not torch.cuda.is_available():
-        print(f"[align_depth] Frame {frame_idx}: CUDA unavailable, skipping depth-normal optimization")
+        print(f"[align_depth] Frame {frame_idx}: CUDA unavailable, skipping depth optimization")
         return False
 
     H, W = d.shape
@@ -1168,7 +1257,7 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
         o2c[:3, 3] = trans
 
 
-        obj_img, depth_r, normal_r = diff_renderer(
+        obj_img, depth_r = diff_renderer(
             verts=obj_verts,
             tri=obj_tri,
             color=obj_color,
@@ -1176,13 +1265,7 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
             ob_in_cvcams=o2c,
             resolution=np.asarray([H, W]),
             glctx=glctx,
-            get_normal=True,
-            vnormals=vnormals,
         )
-        normal_r = torch.flip(normal_r[0], dims=[0])
-        normal_r = F.normalize(normal_r, dim=-1)
-        # permute last two channels to match OpenCV convention
-        normal_r = normal_r[:, :, [0, 2, 1]]
 
         # Render merged foreground mask from object mesh + hand mesh.
         hand_verts_in_obj = None
@@ -1207,22 +1290,23 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
 
 
         depth_r = torch.flip(depth_r[0], dims=[0])
-        loss_depth, valid_count = _compute_depth_loss(depth_r, obs_depth, obs_mask)
+        _debug_ctx = None
+        if debug_dir is not None and (it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1):
+            _debug_ctx = {"K": K, "R": R, "trans": trans, "debug_dir": debug_dir,
+                          "frame_idx": frame_idx, "it": it + 1}
+        loss_depth, valid_count = _compute_depth_loss(depth_r, obs_depth, obs_mask, K, debug_ctx=_debug_ctx)
         if loss_depth is None:
             print(f"[align_depth] Frame {frame_idx}: iter {it}, only {valid_count} valid rendered pixels")
             continue
-        valid = obs_mask & (depth_r > 0) & torch.isfinite(depth_r)
 
-        loss_normal = _compute_normal_loss(normal_r, obs_normal, valid)
         loss_iou = _compute_iou_loss(render_union, obs_hoi_mask)
         loss_reproj = _compute_reproj_loss(R, trans, trk_pts3d_t, trk_pts2d_t, K_t)
-        
+
         w_depth = 1.0
-        w_normal = 0.0
         w_mask = 20.0
         w_reproj = 0.0
 
-        loss = w_depth * loss_depth + w_normal * loss_normal + w_mask * loss_iou + w_reproj * loss_reproj
+        loss = w_depth * loss_depth + w_mask * loss_iou + w_reproj * loss_reproj
 
         if torch.isfinite(loss):
             loss.backward()
@@ -1236,14 +1320,6 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
             best["valid"] = valid_count
 
         if it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1:
-            if normal_r is not None:
-                _save_normal_map_debug(
-                    debug_dir=debug_dir,
-                    frame_idx=frame_idx,
-                    normal_map=normal_r.detach().cpu().numpy(),
-                    filename_prefix="normal_rendered",
-                    it=it + 1,
-                )
             _save_binary_mask_debug(
                 debug_dir=debug_dir,
                 frame_idx=frame_idx,
@@ -1261,9 +1337,9 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
                     it=it + 1,
                 )
             print(
-                f"[align_depth] Frame {frame_idx}: iter {it+1}/{num_iters}, total {loss.item():.6f} "
-                f"loss_d={loss_depth.item():.6f}, loss_n={loss_normal.item():.6f}, "
-                f"loss_iou={loss_iou.item():.6f}, loss_reproj={loss_reproj.item():.6f}, valid={valid_count}, "
+                f"[align_depth] Frame {frame_idx}: iter {it+1}/{num_iters}, total {loss.item():.3f} "
+                f"loss_d={loss_depth.item():.3f}, "
+                f"loss_iou={loss_iou.item():.3f}, loss_reproj={loss_reproj.item():.3f}, valid={valid_count}"
             )
 
     if not np.isfinite(best["loss"]) or best["valid"] < 100:
