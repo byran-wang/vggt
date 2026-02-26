@@ -270,6 +270,9 @@ def check_reprojection_error(image_info, frame_idx, args, min_valid_points=150, 
 
     num_valid = np.sum(valid_mask)
     print(f"[check_reprjection_error] Frame {frame_idx}: {num_valid} valid points for reprojection error check")
+    if num_valid == 0:
+        print(f"[check_reprjection_error] Frame {frame_idx}: no valid 3D points, skipping check")
+        return False, mean_error
     if (not skip_check) and (num_valid < min_valid_points):
         print(f"[check_reprjection_error] Frame {frame_idx}: insufficient valid points ({num_valid} < {min_valid_points}), skipping check")
         return False, mean_error
