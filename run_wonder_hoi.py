@@ -519,19 +519,37 @@ class run_wonder_hoi:
         frame_number = self.seq_config['frame_number']
         frame_interval = self.seq_config["frame_interval"]
 
+        # Cap frame_number to actual available mask frames
+        import glob as glob_module
+        actual_frames = len(sorted(glob_module.glob(f"{output_dir}/mask_hand/*.png")))
+        if actual_frames > 0:
+            frame_number = min(frame_number, actual_frames)
+
         cmd_parts = [
-            f"cd {self.code_dir}/generator &&",
+            f"cd /data1/shibo/Documents/project/WonderHOI/generator &&",
             f"{self.conda_dir}/envs/vggsfm_tmp/bin/python scripts/align_hands_object.py",
             f"--seq_name {scene_name}",
             f"--mode {mode}",
-            f"--max_frame_num 9999",
+            f"--max_frame_num {frame_number}",
             f"--frame_interval 1",
             f"--out_dir {output_dir}",
         ]
         if "num_frames" in kwargs:
-            cmd_parts.append(f"--num_frames {kwargs['num_frames']}")
+            cmd_parts.append(f"--max_frame_num {kwargs['num_frames']}")
         if "dataset_type" in kwargs:
             cmd_parts.append(f"--dataset_type {kwargs['dataset_type']}")
+
+        # Create symlink for WonderHOI data directory
+        wonderhoi_data_dir = "/data1/shibo/Documents/project/WonderHOI/generator/data"
+        seq_link = f"{wonderhoi_data_dir}/{scene_name}"
+        if not os.path.lexists(seq_link):
+            os.symlink(output_dir.rstrip('/'), seq_link)
+
+        # Create symlinks so WonderHOI can find hold_fit and j2d files
+        for fname in ["hold_fit.slerp.npy", "j2d.full.npy"]:
+            link = f"{output_dir.rstrip('/')}/{fname}"
+            if not os.path.lexists(link):
+                os.symlink(f"hands/{fname}", link)
 
         cmd = " ".join(cmd_parts)
         print(cmd)
@@ -709,7 +727,7 @@ class run_wonder_hoi:
             print(cmd)
             os.system(cmd)
 
-        cmd = f"cd {home_dir}/Documents/project/vggt/ && "
+        cmd = f"cd {vggt_code_dir} && "
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python get_condition_id_{strategy}.py "
         cmd += f"--scene_dir {data_dir} "
         cmd += f"--frame_interval {self.seq_config['frame_interval']} "
@@ -816,7 +834,7 @@ class run_wonder_hoi:
             os.system(cmd)
 
         # python example.py --image_file $IMAGE_FILE --output_dir $scene_output_dir
-        cmd = f"cd {home_dir}/Documents/project/vggt && "
+        cmd = f"cd {vggt_code_dir} && "
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python align_SAM3D_mask.py "
         cmd += f"--data-dir {self.dataset_dir}/{scene_name}/ "
         cmd += f"--hand-pose-suffix trans "
@@ -840,7 +858,7 @@ class run_wonder_hoi:
             os.system(cmd)
 
         # python example.py --image_file $IMAGE_FILE --output_dir $scene_output_dir
-        cmd = f"cd {home_dir}/Documents/project/vggt && "
+        cmd = f"cd {vggt_code_dir} && "
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python align_SAM3D_pts.py "
         cmd += f"--data-dir {self.dataset_dir}/{scene_name}/ "
         # cmd += f"--cond-index {int(self.seq_config['cond_idx']/self.seq_config['frame_interval']) * self.seq_config['frame_interval']} "
@@ -860,7 +878,7 @@ class run_wonder_hoi:
         dst_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_post_process/{id}/"
 
         if self.vis:
-            cmd = f"cd {home_dir}/Documents/project/vggt && "
+            cmd = f"cd {vggt_code_dir} && "
             cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python SAM3D_post_process_vis.py "
             cmd += f"--out-dir {dst_dir} "       
             print(cmd)
@@ -872,7 +890,7 @@ class run_wonder_hoi:
             print(cmd)
             os.system(cmd)
 
-        cmd = f"cd {home_dir}/Documents/project/vggt && "
+        cmd = f"cd {vggt_code_dir} && "
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python SAM3D_post_process.py "
         cmd += f"--src-dir {src_dir} "
         cmd += f"--dst-dir {dst_dir} "       
@@ -1540,17 +1558,19 @@ class run_wonder_hoi:
     def hoi_pipeline_neus_init(self, scene_name, **kwargs):
         self.print_header(f"hoi pipeline neus initialization for {scene_name}")
         data_dir = f"{self.dataset_dir}/{scene_name}"
+        result_dir = f"{vggt_code_dir}/output/{scene_name}"
         out_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_neus_init"
 
         if self.rebuild:
             cmd = f"rm -rf {out_dir}"
             print(cmd)
             os.system(cmd)
-        
+
         CONDA_PREFIX = f"{self.conda_dir}/envs/vggsfm_tmp"
         cmd = f'''cd {vggt_code_dir} && export PATH={CONDA_PREFIX}/bin:$PATH && export CC={CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-gcc &&  export CXX={CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-g++ && '''
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_neus_init.py "
         cmd += f"--data_dir {data_dir} "
+        cmd += f"--result_dir {result_dir} "
         cmd += f"--output_dir {out_dir} "
         cmd += f"--cond_index {self.seq_config['cond_idx']} "
         print(cmd)

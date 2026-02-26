@@ -19,7 +19,7 @@ for scene in ${scenes}; do
     scene_dir=$data_dir/$scene
     out_dir=$current_dir/output/$scene
     raw_dir="/home/simba/Documents/dataset/WonderHOI/ZED/${scene}/"
-    frame_interval=5
+    frame_interval=3
     # python cp_origin.py --data_path="${raw_dir}/mask_obj" --output_dir="${scene_dir}/mask_obj_origin" --frame_interval=${frame_interval}
     # python crop_image.py --image_dir=$scene_dir/mask_obj_origin --output_dir=$scene_dir/images --meta_path="${scene_dir}/meta_origin/0000.pkl"
     # python cp_origin.py --data_path="${raw_dir}/depth_fs" --output_dir="${scene_dir}/depth_fs_origin" --frame_interval=${frame_interval}

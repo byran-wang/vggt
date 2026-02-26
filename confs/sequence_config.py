@@ -8,7 +8,7 @@ else:
     home_dir = os.path.expanduser("~")
     conda_dir = f"{home_dir}/miniconda3"
 
-vggt_code_dir = f"{home_dir.rstrip('/')}/Documents/project/vggt"
+vggt_code_dir = f"{home_dir.rstrip('/')}/Documents/project/vggt_wenxuan"
 sequences = {
     # {
     # # reconstruction fail after increase matching scores to 0.5 from 0.3 and retrival image number to top 50%
@@ -29,7 +29,7 @@ sequences = {
     "cond_select_strategy": "manual", # manual or object_hand_ratio    
     "frame_star": 0,
     "frame_end": 9999,
-    "frame_interval": 5,
+    "frame_interval": 3,
     "frame_number": 1000,   
     "obj_num": 6,
     "obj_1_cond_idx": 0,
@@ -211,5 +211,5 @@ sequences = {
 }
 
 if RUN_ON_SERVER:
-    sequences["default"]["frame_interval"] = 5
+    sequences["default"]["frame_interval"] = 3
     sequences["default"]["frame_number"] = 1000
