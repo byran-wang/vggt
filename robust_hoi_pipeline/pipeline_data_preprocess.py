@@ -128,6 +128,17 @@ def _get_hand_mesh_cam(hand_provider, frame_idx: int, mode="trans"):
         return verts, faces
     return None, None
 
+def _get_hand_pose(hand_provider, frame_idx: int, mode="trans"):
+
+    if hand_provider is None:
+        return None, None, None
+
+    """Load right-hand local pose and global rotation and global translation in camera space for one frame."""
+    hand_pose = hand_provider.get_hand_poses(mode)[frame_idx]
+    hand_rot = hand_provider.get_hand_rots(mode)[frame_idx]
+    hand_trans = hand_provider.get_hand_transls(mode)[frame_idx]
+
+    return hand_pose, hand_rot, hand_trans
 
 def _save_sealed_right_hand_mesh(hand_dir: Path, frame_idx: int, verts_cam: np.ndarray, faces: np.ndarray, obj_scale: Optional[float]):
     """Scale, seal and save right-hand MANO mesh."""
@@ -394,6 +405,7 @@ def pipeline_data_preprocess(args):
         # Save sealed right-hand mesh (camera space, scaled by obj_scale)
         if hand_provider is not None:
             verts_cam, faces = _get_hand_mesh_cam(hand_provider, frame_idx, mode=args.hand_mode) # mode choice "intrinsic" or "trans" or "rot"
+            hand_pose, hand_rot, hand_trans = _get_hand_pose(hand_provider, frame_idx, mode=args.hand_mode)
             if verts_cam is not None and faces is not None:
                 try:
                     _save_sealed_right_hand_mesh(
@@ -405,6 +417,18 @@ def pipeline_data_preprocess(args):
                     )
                 except Exception as e:
                     print(f"  Warning: Failed to save sealed right hand mesh for frame {frame_idx}: {e}")
+            if hand_pose is not None:
+                hand_pose_dir = out_dir / "hand_pose"
+                hand_pose_dir.mkdir(parents=True, exist_ok=True)
+                saved_hand_trans = hand_trans
+                if obj_scale is not None and obj_scale != 0:
+                    saved_hand_trans = hand_trans / float(obj_scale)
+                np.savez(
+                    hand_pose_dir / f"{frame_idx:04d}.npz",
+                    hand_pose=hand_pose,
+                    hand_rot=hand_rot,
+                    hand_trans=saved_hand_trans,
+                )
 
     # Save frame list
     frame_list_path = out_dir / "frame_list.txt"
