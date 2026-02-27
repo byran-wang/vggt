@@ -33,26 +33,18 @@ for device in "${!device_sequences[@]}"; do
   sequences=${device_sequences[$device]}
   
   (
-    #   python run_wonder_hoi.py \
-    # --execute_list hand_pose_postprocess \
-    # --process_list fit_hand_intrinsic fit_hand_trans fit_hand_rot \
-    # --seq_list $sequences --rebuild \
-    # --dataset_dir /home/simba/Documents/dataset/ZED_wenxuan\
-    # --conda_type anaconda3
+    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+      --execute_list obj_process \
+      --process_list ho3d_obj_SAM3D_gen ho3d_align_SAM3D_mask ho3d_align_SAM3D_pts \
+      --seq_list $sequences --rebuild \
+      --dataset_dir /mnt/sata/Documents/dataset/ZED_wenxuan
 
-    # export RUN_ON_PC=true   
-    #   CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-    # --execute_list obj_process \
-    # --process_list hoi_pipeline_joint_opt \
-    # --seq_list $sequences --rebuild  \
-    # --dataset_dir /home/simba/Documents/dataset/ZED_wenxuan
 
-    # 可視化
-    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-    #   --execute_list obj_process \
-    #   --process_list hoi_pipeline_joint_opt \
-    #   --seq_list $sequences --vis \
-    #   --dataset_dir /home/simba/Documents/dataset/ZED_wenxuan
+    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+      --execute_list obj_process \
+      --process_list ho3d_SAM3D_post_process \
+      --seq_list $sequences --rebuild \
+      --dataset_dir /mnt/sata/Documents/dataset/ZED_wenxuan
 
   ) &
 done
