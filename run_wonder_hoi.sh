@@ -21,7 +21,8 @@ python run_wonder_hoi.py --execute_list obj_process --process_list estimate_obj_
 
 ## hand process
 python run_wonder_hoi.py --execute_list hand_pose_preprocess --process_list estimate_hand_pose --seq_list $seq_list --rebuild
-python run_wonder_hoi.py --execute_list hand_pose_postprocess --process_list fit_hand_intrinsic fit_hand_trans fit_hand_rot --seq_list $seq_list --rebuild --num_frames 300 
+python run_wonder_hoi.py --execute_list hand_pose_postprocess --process_list fit_hand_intrinsic fit_hand_trans fit_hand_rot --seq_list $seq_list --rebuild
+python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_hand_vis --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list hand_pose_postprocess --process_list fit_hand_viewer --seq_list $seq_list --world_coordinate object --only_key_frame true
 
 ##########################################################################
