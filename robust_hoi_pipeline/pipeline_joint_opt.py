@@ -77,6 +77,7 @@ def load_preprocessed_data(data_preprocess_dir: Path, frame_indices: List[int]) 
         'hand_meshes_right': [],
         'hand_meshes_left': [],
         'hand_poses': [],
+        'hand_c2o': [],
     }
 
     for frame_idx in frame_indices:
@@ -151,15 +152,19 @@ def load_preprocessed_data(data_preprocess_dir: Path, frame_indices: List[int]) 
         if hand_pose_path.exists():
             try:
                 hp = np.load(hand_pose_path)
-                data['hand_poses'].append({
-                    'hand_pose': hp['hand_pose'],
-                    'hand_rot': hp['hand_rot'],
-                    'hand_trans': hp['hand_trans'],
-                })
+                hand_rot = hp['hand_rot'].astype(np.float32)
+                hand_o2c = np.eye(4, dtype=np.float32)
+                if hand_rot.shape == (3,):
+                    hand_o2c[:3, :3] = ScipyRotation.from_rotvec(hand_rot).as_matrix().astype(np.float32)
+                else:
+                    hand_o2c[:3, :3] = hand_rot
+                hand_o2c[:3, 3] = hp['hand_trans'].astype(np.float32)
+                hand_c2o = np.linalg.inv(hand_o2c)
+                data['hand_c2o'].append(hand_c2o)
             except Exception:
-                data['hand_poses'].append(None)
+                data['hand_c2o'].append(None)
         else:
-            data['hand_poses'].append(None)
+            data['hand_c2o'].append(None)
     return data
 
 
@@ -217,11 +222,22 @@ def prepare_joint_opt_inputs(
     cond_cam_to_obj[:3, :3] = sam3d_transform['scale'] * sam3d_transform['cond_cam_to_sam3d'][:3, :3]
     cond_cam_to_obj[:3, 3] = sam3d_transform['cond_cam_to_sam3d'][:3, 3]
 
+
+
     try:
         cond_local_idx = frame_indices.index(cond_idx)
     except ValueError:
         raise ValueError(f"Condition index {cond_idx} not found in frame list: {frame_indices}")
     print(f"Condition frame {cond_idx} is at local index {cond_local_idx}")
+
+    # Align hand c2o poses with cond_cam_to_obj at condition frame (right-multiplication)
+    hand_c2o = preprocessed.get('hand_c2o')
+    if hand_c2o is not None and cond_local_idx < len(hand_c2o) and hand_c2o[cond_local_idx] is not None:
+        align_tf = np.linalg.inv(hand_c2o[cond_local_idx].astype(np.float64)) @ cond_cam_to_obj.astype(np.float64)
+        for i in range(len(hand_c2o)):
+            if hand_c2o[i] is not None:
+                hand_c2o[i] = (hand_c2o[i].astype(np.float64) @ align_tf).astype(np.float32)
+        print(f"Aligned hand c2o poses with cond_cam_to_obj at condition frame {cond_idx}")
 
     return (
         frame_indices,
@@ -1666,74 +1682,20 @@ def _reset_pose_to_nearest_registered(image_info_work, frame_idx):
         print(f"[reproj_recovery] Reset frame {frame_idx} pose to nearest registered frame {nearest_idx}")
 
 
-def _init_pose_from_hand_delta(image_info_work, frame_idx):
-    """Initialize frame pose using hand pose delta from nearest registered frame.
+def _init_pose_from_hand(image_info_work, frame_idx):
+    """Initialize frame pose using hand pose for frame_idx frame.
 
-    Assumes the hand is approximately stationary in object space between nearby
-    frames, so the change in MANO global rotation / translation (camera space)
-    reflects the camera motion.
 
     Returns True if the pose was successfully initialized, False otherwise
     (caller should fall back to _reset_pose_to_nearest_registered).
     """
-    hand_poses = image_info_work.get("hand_poses")
-    if hand_poses is None:
+    hand_c2o = image_info_work.get("hand_c2o")
+    if hand_c2o is None:
         return False
 
-    hp_current = hand_poses[frame_idx]
+    hand_o2c = np.linalg.inv(hand_c2o[frame_idx])
+    image_info_work["extrinsics"][frame_idx] = hand_o2c
 
-
-    # Find nearest valid registered frame that also has hand pose data
-    registered = np.asarray(image_info_work["registered"]).astype(bool)
-    invalid = np.asarray(image_info_work["invalid"]).astype(bool)
-    valid_reg = registered & (~invalid)
-    reg_idx = np.where(valid_reg)[0]
-    if reg_idx.size == 0:
-        return False
-
-    # Sort by distance to current frame
-    sorted_reg = reg_idx[np.argsort(np.abs(reg_idx - frame_idx))]
-    nearest_idx = None
-    hp_nearest = None
-    for ri in sorted_reg:
-        if hand_poses[ri] is not None:
-            nearest_idx = ri
-            hp_nearest = hand_poses[ri]
-            break
-    if hp_nearest is None:
-        return False
-
-    hand_rot_c = np.asarray(hp_current['hand_rot'], dtype=np.float64)
-    hand_trans_c = np.asarray(hp_current['hand_trans'], dtype=np.float64)
-    hand_rot_n = np.asarray(hp_nearest['hand_rot'], dtype=np.float64)
-    hand_trans_n = np.asarray(hp_nearest['hand_trans'], dtype=np.float64)
-
-    # Convert MANO axis-angle global rotations to matrices
-    R_hand_c = ScipyRotation.from_rotvec(hand_rot_c).as_matrix()
-    R_hand_n = ScipyRotation.from_rotvec(hand_rot_n).as_matrix()
-
-    # Delta rotation of hand in camera space.
-    # With hand fixed in object space: R_hand_cam = R_o2c @ R_hand_obj
-    # => R_hand_c @ R_hand_n^{-1} ≈ R_o2c_c @ R_o2c_n^{-1}
-    R_delta = R_hand_c @ R_hand_n.T
-
-    ext_nearest = image_info_work["extrinsics"][nearest_idx].astype(np.float64)
-    R_n = ext_nearest[:3, :3]
-    t_n = ext_nearest[:3, 3]
-
-    # New camera rotation
-    R_c = R_delta @ R_n
-
-    # Estimate hand position in object space from nearest frame,
-    # then solve for new translation.
-    # hand_trans_n = R_n @ hand_pos_obj + t_n  =>  hand_pos_obj = R_n^T @ (hand_trans_n - t_n)
-    hand_pos_obj = R_n.T @ (hand_trans_n - t_n)
-    t_c = hand_trans_c - R_c @ hand_pos_obj
-
-    image_info_work["extrinsics"][frame_idx, :3, :3] = R_c.astype(np.float32)
-    image_info_work["extrinsics"][frame_idx, :3, 3] = t_c.astype(np.float32)
-    print(f"[hand_delta_init] Initialized frame {frame_idx} pose from hand delta "
-          f"(nearest registered frame {nearest_idx})")
     return True
 
 
@@ -1795,7 +1757,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         "normal_priors": preprocessed_data.get("normals"),
         "hand_meshes_right": preprocessed_data.get("hand_meshes_right"),
         "hand_meshes_left": preprocessed_data.get("hand_meshes_left"),
-        "hand_poses": preprocessed_data.get("hand_poses"),
+        "hand_c2o": preprocessed_data.get("hand_c2o"),
         "images": preprocessed_data["images"],
         "image_masks": preprocessed_data.get("masks_obj"),
         "image_masks_hand": preprocessed_data.get("masks_hand"),
