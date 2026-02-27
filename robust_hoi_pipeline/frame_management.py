@@ -198,12 +198,12 @@ def check_key_frame(image_info, frame_idx, rot_thresh, trans_thresh, depth_thres
             print(f"[check_key_frame] Frame {frame_idx} rejected: insufficient depth pixels ({valid_depth} < {depth_thresh}).")
             return False
 
-    if track_mask is not None:
-        tm = np.asarray(track_mask)
-        if frame_idx < tm.shape[0]:
-            if int(np.count_nonzero(tm[frame_idx])) < frame_inliner_thresh:
-                print(f"[check_key_frame] Frame {frame_idx} rejected: insufficient track inliers.")
-                return False
+    # if track_mask is not None:
+    #     tm = np.asarray(track_mask)
+    #     if frame_idx < tm.shape[0]:
+    #         if int(np.count_nonzero(tm[frame_idx])) < frame_inliner_thresh:
+    #             print(f"[check_key_frame] Frame {frame_idx} rejected: insufficient track inliers.")
+    #             return False
 
     if keyframes is None:
         return True  # no keyframes tracked yet
