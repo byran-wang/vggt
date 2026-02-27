@@ -232,12 +232,15 @@ def prepare_joint_opt_inputs(
 
     # Align hand c2o poses with cond_cam_to_obj at condition frame (right-multiplication)
     hand_c2o = preprocessed.get('hand_c2o')
-    if hand_c2o is not None and cond_local_idx < len(hand_c2o) and hand_c2o[cond_local_idx] is not None:
-        align_tf = np.linalg.inv(hand_c2o[cond_local_idx].astype(np.float64)) @ cond_cam_to_obj.astype(np.float64)
-        for i in range(len(hand_c2o)):
-            if hand_c2o[i] is not None:
-                hand_c2o[i] = (hand_c2o[i].astype(np.float64) @ align_tf).astype(np.float32)
-        print(f"Aligned hand c2o poses with cond_cam_to_obj at condition frame {cond_idx}")
+    hand_o2c = np.linalg.inv(np.array(hand_c2o, dtype=np.float64))
+    cond_obj_to_cam = np.linalg.inv(cond_cam_to_obj.astype(np.float64))
+    if hand_o2c is not None and cond_local_idx < len(hand_o2c) and hand_o2c[cond_local_idx] is not None:
+        align_tf = np.linalg.inv(hand_o2c[cond_local_idx].astype(np.float64)) @ cond_obj_to_cam.astype(np.float64)
+        for i in range(len(hand_o2c)):
+            if hand_o2c[i] is not None:
+                hand_o2c[i] = (hand_o2c[i].astype(np.float64) @ align_tf).astype(np.float32)
+        print(f"Aligned hand o2c poses with cond_cam_to_obj at condition frame {cond_idx}")
+    preprocessed['hand_c2o'] = np.linalg.inv(hand_o2c)
 
     return (
         frame_indices,
