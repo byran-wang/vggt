@@ -540,6 +540,7 @@ def visualize_hand_in_rerun(data_gt, hand_pred_data, valid_frame_indices, data_d
     pred_faces_h = hand_pred_data.get("faces.right") if hand_pred_data else None
     pred_o2c = hand_pred_data.get("o2c").copy() if hand_pred_data and hand_pred_data.get("o2c") is not None else None
     gt_o2c = _to_np(data_gt.get("o2c"))  # (M, 4, 4) GT object-to-camera
+
     # Align pred_o2c to gt_o2c at the first valid frame
     if pred_align == "GT" and pred_o2c is not None and gt_o2c is not None:
         anchor = 0
