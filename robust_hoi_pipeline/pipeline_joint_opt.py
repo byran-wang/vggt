@@ -1685,9 +1685,53 @@ def _reset_pose_to_nearest_registered(image_info_work, frame_idx):
         print(f"[reproj_recovery] Reset frame {frame_idx} pose to nearest registered frame {nearest_idx}")
 
 
-def _init_pose_from_hand(image_info_work, frame_idx):
-    """Initialize frame pose using hand pose for frame_idx frame.
+def _check_pose_sanity(image_info_work, frame_idx, max_rot_deg=10.0, max_trans=0.1):
+    """Check if a frame's pose is within a reasonable range of nearby registered frames.
 
+    Compares the rotation angle and translation distance between the current
+    frame and the nearest valid registered frame.
+
+    Args:
+        image_info_work: Working image info dictionary with extrinsics, registered, invalid.
+        frame_idx: Frame index to check.
+        max_rot_deg: Maximum allowed rotation delta in degrees.
+        max_trans: Maximum allowed translation delta (Euclidean distance).
+
+    Returns:
+        (ok, rot_deg, trans_dist): ok is True if within range; rot_deg and
+        trans_dist are the measured deltas (np.inf when no reference exists).
+    """
+    registered = np.asarray(image_info_work["registered"]).astype(bool)
+    invalid = np.asarray(image_info_work["invalid"]).astype(bool)
+    valid_reg = registered & (~invalid)
+    reg_idx = np.where(valid_reg)[0]
+    if reg_idx.size == 0:
+        return True, np.inf, np.inf  # no reference, skip check
+
+    nearest_idx = reg_idx[np.argmin(np.abs(reg_idx - frame_idx))]
+    T_curr = image_info_work["extrinsics"][frame_idx]
+    T_ref = image_info_work["extrinsics"][nearest_idx]
+
+    R_delta = T_curr[:3, :3] @ T_ref[:3, :3].T
+    angle = np.rad2deg(np.arccos(np.clip((np.trace(R_delta) - 1) / 2, -1.0, 1.0)))
+    trans_dist = float(np.linalg.norm(T_curr[:3, 3] - T_ref[:3, 3]))
+
+    ok = (angle <= max_rot_deg) and (trans_dist <= max_trans)
+    if not ok:
+        print(f"[pose_sanity] Frame {frame_idx}: FAILED vs frame {nearest_idx} "
+              f"(rot={angle:.1f}deg>{max_rot_deg}, trans={trans_dist:.4f}>{max_trans})")
+    else:
+        print(f"[pose_sanity] Frame {frame_idx}: OK vs frame {nearest_idx} "
+              f"(rot={angle:.1f}deg, trans={trans_dist:.4f})")
+    return ok, angle, trans_dist
+
+
+def _init_pose_from_hand(image_info_work, frame_idx):
+    """Initialize frame pose using the hand-pose delta from a nearby registered frame.
+
+    Computes the relative hand motion between frame_idx and the nearest valid
+    registered frame, then applies that delta to the registered frame's object
+    extrinsic:  ext_cur = delta @ ext_ref,  where delta = hand_o2c_cur @ inv(hand_o2c_ref).
 
     Returns True if the pose was successfully initialized, False otherwise
     (caller should fall back to _reset_pose_to_nearest_registered).
@@ -1696,9 +1740,29 @@ def _init_pose_from_hand(image_info_work, frame_idx):
     if hand_c2o is None:
         return False
 
-    hand_o2c = np.linalg.inv(hand_c2o[frame_idx])
-    image_info_work["extrinsics"][frame_idx] = hand_o2c
+    # Find nearest valid registered frame
+    registered = np.asarray(image_info_work["registered"]).astype(bool)
+    invalid = np.asarray(image_info_work["invalid"]).astype(bool)
+    valid_reg = registered & (~invalid)
+    reg_idx = np.where(valid_reg)[0]
+    if reg_idx.size == 0:
+        return False
 
+    nearest_idx = reg_idx[np.argmin(np.abs(reg_idx - frame_idx))]
+
+    # Compute hand o2c for both frames
+    hand_o2c_cur = np.linalg.inv(hand_c2o[frame_idx]).astype(np.float64)
+    hand_o2c_ref = np.linalg.inv(hand_c2o[nearest_idx]).astype(np.float64)
+
+    # Delta: relative hand motion from ref to cur
+    delta = hand_o2c_cur @ np.linalg.inv(hand_o2c_ref)
+
+    # Apply delta to the registered frame's object extrinsic
+    ext_ref = image_info_work["extrinsics"][nearest_idx].astype(np.float64)
+    image_info_work["extrinsics"][frame_idx] = (delta @ ext_ref).astype(np.float32)
+
+    print(f"[init_pose_from_hand] Frame {frame_idx}: initialized from hand delta "
+          f"relative to registered frame {nearest_idx}")
     return True
 
 
@@ -1817,12 +1881,14 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         #     print_image_info_stats(image_info_work, invalid_cnt)
         #     continue
         
-        sucess, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args)
+        repro_ok, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args)
+        # Check if the pose is within a reasonable range compared to nearby registered frames
+        pose_ok, _, _ = _check_pose_sanity(image_info_work, next_frame_idx)
+        sucess = repro_ok and pose_ok
         if not sucess:
-            print(f"[register_remaining_frames] Frame {next_frame_idx} align depth to mesh due to high reprojection error")
-            # _reset_pose_to_nearest_registered(image_info_work, next_frame_idx)
-            _init_pose_from_hand(image_info_work, next_frame_idx)
-            mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
+            print(f"[register_remaining_frames] Frame {next_frame_idx} align depth to mesh")
+            _reset_pose_to_nearest_registered(image_info_work, next_frame_idx)
+            # _init_pose_from_hand(image_info_work, next_frame_idx)
 
             # # Mask tracks without valid (finite) 3D points
             # finite_3d = np.isfinite(image_info_work["points_3d"]).all(axis=-1)
@@ -1835,7 +1901,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             if RUN_ON_PC:
                 debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
             # if sam3d_mesh is not None:
-            if 0:
+            if 1:
                 print(f"[register_remaining_frames] Aligning frame {next_frame_idx} with SAM3D mesh using depth")
                 sucess = _align_frame_with_mesh_depth(image_info_work, next_frame_idx, sam3d_mesh, 
                                              debug_dir=debug_dir
@@ -1853,7 +1919,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
 
         
-                # mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
+            mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
 
 
         image_info_work["registered"][next_frame_idx] = True
@@ -2060,7 +2126,7 @@ if __name__ == "__main__":
                         help="Number of NeuS training steps used in pipeline_neus_init.py (for resuming)")
     parser.add_argument("--no_optimize_with_point_to_plane", action="store_true", default=True,
                         help="Disable point-to-plane loss and skip NeuS mesh loading")
-    parser.add_argument("--vis_thresh", type=float, default=0.3,
+    parser.add_argument("--vis_thresh", type=float, default=0.5,
                         help="Visibility score threshold for filtering tracks in the condition frame")
 
     args = parser.parse_args()
