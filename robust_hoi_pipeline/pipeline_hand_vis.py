@@ -761,10 +761,10 @@ if __name__ == "__main__":
                         help="Frame sampling interval")
     parser.add_argument("--hand_mode", type=str, default="trans",
                          help="Hand fit mode for HandDataProvider (e.g. 'rot', 'trans', 'intrinsic')")
-    parser.add_argument("--vis_space", type=str, default="camera", choices=["object", "camera"],
+    parser.add_argument("--vis_space", type=str, default="object", choices=["object", "camera"],
                          help="Visualization space: 'object' transforms meshes to object space, "
                               "'camera' keeps meshes in camera space")
-    parser.add_argument("--pred_align", type=str, default="SAM3D", choices=["GT", "SAM3D"],
+    parser.add_argument("--pred_align", type=str, default="GT", choices=["GT", "SAM3D"],
                          help="Align predicted poses to 'GT' or 'SAM3D' reference")
 
     args = parser.parse_args()
