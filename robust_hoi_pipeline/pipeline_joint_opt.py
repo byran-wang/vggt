@@ -1856,6 +1856,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         if not sucess:
             print(f"[register_remaining_frames] Frame {next_frame_idx} align depth to mesh due to high reprojection error")
             _reset_pose_to_nearest_registered(image_info_work, next_frame_idx)
+            # _init_pose_from_hand_delta(image_info_work, next_frame_idx)
 
             # # Mask tracks without valid (finite) 3D points
             # finite_3d = np.isfinite(image_info_work["points_3d"]).all(axis=-1)
