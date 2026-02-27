@@ -491,17 +491,15 @@ def load_hand_predictions(results_dir, hand_mode, frame_indices, device="cuda:0"
     }
 
 
-def visualize_hand_in_rerun(data_gt, hand_pred_data, valid_frame_indices, data_dir, vis_space="object"):
+def visualize_hand_in_rerun(data_gt, hand_pred_data, valid_frame_indices, data_dir,
+                            vis_space="object", pred_align="GT", cond_index=0, sam3d_data=None):
     """Visualize GT and predicted hand meshes per frame in Rerun.
 
     For each valid frame, logs:
     - GT hand mesh (green) and GT object mesh (gray) from ground truth data
     - Predicted hand mesh (blue) from MANO forward pass with predicted parameters
+    - SAM3D mesh (orange) if sam3d_data is provided
     - Camera image with pinhole projection
-
-    All meshes are in camera space, logged under the camera entity so they
-    project correctly onto the 2D image view.  The camera is positioned in
-    world space using the o2c (object-to-camera) transform from hand predictions.
 
     Args:
         data_gt: Ground truth data dict from gt.load_data (filtered to valid frames)
@@ -509,6 +507,10 @@ def visualize_hand_in_rerun(data_gt, hand_pred_data, valid_frame_indices, data_d
             or None if unavailable
         valid_frame_indices: (M,) frame indices for valid frames
         data_dir: Path to HO3D sequence directory containing rgb/
+        vis_space: 'object' or 'camera'
+        pred_align: 'GT' or 'SAM3D' — which reference to align pred poses to
+        cond_index: condition frame index (used for SAM3D alignment anchor)
+        sam3d_data: dict with 'sam3d_to_cond_cam', 'scale', 'mesh_path', or None
     """
     import rerun as rr
     import rerun.blueprint as rrb
@@ -536,12 +538,37 @@ def visualize_hand_in_rerun(data_gt, hand_pred_data, valid_frame_indices, data_d
 
     pred_v3d_h = hand_pred_data.get("v3d_c.right") if hand_pred_data else None
     pred_faces_h = hand_pred_data.get("faces.right") if hand_pred_data else None
-    pred_o2c = hand_pred_data.get("o2c") if hand_pred_data else None
+    pred_o2c = hand_pred_data.get("o2c").copy() if hand_pred_data and hand_pred_data.get("o2c") is not None else None
     gt_o2c = _to_np(data_gt.get("o2c"))  # (M, 4, 4) GT object-to-camera
     gt_K_raw = _to_np(data_gt.get("K"))
     gt_K = gt_K_raw.reshape(3, 3) if gt_K_raw is not None else None  # single (3,3) for whole seq
     rgb_dir = Path(data_dir) / "rgb"
     DUMMY_THRESH = -500  # gt.py sets invalid verts to -1000
+
+
+    # Load and log SAM3D mesh as static (orange)
+    if sam3d_data is not None and sam3d_data["mesh_path"].exists() and vis_space == "camera":
+        sam3d_mesh = trimesh.load(str(sam3d_data["mesh_path"]), force='mesh')
+        sam3d_verts = np.array(sam3d_mesh.vertices, dtype=np.float32)
+        sam3d_faces = np.array(sam3d_mesh.faces, dtype=np.uint32)
+        sam3d_colors = None
+        if sam3d_mesh.visual is not None and hasattr(sam3d_mesh.visual, 'vertex_colors'):
+            sam3d_colors = np.array(sam3d_mesh.visual.vertex_colors)[:, :3]
+        sam3d_to_cond_cam = sam3d_data["sam3d_to_cond_cam"]
+
+        # Transform SAM3D mesh vertices to condition camera space
+        verts_homo = np.hstack([sam3d_verts, np.ones((len(sam3d_verts), 1), dtype=np.float32)])
+        sam3d_verts = (sam3d_to_cond_cam @ verts_homo.T).T[:, :3]
+
+        mesh_kwargs = dict(
+            vertex_positions=sam3d_verts,
+            triangle_indices=sam3d_faces,
+        )
+        if sam3d_colors is not None:
+            mesh_kwargs["vertex_colors"] = sam3d_colors
+        else:
+            mesh_kwargs["mesh_material"] = rr.Material(albedo_factor=[255, 165, 0])
+        rr.log("world/sam3d_mesh", rr.Mesh3D(**mesh_kwargs), static=True)
 
     for i, fid in enumerate(valid_frame_indices):
         fid = int(fid)
@@ -644,10 +671,31 @@ def visualize_hand_in_rerun(data_gt, hand_pred_data, valid_frame_indices, data_d
     print(f"[hand_vis] Logged {len(valid_frame_indices)} frames to Rerun")
 
 
+def load_sam3d_data(sam3d_dir: Path, cond_index: int):
+    """Load SAM3D mesh path and transform data.
+
+    Returns dict with 'sam3d_to_cond_cam', 'scale', 'mesh_path', or None if not found.
+    """
+    sam3d_mesh_path = sam3d_dir / f"{cond_index:04d}" / "mesh.obj"
+    try:
+        sam3d_transform = load_sam3d_transform(sam3d_dir, cond_index)
+        sam3d_data = {
+            "sam3d_to_cond_cam": sam3d_transform["sam3d_to_cond_cam"],
+            "scale": sam3d_transform["scale"],
+            "mesh_path": sam3d_mesh_path,
+        }
+        print(f"[hand_vis] Loaded SAM3D transform from {sam3d_dir}, scale={sam3d_data['scale']:.4f}")
+        return sam3d_data
+    except FileNotFoundError as e:
+        print(f"[hand_vis] SAM3D transform not found: {e}")
+        return None
+
+
 def main(args):
 
     data_dir = Path(args.data_dir)
     seq_name = data_dir.name
+    SAM3D_dir = data_dir / "SAM3D_aligned_post_process" 
 
     # Auto-detect total frames from rgb directory and cap end
     rgb_dir = data_dir / "rgb"
@@ -684,10 +732,15 @@ def main(args):
     # Filter out frames that are invalid in GT from both data_gt and data_pred
     data_gt, data_pred = filter_invalid_gt_frames(data_gt, data_pred)
 
+    sam3d_data = load_sam3d_data(SAM3D_dir, args.cond_index)
+
     # Visualize GT and predicted hand meshes in Rerun
     visualize_hand_in_rerun(
         data_gt, hand_data, data_pred["valid_frame_indices"], data_dir,
         vis_space=args.vis_space,
+        pred_align=args.pred_align,
+        cond_index=args.cond_index,
+        sam3d_data=sam3d_data,
     )
     
 
@@ -708,9 +761,11 @@ if __name__ == "__main__":
                         help="Frame sampling interval")
     parser.add_argument("--hand_mode", type=str, default="trans",
                          help="Hand fit mode for HandDataProvider (e.g. 'rot', 'trans', 'intrinsic')")
-    parser.add_argument("--vis_space", type=str, default="object", choices=["object", "camera"],
+    parser.add_argument("--vis_space", type=str, default="camera", choices=["object", "camera"],
                          help="Visualization space: 'object' transforms meshes to object space, "
                               "'camera' keeps meshes in camera space")
+    parser.add_argument("--pred_align", type=str, default="SAM3D", choices=["GT", "SAM3D"],
+                         help="Align predicted poses to 'GT' or 'SAM3D' reference")
 
     args = parser.parse_args()
     from easydict import EasyDict
