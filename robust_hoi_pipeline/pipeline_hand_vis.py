@@ -540,6 +540,16 @@ def visualize_hand_in_rerun(data_gt, hand_pred_data, valid_frame_indices, data_d
     pred_faces_h = hand_pred_data.get("faces.right") if hand_pred_data else None
     pred_o2c = hand_pred_data.get("o2c").copy() if hand_pred_data and hand_pred_data.get("o2c") is not None else None
     gt_o2c = _to_np(data_gt.get("o2c"))  # (M, 4, 4) GT object-to-camera
+    # Align pred_o2c to gt_o2c at the first valid frame
+    if pred_align == "GT" and pred_o2c is not None and gt_o2c is not None:
+        anchor = 0
+        if gt_is_valid is not None:
+            valid_indices = np.where(gt_is_valid.astype(bool))[0]
+            if len(valid_indices) > 0:
+                anchor = valid_indices[0]
+        align_tf = np.linalg.inv(pred_o2c[anchor]) @ gt_o2c[anchor]
+        pred_o2c = pred_o2c @ align_tf
+        print(f"[hand_vis] Aligned pred_o2c to gt_o2c at frame {anchor}")
     gt_K_raw = _to_np(data_gt.get("K"))
     gt_K = gt_K_raw.reshape(3, 3) if gt_K_raw is not None else None  # single (3,3) for whole seq
     rgb_dir = Path(data_dir) / "rgb"
