@@ -104,7 +104,6 @@ class run_wonder_hoi:
                 "hoi_pipeline_3D_points_align_with_HY": self.hoi_pipeline_3D_points_align_with_HY,
                 "hoi_pipeline_HY_to_SAM3D": self.hoi_pipeline_HY_to_SAM3D,
                 "hoi_pipeline_joint_opt": self.hoi_pipeline_joint_opt,
-                "hoi_pipeline_hand_vis": self.hoi_pipeline_hand_vis,
                 "hoi_pipeline_reg_remaining": self.hoi_pipeline_reg_remaining,
                 "hoi_pipeline_HY_gen": self.hoi_pipeline_HY_gen,
                 "hoi_pipeline_HY_omni_gen": self.hoi_pipeline_HY_omni_gen,
@@ -539,8 +538,27 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
+    def _fit_hand_vis(self, scene_name, **kwargs):
+        self.print_header(f"hoi pipeline hand visualization for {scene_name}")
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+        out_dir = f"{vggt_code_dir}/output/{scene_name}"
+        id = f"{self.seq_config['cond_idx']:04d}"
+
+        cmd = f"cd {vggt_code_dir} && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_hand_vis.py "
+        cmd += f"--data_dir {data_dir} "
+        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--interval {self.seq_config['frame_interval']} "
+        cmd += f"--hand_mode trans " #(e.g. 'rot', 'trans', 'intrinsic')"
+        print(cmd)
+        os.system(cmd)
+        return
+
     def _fit_hand(self, scene_name, mode, output_dir, stage_desc, **kwargs):
         self.print_header(f"fit hand to {stage_desc} for {scene_name}")
+        if self.vis:
+            self._fit_hand_vis(scene_name, **kwargs)
+            return        
         self._cleanup_mano_ckpt(output_dir, mode)
         self.fit_hand_step(scene_name, mode, output_dir, **kwargs)
 
@@ -1618,21 +1636,7 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
-    def hoi_pipeline_hand_vis(self, scene_name, **kwargs):
-        self.print_header(f"hoi pipeline hand visualization for {scene_name}")
-        data_dir = f"{self.dataset_dir}/{scene_name}"
-        out_dir = f"{vggt_code_dir}/output/{scene_name}"
-        id = f"{self.seq_config['cond_idx']:04d}"
 
-        cmd = f"cd {vggt_code_dir} && "
-        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_hand_vis.py "
-        cmd += f"--data_dir {data_dir} "
-        cmd += f"--cond_index {self.seq_config['cond_idx']} "
-        cmd += f"--interval {self.seq_config['frame_interval']} "
-        cmd += f"--hand_mode trans " #(e.g. 'rot', 'trans', 'intrinsic')"
-        print(cmd)
-        os.system(cmd)
-        return
        
 
     def hoi_pipeline_reg_remaining(self, scene_name, **kwargs):
@@ -1998,7 +2002,6 @@ if __name__ == "__main__":
                 "hoi_pipeline_HY_to_SAM3D",
                 "hoi_pipeline_HY_omni_gen",
                 "hoi_pipeline_joint_opt",
-                "hoi_pipeline_hand_vis",
                 "hoi_pipeline_reg_remaining",
                 "hoi_pipeline_HY_gen",
                 "ho3d_eval_intrinsic",
