@@ -100,10 +100,17 @@ def load_hand_predictions(results_dir, hand_mode, frame_indices, device="cuda:0"
         return None
 
     # Select only the pipeline frames from the full hand data (like gt.load_data)
+    # Filter to frames that are within the hand data range
     max_fid = max(int(np.max(frame_indices)), 0)
-    if len(hand_poses) <= max_fid:
-        print(f"[hand] Hand data length {len(hand_poses)} too short for max frame index {max_fid}, skip")
-        return None
+    hand_len = len(hand_poses)
+    if hand_len <= max_fid:
+        valid_mask = frame_indices < hand_len
+        print(f"[hand] Hand data length {hand_len} < max frame index {max_fid}, "
+              f"using {valid_mask.sum()}/{len(frame_indices)} frames")
+        frame_indices = frame_indices[valid_mask]
+        if len(frame_indices) == 0:
+            print("[hand] No valid frames within hand data range, skip")
+            return None
 
     hand_poses = hand_poses[frame_indices]
     h2c_transls = np.asarray(h2c_transls)[frame_indices]
@@ -160,6 +167,7 @@ def load_hand_predictions(results_dir, hand_mode, frame_indices, device="cuda:0"
         "v3d_c.right": hand_verts_c.astype(np.float32),
         "faces.right": hand_faces,
         "o2c": o2c.astype(np.float32),
+        "frame_indices": frame_indices.copy(),
     }
 
 
@@ -213,16 +221,31 @@ def visualize_hand_in_rerun(data_gt, hand_pred_data, valid_frame_indices, data_d
     pred_o2c = hand_pred_data.get("o2c").copy() if hand_pred_data and hand_pred_data.get("o2c") is not None else None
     gt_o2c = _to_np(data_gt.get("o2c"))  # (M, 4, 4) GT object-to-camera
 
-    # Align pred_o2c to gt_o2c at the first valid frame
+    # Build frame_id → hand data index mapping (hand data may cover fewer frames)
+    hand_fid_to_idx = {}
+    if hand_pred_data is not None and "frame_indices" in hand_pred_data:
+        for hi, hfid in enumerate(hand_pred_data["frame_indices"]):
+            hand_fid_to_idx[int(hfid)] = hi
+
+    # Align pred_o2c to gt_o2c at the first valid frame that has hand data
     if pred_align == "GT" and pred_o2c is not None and gt_o2c is not None:
-        anchor = 0
+        anchor = None
         if gt_is_valid is not None:
             valid_indices = np.where(gt_is_valid.astype(bool))[0]
-            if len(valid_indices) > 0:
-                anchor = valid_indices[0]
-        align_tf = np.linalg.inv(pred_o2c[anchor]) @ gt_o2c[anchor]
-        pred_o2c = pred_o2c @ align_tf
-        print(f"[hand_vis] Aligned pred_o2c to gt_o2c at frame {anchor}")
+        else:
+            valid_indices = np.arange(len(valid_frame_indices))
+        for ai in valid_indices:
+            anchor_fid = int(valid_frame_indices[ai])
+            if anchor_fid in hand_fid_to_idx:
+                anchor = ai
+                break
+        if anchor is not None:
+            hand_anchor = hand_fid_to_idx[int(valid_frame_indices[anchor])]
+            align_tf = np.linalg.inv(pred_o2c[hand_anchor]) @ gt_o2c[anchor]
+            pred_o2c = pred_o2c @ align_tf
+            print(f"[hand_vis] Aligned pred_o2c to gt_o2c at frame {anchor}")
+        else:
+            print("[hand_vis] No valid frame with hand data for alignment, skipping alignment")
     gt_K_raw = _to_np(data_gt.get("K"))
     gt_K = gt_K_raw.reshape(3, 3) if gt_K_raw is not None else None  # single (3,3) for whole seq
     rgb_dir = Path(data_dir) / "rgb"
@@ -264,10 +287,11 @@ def visualize_hand_in_rerun(data_gt, hand_pred_data, valid_frame_indices, data_d
         if valid and gt_o2c is not None and i < len(gt_o2c):
             gt_c2o = np.linalg.inv(gt_o2c[i]).astype(np.float32)
 
-        # Compute pred c2o for this frame
+        # Compute pred c2o for this frame (hand data may cover fewer frames)
         pred_c2o = None
-        if pred_o2c is not None and i < len(pred_o2c):
-            pred_c2o = np.linalg.inv(pred_o2c[i]).astype(np.float32)
+        hi = hand_fid_to_idx.get(fid)
+        if pred_o2c is not None and hi is not None:
+            pred_c2o = np.linalg.inv(pred_o2c[hi]).astype(np.float32)
 
         if vis_space == "object":
             # Log camera poses in object/world space
@@ -341,8 +365,8 @@ def visualize_hand_in_rerun(data_gt, hand_pred_data, valid_frame_indices, data_d
                 ))
 
         # Predicted hand mesh (blue)
-        if pred_v3d_h is not None and pred_faces_h is not None and i < len(pred_v3d_h):
-            verts_pred = pred_v3d_h[i].astype(np.float32)
+        if pred_v3d_h is not None and pred_faces_h is not None and hi is not None:
+            verts_pred = pred_v3d_h[hi].astype(np.float32)
             if vis_space == "object" and pred_c2o is not None:
                 verts_pred = (pred_c2o[:3, :3] @ verts_pred.T).T + pred_c2o[:3, 3]
             rr.log("world/pred_hand", rr.Mesh3D(
@@ -439,9 +463,6 @@ def main(args):
         "valid_frame_indices": frame_indices.copy(),
         "is_valid": np.ones(len(valid_frame_indices), dtype=np.float32),
     }
-    if hand_data is not None:
-        data_pred["v3d_c.right"] = hand_data["v3d_c.right"]
-        data_pred["faces.right"] = hand_data["faces.right"]
 
     def get_image_fids():
         return valid_frame_indices.tolist()
