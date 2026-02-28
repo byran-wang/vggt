@@ -223,8 +223,8 @@ def eval_mesh_chamfer(
 
     mesh_specs = [
         ("sam3d", sam3d_mesh),
-        ("joint_opt", joint_opt_mesh),
-        ("hy_omni", hy_omni_mesh),
+        # ("joint_opt", joint_opt_mesh),
+        # ("hy_omni", hy_omni_mesh),
     ]
 
     for prefix, mesh_path in mesh_specs:
