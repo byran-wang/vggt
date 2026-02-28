@@ -1,0 +1,48 @@
+optim_configs:
+  hand_optim_intrinsic:
+    lr: 0.01
+    decay_every: 1000
+    decay_factor: 0.5
+    num_iters: 2000
+  hand_optim_trans:
+    lr: 0.005
+    decay_every: 50
+    decay_factor: 0.5
+    num_iters: 30
+  hand_optim_rot:
+    lr: 0.005
+    decay_every: 50
+    decay_factor: 0.5
+    num_iters: 30
+  hand_optim_pose:
+    lr: 0.005
+    decay_every: 50
+    decay_factor: 0.5
+    num_iters: 100    
+  hand_optim_all:
+    lr: 0.005
+    decay_every: 50
+    decay_factor: 0.5
+    num_iters: 100
+
+weights:
+  # hand-only
+  j2d: 1.0
+  j2d_sigma: 50.0
+  v3d: 1.0
+  v3d_sigma: 50.0
+  depth: 0.01
+  depth_sigma: 0.1
+  mask_hand: 1.0
+
+  center: 100.0
+  pose_smooth: 500.0
+  verts_smooth: 20.0
+  vis_contact: 200.0
+  occ_contact: 20.0
+  reg: 20.0
+  # penetrate: 50.0
+  penetrate: 0.003
+    #o2d: 1.0
+  o2d: 1.0
+  z_min: 1000.0
