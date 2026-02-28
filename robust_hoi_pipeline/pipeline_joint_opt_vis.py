@@ -299,7 +299,7 @@ def visualize_frame(
             if align_pred_to_gt is not None:
                 depth_pts = (align_pred_to_gt[:3, :3] @ depth_pts.T).T + align_pred_to_gt[:3, 3]
             rr.log(
-                f"{frame_entity}/depth_points_obj",
+                f"{frame_entity}/depth_obj_in_rectified",
                 rr.Points3D(
                     depth_pts,
                     colors=np.broadcast_to(np.array([0, 200, 255], dtype=np.uint8), depth_pts.shape),
@@ -361,6 +361,64 @@ def visualize_frame(
             f"{frame_entity}/hand_mesh",
             rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
         )
+
+    # Log masked depth as 3D point clouds in object space
+
+    depth = preprocess_data.get('depth')
+    K = preprocess_data.get('intrinsics')
+    if depth is not None and K is not None and c2o is not None:
+        mask_obj = preprocess_data.get('mask_obj')
+        mask_hand = preprocess_data.get('mask_hand')
+
+        def _backproject_masked_depth(depth_map, mask, K, c2o, scale, max_pts=5000):
+            """Back-project masked depth pixels to 3D object-space points."""
+            valid = (depth_map > 0) & (mask > 0)
+            ys, xs = np.where(valid)
+            if len(ys) == 0:
+                return None
+            if len(ys) > max_pts:
+                sel = np.random.choice(len(ys), max_pts, replace=False)
+                ys, xs = ys[sel], xs[sel]
+            zs = depth_map[ys, xs].astype(np.float32)
+            xc = (xs.astype(np.float32) - K[0, 2]) * zs / K[0, 0]
+            yc = (ys.astype(np.float32) - K[1, 2]) * zs / K[1, 1]
+            pts_cam = np.stack([xc, yc, zs], axis=-1)
+            pts_obj = (c2o[:3, :3] @ pts_cam.T).T * scale + c2o[:3, 3]
+            return pts_obj
+
+        # Object depth points (orange)
+        if mask_obj is not None:
+            pts_obj_depth = _backproject_masked_depth(depth, mask_obj, K, c2o, scale)
+            if pts_obj_depth is not None:
+                rr.log(
+                    f"{frame_entity}/depth_obj",
+                    rr.Points3D(
+                        pts_obj_depth,
+                        colors=np.broadcast_to(np.array([255, 165, 0], dtype=np.uint8), pts_obj_depth.shape),
+                        radii=0.0005,
+                    ),
+                    static=False,
+                )
+            else:
+                rr.log(f"{frame_entity}/depth_obj",
+                       rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0))
+
+        # Hand depth points (cyan)
+        if mask_hand is not None:
+            pts_hand_depth = _backproject_masked_depth(depth, mask_hand, K, c2o, scale)
+            if pts_hand_depth is not None:
+                rr.log(
+                    f"{frame_entity}/depth_hand",
+                    rr.Points3D(
+                        pts_hand_depth,
+                        colors=np.broadcast_to(np.array([0, 200, 255], dtype=np.uint8), pts_hand_depth.shape),
+                        radii=0.0005,
+                    ),
+                    static=False,
+                )
+            else:
+                rr.log(f"{frame_entity}/depth_hand",
+                       rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0))
 
     # Log camera pose and intrinsics
     if preprocess_data.get('intrinsics') is not None and preprocess_data.get('image') is not None and c2o is not None:
