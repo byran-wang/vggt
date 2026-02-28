@@ -1553,6 +1553,9 @@ class run_wonder_hoi:
         cmd += f"--data_dir {data_dir} "
         cmd += f"--out_dir {out_dir} "
         cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--matching_backend vggsfm "
+        cmd += f"--vggsfm_max_query_pts 1024 "
+        cmd += f"--vggsfm_max_points_num 20480 "
         print(cmd)
         os.system(cmd)
 

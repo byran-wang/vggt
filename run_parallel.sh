@@ -34,18 +34,24 @@ current_dir=$(pwd)
 for device in "${!device_sequences[@]}"; do
   sequences=${device_sequences[$device]}
   
-  (
+  (                                                         
     # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
     #   --execute_list obj_process \
-    #   --process_list hoi_pipeline_data_preprocess hoi_pipeline_get_corres \
+    #   --process_list hoi_pipeline_data_preprocess \
     #   --seq_list $sequences --rebuild \
     #   --dataset_dir /data1/shibo/Documents/dataset/ZED_wenxuan
 
     # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
     #   --execute_list obj_process \
-    #   --process_list hoi_pipeline_joint_opt \
-    #   --seq_list $sequences --rebuild  \
+    #   --process_list hoi_pipeline_get_corres \
+    #   --seq_list $sequences --rebuild \
     #   --dataset_dir /data1/shibo/Documents/dataset/ZED_wenxuan
+
+    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+      --execute_list obj_process \
+      --process_list hoi_pipeline_joint_opt \
+      --seq_list $sequences --rebuild  \
+      --dataset_dir /data1/shibo/Documents/dataset/ZED_wenxuan
 
     # 可視化
   ) &
