@@ -435,7 +435,14 @@ def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir:
     
     results_dir.mkdir(parents=True, exist_ok=True)
     info_path = results_dir / "image_info.npy"
-    np.save(info_path, image_info)
+    # Only save keys consumed by pipeline_joint_opt_vis.py and pipeline_joint_opt_eval.py
+    _SAVE_KEYS = {
+        "frame_indices", "cond_idx", "tracks", "vis_scores", "tracks_mask",
+        "points_3d", "keyframe", "register", "invalid", "c2o",
+        "depth_points_obj", "intrinsics",
+    }
+    filtered_info = {k: v for k, v in image_info.items() if k in _SAVE_KEYS}
+    np.save(info_path, filtered_info)
     print(f"Saved image info to {results_dir}")
 
 
