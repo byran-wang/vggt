@@ -122,7 +122,7 @@ def parse_args():
     parser.add_argument("--debug", default=False, action="store_true")
     parser.add_argument("--mesh_type", type=str, default="sam3d",
                         help="Type of mesh for evaluation: hy_omni or sam3d")
-    parser.add_argument("--eval_mesh_chamfer", action="store_true", default=False,
+    parser.add_argument("--eval_mesh_chamfer", action="store_true", default=True,
                          help="Whether to evaluate Chamfer/F-score metrics for available meshes")
     parser.add_argument("--vis_gt_pred", action="store_true", default=False,
                          help="Whether to visualize GT and predicted poses with rotated 3D points in rerun")
