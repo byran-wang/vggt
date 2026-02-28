@@ -15,6 +15,7 @@ import smplx
 from robust_hoi_pipeline.pipeline_utils import load_sam3d_transform
 from viewer.viewer_step import HandDataProvider
 from utils_simba.geometry import transform_points
+from utils_simba.depth import get_depth
 
 
 def filter_invalid_gt_frames(data_gt, data_pred):
@@ -349,6 +350,42 @@ def visualize_hand_in_rerun(data_gt, hand_pred_data, valid_frame_indices, data_d
                 triangle_indices=pred_faces_h.astype(np.uint32),
                 mesh_material=rr.Material(albedo_factor=[120, 120, 220]),
             ))
+
+        # Hand depth point cloud from depth + hand_mask
+        depth_path = Path(data_dir) / "depth" / f"{fid:04d}.png"
+        mask_hand_path = Path(data_dir) / "mask_hand" / f"{fid:04d}.png"
+        if depth_path.exists() and mask_hand_path.exists() and K is not None:
+            from PIL import Image as PILImage
+            depth_map = get_depth(str(depth_path))
+            mask_hand = np.array(PILImage.open(mask_hand_path).convert("L"))
+            valid = (depth_map > 0) & (mask_hand > 0)
+            ys, xs = np.where(valid)
+            if len(ys) > 0:
+                max_pts = 5000
+                if len(ys) > max_pts:
+                    sel = np.random.choice(len(ys), max_pts, replace=False)
+                    ys, xs = ys[sel], xs[sel]
+                zs = depth_map[ys, xs].astype(np.float32)
+                xc = (xs.astype(np.float32) - K[0, 2]) * zs / K[0, 0]
+                yc = (ys.astype(np.float32) - K[1, 2]) * zs / K[1, 1]
+                pts_cam = np.stack([xc, yc, zs], axis=-1)
+
+                # Camera space (magenta)
+                rr.log("world/pred_camera/cam/depth_hand_cam", rr.Points3D(
+                    pts_cam,
+                    colors=np.broadcast_to(np.array([200, 0, 255], dtype=np.uint8), pts_cam.shape),
+                    radii=0.0005,
+                ), static=False)
+
+                # World / object space (cyan)
+                c2o_for_depth = gt_c2o if vis_space == "object" and gt_c2o is not None else np.eye(4, dtype=np.float32)
+                if c2o_for_depth is not None:
+                    pts_world = (c2o_for_depth[:3, :3] @ pts_cam.T).T + c2o_for_depth[:3, 3]
+                    rr.log("world/depth_hand", rr.Points3D(
+                        pts_world,
+                        colors=np.broadcast_to(np.array([0, 200, 255], dtype=np.uint8), pts_world.shape),
+                        radii=0.0005,
+                    ), static=False)
 
     print(f"[hand_vis] Logged {len(valid_frame_indices)} frames to Rerun")
 
