@@ -139,6 +139,7 @@ def visualize_gt_frame(
     frame_idx: int,
     gt_o2c: np.ndarray,
     preprocess_data: Dict,
+    jpeg_quality: int = 85,
 ):
     """Visualize GT camera pose and image for a single frame."""
     gt_frame_entity = "world/gt_current_frame"
@@ -164,7 +165,7 @@ def visualize_gt_frame(
             ),
             static=False,
         )
-        rr.log(f"{gt_frame_entity}/camera", rr.Image(preprocess_data['image']), static=False)
+        rr.log(f"{gt_frame_entity}/camera", rr.Image(preprocess_data['image']).compress(jpeg_quality=jpeg_quality), static=False)
 
 
 def visualize_all_cameras(
@@ -240,6 +241,7 @@ def visualize_frame(
     align_pred_to_gt: Optional[np.ndarray] = None,
     hand_mesh: Optional[trimesh.Trimesh] = None,
     vis_hand: bool = True,
+    jpeg_quality: int = 85,
 ):
 
     frame_entity = "world/current_frame"
@@ -263,7 +265,7 @@ def visualize_frame(
                 img[-border_width:, :] = color
                 img[:, :border_width] = color
                 img[:, -border_width:] = color
-        rr.log(f"{frame_entity}/camera", rr.Image(img), static=False)
+        rr.log(f"{frame_entity}/camera", rr.Image(img).compress(jpeg_quality=jpeg_quality), static=False)
 
     # # Log object mask
     # if preprocess_data['mask_obj'] is not None:
@@ -660,6 +662,7 @@ def main(args):
             align_pred_to_gt=align_pred_to_gt,
             hand_mesh=hand_mesh,
             vis_hand=args.vis_hand,
+            jpeg_quality=args.jpeg_quality,
         )
 
         # Visualize all camera poses
@@ -668,14 +671,14 @@ def main(args):
 
         # Visualize GT camera pose
         if data_gt is not None and i < len(gt_o2c) and bool(gt_is_valid[i]):
-            visualize_gt_frame(frame_idx, gt_o2c[i], preprocess_data)
+            visualize_gt_frame(frame_idx, gt_o2c[i], preprocess_data, jpeg_quality=args.jpeg_quality)
 
         # Log reprojection error image if available
         reproj_img_path = results_dir / f"{frame_idx:04d}" / "reproj_error.png"
         if reproj_img_path.exists():
             from PIL import Image
             reproj_img = np.array(Image.open(reproj_img_path).convert("RGB"))
-            rr.log("reproj_error", rr.Image(reproj_img), static=False)
+            rr.log("reproj_error", rr.Image(reproj_img).compress(jpeg_quality=args.jpeg_quality), static=False)
 
         # Log per-frame registration log
         if frame_idx in frame_logs:
@@ -703,6 +706,8 @@ if __name__ == "__main__":
                         help="Visualize all camera poses from image_info, not just the current frame")
     parser.add_argument("--vis_hand", action="store_true", default=True,
                         help="Visualize hand mesh in object space")
+    parser.add_argument("--jpeg_quality", type=int, default=30,
+                        help="JPEG compression quality for camera images (0-100)")
 
     args = parser.parse_args()
     main(args)

@@ -172,7 +172,8 @@ def load_hand_predictions(results_dir, hand_mode, frame_indices, device="cuda:0"
 
 
 def visualize_hand_in_rerun(data_gt, hand_pred_data, valid_frame_indices, data_dir,
-                            vis_space="object", pred_align="GT", cond_index=0, sam3d_data=None):
+                            vis_space="object", pred_align="GT", cond_index=0, sam3d_data=None,
+                            jpeg_quality=85):
     """Visualize GT and predicted hand meshes per frame in Rerun.
 
     For each valid frame, logs:
@@ -276,6 +277,29 @@ def visualize_hand_in_rerun(data_gt, hand_pred_data, valid_frame_indices, data_d
             mesh_kwargs["mesh_material"] = rr.Material(albedo_factor=[255, 165, 0])
         rr.log("world/sam3d_mesh", rr.Mesh3D(**mesh_kwargs), static=True)
 
+    # Log GT object mesh once (rigid body — shape doesn't change, only pose)
+    gt_obj_logged = False
+    if gt_v3d_o is not None and gt_faces_o is not None:
+        for first_i in range(len(gt_v3d_o)):
+            if gt_is_valid is not None and not bool(gt_is_valid[first_i]):
+                continue
+            verts_o = gt_v3d_o[first_i].astype(np.float32)
+            if verts_o.min() <= DUMMY_THRESH:
+                continue
+            # Compute canonical object-space vertices from first valid frame
+            if gt_o2c is not None and first_i < len(gt_o2c):
+                c2o = np.linalg.inv(gt_o2c[first_i]).astype(np.float32)
+                verts_obj = (c2o[:3, :3] @ verts_o.T).T + c2o[:3, 3]
+            else:
+                verts_obj = verts_o
+            rr.log("world/gt_object/mesh", rr.Mesh3D(
+                vertex_positions=verts_obj,
+                triangle_indices=gt_faces_o.astype(np.uint32),
+                mesh_material=rr.Material(albedo_factor=[200, 200, 200]),
+            ), static=True)
+            gt_obj_logged = True
+            break
+
     for i, fid in enumerate(valid_frame_indices):
         fid = int(fid)
         rr.set_time_sequence("frame", i)
@@ -328,7 +352,7 @@ def visualize_hand_in_rerun(data_gt, hand_pred_data, valid_frame_indices, data_d
                 image_plane_distance=1.0,
             )
             rr.log("world/gt_camera/cam", pinhole)
-            rr.log("world/gt_camera/cam", rr.Image(img))
+            rr.log("world/gt_camera/cam", rr.Image(img).compress(jpeg_quality=jpeg_quality))
 
         if img is not None and K is not None:
             H, W = img.shape[:2]
@@ -338,7 +362,7 @@ def visualize_hand_in_rerun(data_gt, hand_pred_data, valid_frame_indices, data_d
                 principal_point=[float(K[0, 2]), float(K[1, 2])],
                 image_plane_distance=1.0,
             ))
-            rr.log("world/pred_camera/cam", rr.Image(img))
+            rr.log("world/pred_camera/cam", rr.Image(img).compress(jpeg_quality=jpeg_quality))
 
         # GT hand mesh (green)
         if valid and gt_v3d_h is not None and gt_faces_h is not None and i < len(gt_v3d_h):
@@ -352,16 +376,13 @@ def visualize_hand_in_rerun(data_gt, hand_pred_data, valid_frame_indices, data_d
                     mesh_material=rr.Material(albedo_factor=[120, 220, 120]),
                 ))
 
-        # GT object mesh (gray)
-        if valid and gt_v3d_o is not None and gt_faces_o is not None and i < len(gt_v3d_o):
-            verts_o = gt_v3d_o[i].astype(np.float32)
-            if verts_o.min() > DUMMY_THRESH:
-                if vis_space == "object" and gt_c2o is not None:
-                    verts_o = (gt_c2o[:3, :3] @ verts_o.T).T + gt_c2o[:3, 3]
-                rr.log("world/gt_object", rr.Mesh3D(
-                    vertex_positions=verts_o,
-                    triangle_indices=gt_faces_o.astype(np.uint32),
-                    mesh_material=rr.Material(albedo_factor=[200, 200, 200]),
+        # GT object mesh pose (mesh geometry logged once before the loop)
+        if gt_obj_logged and valid and gt_o2c is not None and i < len(gt_o2c):
+            if vis_space == "camera":
+                # Camera space: transform canonical mesh by o2c
+                o2c = gt_o2c[i].astype(np.float32)
+                rr.log("world/gt_object", rr.Transform3D(
+                    translation=o2c[:3, 3], mat3x3=o2c[:3, :3],
                 ))
 
         # Predicted hand mesh (blue)
@@ -481,6 +502,7 @@ def main(args):
         pred_align=args.pred_align,
         cond_index=args.cond_index,
         sam3d_data=sam3d_data,
+        jpeg_quality=args.jpeg_quality,
     )
     
 
@@ -501,11 +523,13 @@ if __name__ == "__main__":
                         help="Frame sampling interval")
     parser.add_argument("--hand_mode", type=str, default="trans",
                          help="Hand fit mode for HandDataProvider (e.g. 'rot', 'trans', 'intrinsic')")
-    parser.add_argument("--vis_space", type=str, default="object", choices=["object", "camera"],
+    parser.add_argument("--vis_space", type=str, default="camera", choices=["object", "camera"],
                          help="Visualization space: 'object' transforms meshes to object space, "
                               "'camera' keeps meshes in camera space")
     parser.add_argument("--pred_align", type=str, default="GT", choices=["GT", "SAM3D"],
                          help="Align predicted poses to 'GT' or 'SAM3D' reference")
+    parser.add_argument("--jpeg_quality", type=int, default=30,
+                         help="JPEG compression quality for camera images (0-100)")
 
     args = parser.parse_args()
     from easydict import EasyDict
