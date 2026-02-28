@@ -104,6 +104,7 @@ class run_wonder_hoi:
                 "hoi_pipeline_3D_points_align_with_HY": self.hoi_pipeline_3D_points_align_with_HY,
                 "hoi_pipeline_HY_to_SAM3D": self.hoi_pipeline_HY_to_SAM3D,
                 "hoi_pipeline_joint_opt": self.hoi_pipeline_joint_opt,
+                "hoi_pipeline_hand_vis": self.hoi_pipeline_hand_vis,
                 "hoi_pipeline_reg_remaining": self.hoi_pipeline_reg_remaining,
                 "hoi_pipeline_HY_gen": self.hoi_pipeline_HY_gen,
                 "hoi_pipeline_HY_omni_gen": self.hoi_pipeline_HY_omni_gen,
@@ -1534,7 +1535,6 @@ class run_wonder_hoi:
         cmd += f"--data_dir {data_dir} "
         cmd += f"--out_dir {out_dir} "
         cmd += f"--cond_index {self.seq_config['cond_idx']} "
-        cmd += f"--matching_backend vggsfm " # vggsfm or mast3r
         print(cmd)
         os.system(cmd)
 
@@ -1617,6 +1617,23 @@ class run_wonder_hoi:
         cmd += f"--cond_index {self.seq_config['cond_idx']} "
         print(cmd)
         os.system(cmd)
+
+    def hoi_pipeline_hand_vis(self, scene_name, **kwargs):
+        self.print_header(f"hoi pipeline hand visualization for {scene_name}")
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+        out_dir = f"{vggt_code_dir}/output/{scene_name}"
+        id = f"{self.seq_config['cond_idx']:04d}"
+
+        cmd = f"cd {vggt_code_dir} && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_hand_vis.py "
+        cmd += f"--data_dir {data_dir} "
+        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--interval {self.seq_config['frame_interval']} "
+        cmd += f"--hand_mode trans " #(e.g. 'rot', 'trans', 'intrinsic')"
+        print(cmd)
+        os.system(cmd)
+        return
+       
 
     def hoi_pipeline_reg_remaining(self, scene_name, **kwargs):
         self.print_header(f"hoi pipeline register remaining for {scene_name}")
@@ -1981,6 +1998,7 @@ if __name__ == "__main__":
                 "hoi_pipeline_HY_to_SAM3D",
                 "hoi_pipeline_HY_omni_gen",
                 "hoi_pipeline_joint_opt",
+                "hoi_pipeline_hand_vis",
                 "hoi_pipeline_reg_remaining",
                 "hoi_pipeline_HY_gen",
                 "ho3d_eval_intrinsic",

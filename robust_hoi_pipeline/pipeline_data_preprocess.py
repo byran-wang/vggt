@@ -128,6 +128,17 @@ def _get_hand_mesh_cam(hand_provider, frame_idx: int, mode="trans"):
         return verts, faces
     return None, None
 
+def _get_hand_pose(hand_provider, frame_idx: int, mode="trans"):
+
+    if hand_provider is None:
+        return None, None, None
+
+    """Load right-hand local pose and global rotation and global translation in camera space for one frame."""
+    hand_pose = hand_provider.get_hand_poses(mode)[frame_idx]
+    hand_rot = hand_provider.get_hand_rots(mode)[frame_idx]
+    hand_trans = hand_provider.get_hand_transls(mode)[frame_idx]
+
+    return hand_pose, hand_rot, hand_trans
 
 def _save_sealed_right_hand_mesh(hand_dir: Path, frame_idx: int, verts_cam: np.ndarray, faces: np.ndarray, obj_scale: Optional[float]):
     """Scale, seal and save right-hand MANO mesh."""
@@ -177,7 +188,6 @@ def pipeline_data_preprocess(args):
     intrinsic_dir = data_dir / "meta"
     depth_dir = data_dir / "depth"
     hand_dir = data_dir 
-    hand_pose_file = hand_dir / f"hold_fit.aligned_h_{args.hand_mode}.npy"
     sam3d_transform_file = data_dir/ "SAM3D_aligned_post_process" /f"{args.cond_index:04d}" / "aligned_transform.json" # such as output/SM2/gen_3d_aligned_SAM3D/aligned_transform.json
 
     out_dir = Path(args.output_dir)
@@ -197,21 +207,6 @@ def pipeline_data_preprocess(args):
     print(f"Selected {len(frame_indices)} frames: {frame_indices[:10]}{'...' if len(frame_indices) > 10 else ''}")
 
     # 2. Load hand poses (if available)
-    hand_poses = None
-    if hand_pose_file.exists():
-        print(f"Loading hand poses from {hand_pose_file}")
-        hand_poses_raw = np.load(hand_pose_file, allow_pickle=True)
-        # Handle different numpy array formats (0-dim arrays contain the actual data)
-        if hand_poses_raw.ndim == 0:
-            hand_poses = hand_poses_raw.item()  # Extract the actual object
-        else:
-            hand_poses = hand_poses_raw
-        if isinstance(hand_poses, np.ndarray):
-            print(f"Loaded hand poses shape: {hand_poses.shape}")
-        elif isinstance(hand_poses, dict):
-            print(f"Loaded hand poses as dict with {len(hand_poses)} keys")
-        else:
-            print(f"Loaded hand poses type: {type(hand_poses)}")
 
     hand_provider = None
     if HandDataProvider is not None and hand_dir.exists():
@@ -320,10 +315,6 @@ def pipeline_data_preprocess(args):
         normal_map = compute_normals_from_depth(depth_batch, intrinsics_batch)
         normal_map = normal_map.squeeze(0).permute(1, 2, 0).numpy()  # (H, W, 3)
 
-        # Get hand pose for this frame
-        hand_pose = None
-
-
 
 
 
@@ -371,7 +362,6 @@ def pipeline_data_preprocess(args):
             'intrinsics': intrinsics,
             'depth_filtered': filtered_depth,
             'normal_map': normal_map,
-            'hand_pose': hand_pose,
         }
         preprocessed_data.append(frame_data)
     # 4. Save preprocessed data to output directory
@@ -408,7 +398,6 @@ def pipeline_data_preprocess(args):
         meta = {
             'frame_idx': frame_idx,
             'intrinsics': frame_data['intrinsics'],
-            'hand_pose': frame_data['hand_pose'],
         }
         with open(out_dir / "meta" / f"{frame_idx:04d}.pkl", 'wb') as f:
             pickle.dump(meta, f)
@@ -416,6 +405,7 @@ def pipeline_data_preprocess(args):
         # Save sealed right-hand mesh (camera space, scaled by obj_scale)
         if hand_provider is not None:
             verts_cam, faces = _get_hand_mesh_cam(hand_provider, frame_idx, mode=args.hand_mode) # mode choice "intrinsic" or "trans" or "rot"
+            hand_pose, hand_rot, hand_trans = _get_hand_pose(hand_provider, frame_idx, mode=args.hand_mode)
             if verts_cam is not None and faces is not None:
                 try:
                     _save_sealed_right_hand_mesh(
@@ -427,6 +417,18 @@ def pipeline_data_preprocess(args):
                     )
                 except Exception as e:
                     print(f"  Warning: Failed to save sealed right hand mesh for frame {frame_idx}: {e}")
+            if hand_pose is not None:
+                hand_pose_dir = out_dir / "hand_pose"
+                hand_pose_dir.mkdir(parents=True, exist_ok=True)
+                saved_hand_trans = hand_trans
+                if obj_scale is not None and obj_scale != 0:
+                    saved_hand_trans = hand_trans / float(obj_scale)
+                np.savez(
+                    hand_pose_dir / f"{frame_idx:04d}.npz",
+                    hand_pose=hand_pose,
+                    hand_rot=hand_rot,
+                    hand_trans=saved_hand_trans,
+                )
 
     # Save frame list
     frame_list_path = out_dir / "frame_list.txt"

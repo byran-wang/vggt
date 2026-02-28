@@ -198,12 +198,12 @@ def check_key_frame(image_info, frame_idx, rot_thresh, trans_thresh, depth_thres
             print(f"[check_key_frame] Frame {frame_idx} rejected: insufficient depth pixels ({valid_depth} < {depth_thresh}).")
             return False
 
-    if track_mask is not None:
-        tm = np.asarray(track_mask)
-        if frame_idx < tm.shape[0]:
-            if int(np.count_nonzero(tm[frame_idx])) < frame_inliner_thresh:
-                print(f"[check_key_frame] Frame {frame_idx} rejected: insufficient track inliers.")
-                return False
+    # if track_mask is not None:
+    #     tm = np.asarray(track_mask)
+    #     if frame_idx < tm.shape[0]:
+    #         if int(np.count_nonzero(tm[frame_idx])) < frame_inliner_thresh:
+    #             print(f"[check_key_frame] Frame {frame_idx} rejected: insufficient track inliers.")
+    #             return False
 
     if keyframes is None:
         return True  # no keyframes tracked yet
@@ -270,6 +270,9 @@ def check_reprojection_error(image_info, frame_idx, args, min_valid_points=150, 
 
     num_valid = np.sum(valid_mask)
     print(f"[check_reprjection_error] Frame {frame_idx}: {num_valid} valid points for reprojection error check")
+    if num_valid == 0:
+        print(f"[check_reprjection_error] Frame {frame_idx}: no valid 3D points, skipping check")
+        return False, mean_error
     if (not skip_check) and (num_valid < min_valid_points):
         print(f"[check_reprjection_error] Frame {frame_idx}: insufficient valid points ({num_valid} < {min_valid_points}), skipping check")
         return False, mean_error
