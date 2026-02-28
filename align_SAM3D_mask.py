@@ -290,7 +290,8 @@ def load_hand_pose(
     hand_verts = hand_provider.get_hand_verts_cam(hand_pose_suffix, hand_index)
     hand_faces = hand_provider.get_hand_faces(hand_pose_suffix)
     scale = hand_provider.get_hand_scale(hand_pose_suffix)
-    verts = verts * scale  # Apply scale to vertices    
+    if hand_verts is not None and scale is not None:
+        hand_verts = hand_verts * float(scale)
 
     if hand_verts is not None:
         print(f"Loaded hand pose: {len(hand_verts)} vertices, mode={hand_pose_suffix}, index={hand_index}")
