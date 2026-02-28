@@ -121,6 +121,8 @@ def _get_hand_mesh_cam(hand_provider, frame_idx: int, mode="trans"):
 
     faces = hand_provider.get_hand_faces(mode)
     verts = hand_provider.get_hand_verts_cam(mode, frame_idx)
+    scale = hand_provider.get_hand_scale(mode)
+    verts = verts * scale  # Apply scale to vertices
 
     verts = np.asarray(verts, dtype=np.float32)
     faces = np.asarray(faces, dtype=np.int32)

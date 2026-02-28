@@ -94,10 +94,14 @@ def load_hand_predictions(results_dir, hand_mode, frame_indices, device="cuda:0"
     beta = hand_provider.get_hand_beta(hand_mode)
     h2c_transls = hand_provider.get_hand_transls(hand_mode)
     h2c_rots = hand_provider.get_hand_rots(hand_mode)
+    hand_scale = hand_provider.get_hand_scale(hand_mode)
 
     if hand_poses is None or beta is None or h2c_transls is None or h2c_rots is None:
         print(f"[hand] Missing hand parameters for mode '{hand_mode}', skip hand metrics")
         return None
+
+    hand_scale_val = float(hand_scale) if hand_scale is not None else 1.0
+    print(f"[hand] hand_scale={hand_scale_val:.4f}")
 
     # Select only the pipeline frames from the full hand data (like gt.load_data)
     # Filter to frames that are within the hand data range
@@ -149,6 +153,9 @@ def load_hand_predictions(results_dir, hand_mode, frame_indices, device="cuda:0"
         h2c_transforms[:, :3, 3] = h2c_transls_np
     else:
         h2c_transforms = h2c_transls_np
+    # Apply hand_scale (matches hand.py: h2c_mat = h2c_mat * hand_scale; h2c_mat[:,3,3]=1)
+    h2c_transforms = h2c_transforms * hand_scale_val
+    h2c_transforms[:, 3, 3] = 1.0
     hand_jnts_c = transform_points(hand_jnts_can, h2c_transforms)  # (N, 21, 3)
     hand_verts_c = transform_points(hand_verts_can, h2c_transforms)  # (N, 778, 3)
     root_right = hand_jnts_c[:, 0, :]  # (N, 3)

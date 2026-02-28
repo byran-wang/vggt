@@ -521,7 +521,7 @@ class run_wonder_hoi:
         frame_interval = self.seq_config["frame_interval"]
 
         cmd_parts = [
-            f"cd {self.code_dir}/generator &&",
+            f"cd {vggt_code_dir}/generator &&",
             f"{self.conda_dir}/envs/vggsfm_tmp/bin/python scripts/align_hands_object.py",
             f"--seq_name {scene_name}",
             f"--mode {mode}",
