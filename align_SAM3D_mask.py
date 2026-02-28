@@ -606,7 +606,6 @@ def main(args):
     print(f"Merged mask: obj={obj_mask.sum()} + hand={hand_mask.sum()} = merged={merged_mask.sum()} pixels")
 
     # Save debug mask images
-    breakpoint()
     if args.out_dir:
         debug_mask_dir = os.path.join(args.out_dir, "debug")
         os.makedirs(debug_mask_dir, exist_ok=True)
