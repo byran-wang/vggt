@@ -8,6 +8,8 @@ import numpy as np
 import rerun as rr
 import trimesh
 
+import re
+
 import sys
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -18,6 +20,29 @@ from utils_simba.rerun import log_mesh
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_preprocessed_frame
 from robust_hoi_pipeline.frame_management import load_register_indices
 from robust_hoi_pipeline.pipeline_utils import load_sam3d_transform
+
+
+def parse_frame_logs(log_path: Path) -> Dict[int, str]:
+    """Parse log.txt into per-frame log blocks.
+
+    Each block starts with 'Next frame to register: {fid} (local idx {idx})'
+    and ends with '+++...+++'. Returns {frame_id: log_text}.
+    """
+    if not log_path.exists():
+        return {}
+    text = log_path.read_text()
+    pattern = re.compile(
+        r"Next frame to register: (\d+) \(local idx \d+\)"
+        r"(.*?)"
+        r"(?=\+{10,}|\Z)",
+        re.DOTALL,
+    )
+    result = {}
+    for m in pattern.finditer(text):
+        fid = int(m.group(1))
+        block = m.group(0).strip()
+        result[fid] = block
+    return result
 
 
 def compute_vertex_normals(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
@@ -461,6 +486,9 @@ def main(args):
     tracks_dir = data_dir / "pipeline_corres"
     results_dir = out_dir / "pipeline_joint_opt"
 
+    # Parse per-frame log blocks from log.txt
+    frame_logs = parse_frame_logs(results_dir / "log.txt")
+
     # Initialize Rerun
     import rerun.blueprint as rrb
     blueprint = rrb.Blueprint(
@@ -469,6 +497,7 @@ def main(args):
             rrb.Vertical(
                 rrb.Spatial2DView(name="Camera", origin="world/current_frame/camera"),
                 rrb.Spatial2DView(name="Reproj Error", origin="reproj_error"),
+                rrb.TextLogView(name="Frame Log", origin="frame_log"),
             ),
             column_shares=[2, 1],
         ),
@@ -647,6 +676,10 @@ def main(args):
             from PIL import Image
             reproj_img = np.array(Image.open(reproj_img_path).convert("RGB"))
             rr.log("reproj_error", rr.Image(reproj_img), static=False)
+
+        # Log per-frame registration log
+        if frame_idx in frame_logs:
+            rr.log("frame_log", rr.TextLog(frame_logs[frame_idx]), static=False)
 
 
 
