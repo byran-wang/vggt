@@ -22,7 +22,6 @@ python run_wonder_hoi.py --execute_list obj_process --process_list estimate_obj_
 ## hand process
 python run_wonder_hoi.py --execute_list hand_pose_preprocess --process_list estimate_hand_pose --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list hand_pose_postprocess --process_list fit_hand_intrinsic fit_hand_trans fit_hand_rot --seq_list $seq_list --rebuild
-python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_hand_vis --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list hand_pose_postprocess --process_list fit_hand_viewer --seq_list $seq_list --world_coordinate object --only_key_frame true
 
 ##########################################################################
@@ -47,12 +46,13 @@ python run_wonder_hoi.py --execute_list obj_process --process_list zed_joint_opt
 python run_wonder_hoi.py --execute_list data_convert --process_list ho3d_get_obj_mask ho3d_get_hand_mask --seq_list $seq_list
 python run_wonder_hoi.py --execute_list data_convert --process_list ho3d_inpaint --seq_list $seq_list
 python run_wonder_hoi.py --execute_list data_convert --process_list ho3d_estimate_hand_pose ho3d_interpolate_hamer --seq_list $seq_list # run on the compus 4090 pc
+python run_wonder_hoi.py --execute_list hand_pose_postprocess --process_list fit_hand_intrinsic fit_hand_trans fit_hand_rot --seq_list $seq_list --rebuild --dataset_type ho3d # --vis
 python run_wonder_hoi.py --execute_list data_convert --process_list hot3d_sync_hands_to_local --seq_list $seq_list # run on the compus 4090 pc
 
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_3D_gen align_mesh_image --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_condition_id --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_gen --seq_list $seq_list --rebuild
-python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_post_opt_GS --seq_list $seq_list --rebuild
+# python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_post_opt_GS --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_SAM3D_mask ho3d_align_SAM3D_pts --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_post_process  --seq_list $seq_list --rebuild
 # python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_keyframe_optimization --seq_list $seq_list --rebuild #--vis
@@ -77,7 +77,6 @@ python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_
 
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_gen_3d ho3d_align_gen_3d_omni --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_sdf_optimization --seq_list $seq_list --rebuild #--vis
-python run_wonder_hoi.py --execute_list hand_pose_postprocess --process_list fit_hand_intrinsic fit_hand_trans fit_hand_rot --seq_list $seq_list --rebuild --dataset_type ho3d #--num_frames 30
 
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_eval_intrinsic ho3d_eval_trans ho3d_eval_rot --seq_list $seq_list --vis
 python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum_intrinsic eval_sum_trans eval_sum_rot --seq_list $seq_list
