@@ -1419,7 +1419,7 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
         # Hand-object contact loss: attract nearby hand verts to object surface
         loss_contact = _compute_contact_loss(hand_verts_in_obj, obj_verts, device)
 
-        w_depth = 1.0
+        w_depth = 0.1
         w_mask = 20.0
         w_reproj = 0.0
         w_contact = 5.0
