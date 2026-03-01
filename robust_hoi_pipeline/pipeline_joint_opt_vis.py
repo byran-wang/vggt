@@ -366,8 +366,8 @@ def visualize_frame(
                 f"{frame_entity}/depth_after_PnP",
                 rr.Points3D(
                     pts,
-                    colors=np.broadcast_to(np.array([255, 165, 0], dtype=np.uint8), pts.shape),
-                    radii=0.0003,
+                    colors=np.broadcast_to(np.array([100, 165, 100], dtype=np.uint8), pts.shape),
+                    radii=0.0005,
                 ),
             )
         else:

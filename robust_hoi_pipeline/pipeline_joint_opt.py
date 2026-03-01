@@ -1187,6 +1187,27 @@ def _compute_reproj_loss(R, trans, trk_pts3d, trk_pts2d, K, sigma=4.0):
     return gmof(err, sigma=sigma).mean()
 
 
+def _compute_contact_loss(hand_verts, obj_verts, device, contact_thresh=0.05):
+    """Hand-object contact loss: attract nearby hand verts to object surface.
+
+    Uses torch.cdist to find the min distance from each hand vertex to the
+    object mesh, then applies smooth_l1_loss on vertices within contact_thresh.
+    """
+    if hand_verts is None:
+        return torch.tensor(0.0, device=device)
+    # hand_verts: (1, Nh, 3), obj_verts: (1, Nv, 3)
+    dists = torch.cdist(hand_verts[0], obj_verts[0])  # (Nh, Nv)
+    min_dists, _ = dists.min(dim=1)  # (Nh,)
+    contact_mask = min_dists < contact_thresh
+    if not contact_mask.any():
+        return torch.tensor(0.0, device=device)
+    return F.smooth_l1_loss(
+        min_dists[contact_mask],
+        torch.zeros_like(min_dists[contact_mask]),
+        reduction="mean",
+    )
+
+
 def _prepare_track_reproj_data(image_info_work, frame_idx, K, device):
     """Extract valid 3D track points and their 2D observations for reprojection loss.
 
@@ -1374,11 +1395,15 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
         loss_iou = _compute_iou_loss(render_union, obs_hoi_mask)
         loss_reproj = _compute_reproj_loss(R, trans, trk_pts3d_t, trk_pts2d_t, K_t)
 
+        # Hand-object contact loss: attract nearby hand verts to object surface
+        loss_contact = _compute_contact_loss(hand_verts_in_obj, obj_verts, device)
+
         w_depth = 1.0
         w_mask = 20.0
         w_reproj = 0.0
+        w_contact = 5.0
 
-        loss = w_depth * loss_depth + w_mask * loss_iou + w_reproj * loss_reproj
+        loss = w_depth * loss_depth + w_mask * loss_iou + w_reproj * loss_reproj + w_contact * loss_contact
 
         if torch.isfinite(loss):
             loss.backward()
@@ -1411,7 +1436,8 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
             print(
                 f"[align_depth] Frame {frame_idx}: iter {it+1}/{num_iters}, total {loss.item():.3f} "
                 f"loss_d={loss_depth.item():.3f}, "
-                f"loss_iou={loss_iou.item():.3f}, loss_reproj={loss_reproj.item():.3f}, valid={valid_count}"
+                f"loss_iou={loss_iou.item():.3f}, loss_reproj={loss_reproj.item():.3f}, "
+                f"loss_contact={loss_contact.item():.3f}, valid={valid_count}"
             )
 
     if not np.isfinite(best["loss"]) or best["valid"] < 100:
