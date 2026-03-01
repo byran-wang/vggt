@@ -1452,8 +1452,8 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
                           "frame_idx": frame_idx, "it": it + 1}
         loss_depth, valid_count = _compute_depth_loss(depth_r, obs_depth, obs_mask, K, debug_ctx=_debug_ctx)
         if loss_depth is None:
-            print(f"[align_depth] Frame {frame_idx}: iter {it}, only {valid_count} valid rendered pixels")
-            continue
+            loss_depth = torch.tensor(0.0, device=device)
+            print(f"[align_depth] Frame {frame_idx}: iter {it}, only {valid_count} valid rendered pixels, and set depth loss to 0")
 
         loss_iou = _compute_iou_loss(render_union, obs_hoi_mask)
         loss_reproj = _compute_reproj_loss(R, trans, trk_pts3d_t, trk_pts2d_t, K_t)
@@ -1462,7 +1462,7 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
         _contact_debug = debug_dir if (debug_dir is not None and (it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1)) else None
         loss_contact = _compute_contact_loss(hand_verts_in_obj, obj_verts, device, debug_dir=_contact_debug, frame_idx=frame_idx, it=it + 1)
 
-        w_depth = 0.0 if not has_enough_depth else 0.0
+        w_depth = 0.0 if not has_enough_depth else 1.0
         w_mask = 20.0
         w_reproj = 0.0
         w_contact = 1.0
