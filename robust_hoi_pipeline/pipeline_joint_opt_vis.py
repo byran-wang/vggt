@@ -9,6 +9,7 @@ import rerun as rr
 import trimesh
 
 import re
+import cv2
 
 import sys
 project_root = Path(__file__).parent.parent
@@ -265,7 +266,22 @@ def visualize_frame(
                 img[-border_width:, :] = color
                 img[:, :border_width] = color
                 img[:, -border_width:] = color
-        rr.log(f"{frame_entity}/camera", rr.Image(img).compress(jpeg_quality=jpeg_quality), static=False)
+
+        # Draw object and hand mask boundaries on the image
+        kernel = np.ones((3, 3), dtype=np.uint8)
+        mask_obj = preprocess_data.get('mask_obj')
+        if mask_obj is not None:
+            mask_u8 = (mask_obj > 0).astype(np.uint8) * 255
+            boundary = cv2.dilate(mask_u8, kernel) - cv2.erode(mask_u8, kernel)
+            img[boundary > 127] = [0, 255, 0]  # Green for object
+
+        mask_hand = preprocess_data.get('mask_hand')
+        if mask_hand is not None:
+            mask_u8 = (mask_hand > 0).astype(np.uint8) * 255
+            boundary = cv2.dilate(mask_u8, kernel) - cv2.erode(mask_u8, kernel)
+            img[boundary > 127] = [255, 0, 255]  # Magenta for hand
+
+        rr.log(f"{frame_entity}/camera", rr.Image(img).compress(jpeg_quality=80), static=False)
 
     # # Log object mask
     # if preprocess_data['mask_obj'] is not None:
