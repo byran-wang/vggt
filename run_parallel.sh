@@ -22,7 +22,11 @@ export LD_LIBRARY_PATH="/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH"
 # )
 
 declare -A device_sequences=(
+<<<<<<< HEAD
   [0]="CUP2"   
+=======
+  [0]="CUP2"
+>>>>>>> 1952cce (no)
 )
 
 current_dir=$(pwd)
