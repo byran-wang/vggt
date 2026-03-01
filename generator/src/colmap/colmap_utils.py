@@ -599,7 +599,7 @@ def validate_reprojection(seq_name):
             point2D_kps.append(point2D_kp)
         average_error = np.mean(reprojection_errors)
         rms_error = np.sqrt(np.mean(np.square(reprojection_errors)))
-        breakpoint()    
+        # breakpoint()    
         print(f"average error: {average_error}, rms error: {rms_error}, point3D_data.error: {point3D_data.error}")
 
 from hloc.utils.read_write_model import read_cameras_binary

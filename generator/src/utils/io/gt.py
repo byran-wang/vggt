@@ -647,7 +647,7 @@ def load_data_easy_hoi(
                 hand_f=f3d_r,
                 red_material=red_material
             )
-        breakpoint()
+        # breakpoint()
     return out
 
 def load_data_diff_object(
@@ -819,7 +819,7 @@ def load_data_diff_object(
                 hand_f=f3d_r,
                 red_material=red_material
             )
-        breakpoint()
+        # breakpoint()
     return out
 
 def load_data(full_seq_name, get_selected_fids_fn=None):

@@ -43,12 +43,10 @@ def main(args):
     # else:
     # K = torch.FloatTensor(np.load(k_path_colmap))
     data = read_data(args).to(device)
-    data = read_data(args).to(device)
     
     out_p = op.join(f"{args.out_dir}/hold_fit.aligned_{args.mode}.npy")
 
     mano_path = f"{args.out_dir}/mano_fit_ckpt/{args.mode}"
-    
     checkpoint_callback = ModelCheckpoint(
         dirpath=op.join(mano_path),
         save_last=True,

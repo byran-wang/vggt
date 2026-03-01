@@ -94,6 +94,7 @@ def read_data_ZED(seq_name, args):
     mask_hand_ps = sorted(glob(f"./data/{seq_name}/mask_hand/*.png"))[:num_frames]
     mask_obj_ps = sorted(glob(f"./data/{seq_name}/mask_obj/*.png"))[:num_frames]
     depth_ps = sorted(glob(f"./data/{seq_name}/depth_fs/*.png"))[:num_frames]
+    # breakpoint()
     intrinsic_file = im_ps[0].replace('.jpg','.pkl').replace('/rgb/','/meta/')
 
     meta = {}
@@ -123,13 +124,13 @@ def read_data_ZED(seq_name, args):
         for k, v in data.items():
             mydata[k] = torch.FloatTensor(v[:num_frames])
         return mydata
-    j2d_p = f"./data/{seq_name}/j2d.full.npy"
+    j2d_p = f"./data/{seq_name}/hands/j2d.full.npy"
     data = np.load(
-        f"./data/{seq_name}/hold_fit.slerp.npy", allow_pickle=True
+        f"./data/{seq_name}/hands/hold_fit.slerp.npy", allow_pickle=True
     ).item()
     # get the hand mask
     mask_hands = []
-    for i in range(num_frames):
+    for i in range(len(mask_hand_ps)):
         mask_hand = torch.from_numpy(load_mask_bool(mask_hand_ps[i]))
         mask_hands.append(mask_hand)
     mask_hands = torch.stack(mask_hands, dim=0)

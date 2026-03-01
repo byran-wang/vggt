@@ -526,7 +526,7 @@ class run_wonder_hoi:
             f"--seq_name {scene_name}",
             f"--mode {mode}",
             f"--max_frame_num 9999",
-            f"--frame_interval 1",
+            f"--frame_interval 3",
             f"--out_dir {output_dir}",
         ]
         if "num_frames" in kwargs:

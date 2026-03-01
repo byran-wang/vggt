@@ -106,6 +106,11 @@ class MANOParameters(nn.Module):
         j3d_can = output.joints
         v3d_can = output.vertices
 
+        # append fingertips (MANO fixed vertex indices)
+        FINGERTIP_IDX = [745, 317, 444, 556, 673]  # thumb, index, middle, ring, pinky
+        fingertips = v3d_can[:, FINGERTIP_IDX, :]
+        j3d_can = torch.cat([j3d_can, fingertips], dim=1)
+
         # transform to camera space
         h2c_mat = torch.tile(torch.eye(4), (self.hand_rot.shape[0], 1, 1)).to(self.hand_rot.device)
         h2c_mat[:, :3, 3] = self.hand_transl
