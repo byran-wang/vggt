@@ -1187,17 +1187,38 @@ def _compute_reproj_loss(R, trans, trk_pts3d, trk_pts2d, K, sigma=4.0):
     return gmof(err, sigma=sigma).mean()
 
 
-def _compute_contact_loss(hand_verts, obj_verts, device, contact_thresh=0.05):
-    """Hand-object contact loss: attract nearby hand verts to object surface.
+_FINGER_CONTACT_IDX = None
 
-    Uses torch.cdist to find the min distance from each hand vertex to the
-    object mesh, then applies smooth_l1_loss on vertices within contact_thresh.
+def _get_finger_contact_idx():
+    """Load and cache finger contact vertex indices from contact_zones.pkl."""
+    global _FINGER_CONTACT_IDX
+    if _FINGER_CONTACT_IDX is None:
+        import pickle as pkl
+        pkl_path = Path(__file__).parent.parent / "body_models" / "contact_zones.pkl"
+        with open(pkl_path, "rb") as f:
+            contact_zones = pkl.load(f)["contact_zones"]
+        contact_idx = np.array([item for sublist in contact_zones.values() for item in sublist])
+        _FINGER_CONTACT_IDX = contact_idx[19:]  # all finger tips (exclude palm)
+    return _FINGER_CONTACT_IDX
+
+
+def _compute_contact_loss(hand_verts, obj_verts, device, contact_thresh=100000):
+    """Hand-object contact loss: attract nearby finger tip verts to object surface.
+
+    Only uses finger tip vertices (from contact_zones.pkl) for the loss.
+    Uses torch.cdist to find the min distance from each selected hand vertex
+    to the object mesh, then applies smooth_l1_loss on vertices within contact_thresh.
     """
     if hand_verts is None:
         return torch.tensor(0.0, device=device)
-    # hand_verts: (1, Nh, 3), obj_verts: (1, Nv, 3)
-    dists = torch.cdist(hand_verts[0], obj_verts[0])  # (Nh, Nv)
-    min_dists, _ = dists.min(dim=1)  # (Nh,)
+    # Select only finger tip vertices
+    finger_idx = _get_finger_contact_idx()
+    if hand_verts.shape[1] <= finger_idx.max():
+        return torch.tensor(0.0, device=device)
+    finger_verts = hand_verts[0, finger_idx]  # (Nf, 3)
+    # finger_verts: (Nf, 3), obj_verts: (1, Nv, 3)
+    dists = torch.cdist(finger_verts.unsqueeze(0), obj_verts)[0]  # (Nf, Nv)
+    min_dists, _ = dists.min(dim=1)  # (Nf,)
     contact_mask = min_dists < contact_thresh
     if not contact_mask.any():
         return torch.tensor(0.0, device=device)
