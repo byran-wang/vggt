@@ -102,6 +102,9 @@ def get_frame_image_info(image_info: Dict, frame_idx: int) -> Optional[Dict]:
         "is_invalid": image_info.get("invalid", [False] * len(frame_indices))[local_idx],
         "c2o": image_info["c2o"][local_idx],
         "depth_after_PnP": image_info.get("depth_after_PnP", [None] * len(frame_indices))[local_idx],
+        "depth_after_align_mesh": image_info.get("depth_after_align_mesh", [None] * len(frame_indices))[local_idx],
+        "depth_after_keyframes_opt": image_info.get("depth_after_keyframes_opt", [None] * len(frame_indices))[local_idx],
+        "depth_after_reset_when_pnp_fail": image_info.get("depth_after_reset_when_pnp_fail", [None] * len(frame_indices))[local_idx],
         "depth_points_obj": None,
     }
     depth_pts = image_info.get("depth_points_obj")
@@ -343,7 +346,7 @@ def visualize_frame(
             if align_pred_to_gt is not None:
                 depth_pts = (align_pred_to_gt[:3, :3] @ depth_pts.T).T + align_pred_to_gt[:3, 3]
             rr.log(
-                f"{frame_entity}/depth_obj_in_rectified",
+                f"{frame_entity}/depth_points_obj",
                 rr.Points3D(
                     depth_pts,
                     colors=np.broadcast_to(np.array([0, 200, 255], dtype=np.uint8), depth_pts.shape),
@@ -373,6 +376,66 @@ def visualize_frame(
         else:
             rr.log(
                 f"{frame_entity}/depth_after_PnP",
+                rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
+            )
+
+        # Log depth points after align_frame_with_mesh_depth (magenta)
+        depth_after_align = image_info.get('depth_after_align_mesh')
+        if depth_after_align is not None:
+            pts = np.asarray(depth_after_align, dtype=np.float32) * scale
+            if align_pred_to_gt is not None:
+                pts = (align_pred_to_gt[:3, :3] @ pts.T).T + align_pred_to_gt[:3, 3]
+            rr.log(
+                f"{frame_entity}/depth_after_align_mesh",
+                rr.Points3D(
+                    pts,
+                    colors=np.broadcast_to(np.array([255, 0, 255], dtype=np.uint8), pts.shape),
+                    radii=0.0005,
+                ),
+            )
+        else:
+            rr.log(
+                f"{frame_entity}/depth_after_align_mesh",
+                rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
+            )
+
+        # Log depth points after joint keyframe optimization (yellow)
+        depth_after_kf_opt = image_info.get('depth_after_keyframes_opt')
+        if depth_after_kf_opt is not None:
+            pts = np.asarray(depth_after_kf_opt, dtype=np.float32) * scale
+            if align_pred_to_gt is not None:
+                pts = (align_pred_to_gt[:3, :3] @ pts.T).T + align_pred_to_gt[:3, 3]
+            rr.log(
+                f"{frame_entity}/depth_after_keyframes_opt",
+                rr.Points3D(
+                    pts,
+                    colors=np.broadcast_to(np.array([255, 255, 0], dtype=np.uint8), pts.shape),
+                    radii=0.0005,
+                ),
+            )
+        else:
+            rr.log(
+                f"{frame_entity}/depth_after_keyframes_opt",
+                rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
+            )
+
+        # Log depth points after reset when PnP fails (red)
+        depth_after_reset = image_info.get('depth_after_reset_when_pnp_fail')
+        if depth_after_reset is not None:
+            pts = np.asarray(depth_after_reset, dtype=np.float32) * scale
+            if align_pred_to_gt is not None:
+                pts = (align_pred_to_gt[:3, :3] @ pts.T).T + align_pred_to_gt[:3, 3]
+            rr.log(
+                f"{frame_entity}/depth_after_reset_when_pnp_fail",
+                rr.Points3D(
+                    pts,
+                    colors=np.broadcast_to(np.array([255, 80, 80], dtype=np.uint8), pts.shape),
+                    radii=0.0005,
+                ),
+            )
+        else:
+            rr.log(
+                f"{frame_entity}/depth_after_reset_when_pnp_fail",
                 rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
             )
 

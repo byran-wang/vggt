@@ -439,7 +439,7 @@ def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir:
     _SAVE_KEYS = {
         "frame_indices", "cond_idx", "tracks", "vis_scores", "tracks_mask",
         "points_3d", "keyframe", "register", "invalid", "c2o",
-        "depth_points_obj", "depth_after_PnP", "intrinsics",
+        "depth_points_obj", "depth_after_PnP", "depth_after_reset_when_pnp_fail", "depth_after_align_mesh", "depth_after_keyframes_opt", "intrinsics",
     }
     filtered_info = {k: v for k, v in image_info.items() if k in _SAVE_KEYS}
     np.save(info_path, filtered_info)
@@ -1835,6 +1835,9 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         "invalid": np.array(image_info["invalid"], dtype=bool),
         "depth_points_obj": image_info.get("depth_points_obj", [None] * len(frame_indices)),
         "depth_after_PnP": image_info.get("depth_after_PnP", [None] * len(frame_indices)),
+        "depth_after_align_mesh": image_info.get("depth_after_align_mesh", [None] * len(frame_indices)),
+        "depth_after_keyframes_opt": image_info.get("depth_after_keyframes_opt", [None] * len(frame_indices)),
+        "depth_after_reset_when_pnp_fail": image_info.get("depth_after_reset_when_pnp_fail", [None] * len(frame_indices)),
     }
 
     num_frames = len(frame_indices)
@@ -1873,7 +1876,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
         register_new_frame_by_PnP(image_info_work, next_frame_idx, args)
         # Save depth 3D points in object space for this frame
-        _save_depth_points_obj(image_info_work, next_frame_idx)
+        _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_PnP")
         mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
         # _filter_depth_by_object_bbox(image_info_work, next_frame_idx)
         
@@ -1919,6 +1922,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 else:
                     sucess, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args, skip_check=True)
                     print(f"[register_remaining_frames] After depth-mesh alignment, reprojection error for frame {next_frame_idx}: {mean_error:.2f}")
+                    _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_align_mesh")
 
 
         
@@ -1995,6 +1999,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 for ki in kf_indices_arr:
                     mask_track_for_outliers(image_info_work, ki, args.joint_opt_reproj_thresh,
                                            min_track_number=args.min_track_number)
+                _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_keyframes_opt")
             except Exception as exc:
                 print(f"[register_remaining_frames] joint optimization failed: {exc}")
 
@@ -2005,6 +2010,9 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         image_info["points_3d"] = image_info_work["points_3d"].astype(np.float32)
         image_info["depth_points_obj"] = image_info_work["depth_points_obj"]
         image_info["depth_after_PnP"] = image_info_work["depth_after_PnP"]
+        image_info["depth_after_align_mesh"] = image_info_work["depth_after_align_mesh"]
+        image_info["depth_after_keyframes_opt"] = image_info_work["depth_after_keyframes_opt"]
+        image_info["depth_after_reset_when_pnp_fail"] = image_info_work["depth_after_reset_when_pnp_fail"]
         print_image_info_stats(image_info_work, invalid_cnt)
         save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
 
@@ -2079,6 +2087,9 @@ def main(args):
             "intrinsics": _stack_intrinsics(preprocessed_data["intrinsics"]),
             "depth_points_obj": [None] * len(frame_indices),
             "depth_after_PnP": [None] * len(frame_indices),
+            "depth_after_align_mesh": [None] * len(frame_indices),
+            "depth_after_keyframes_opt": [None] * len(frame_indices),
+            "depth_after_reset_when_pnp_fail": [None] * len(frame_indices),
         }
 
         # 6. Save image info
