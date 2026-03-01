@@ -1875,7 +1875,10 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             print_image_info_stats(image_info_work, invalid_cnt)
             continue
 
-        register_new_frame_by_PnP(image_info_work, next_frame_idx, args)
+        sucess = register_new_frame_by_PnP(image_info_work, next_frame_idx, args)
+        if not sucess:
+            print(f"[register_remaining_frames] PnP registration failed for frame {next_frame_idx}, trying to recover by resetting pose to nearest registered frame")
+            _reset_pose_to_nearest_registered(image_info_work, next_frame_idx)
         # Save depth 3D points in object space for this frame
         _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_PnP")
         mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
