@@ -74,11 +74,25 @@ def load_hand_mesh(data_preprocess_dir: Path, frame_idx: int) -> Optional[trimes
 
 
 def load_image_info(results_dir: Path) -> Optional[Dict]:
-    """Load image info from pipeline_joint_opt.py output."""
+    """Load image info from pipeline_joint_opt.py output.
+
+    Supports both the split format (shared_info.npy + per-frame image_info.npy)
+    and the legacy single-file format for backwards compatibility.
+    """
     info_path = results_dir / "image_info.npy"
     if not info_path.exists():
         return None
-    return np.load(info_path, allow_pickle=True).item()
+    per_frame = np.load(info_path, allow_pickle=True).item()
+
+    # Try loading shared static data (new split format)
+    shared_path = results_dir.parent / "shared_info.npy"
+    if shared_path.exists():
+        shared = np.load(shared_path, allow_pickle=True).item()
+        shared.update(per_frame)
+        return shared
+
+    # Legacy: single file contains everything
+    return per_frame
 
 
 def get_frame_image_info(image_info: Dict, frame_idx: int) -> Optional[Dict]:
@@ -93,10 +107,8 @@ def get_frame_image_info(image_info: Dict, frame_idx: int) -> Optional[Dict]:
     except ValueError:
         return None
     result = {
-        "tracks": image_info["tracks"][local_idx],
-        "vis_scores": image_info["vis_scores"][local_idx],
-        "tracks_mask": image_info["tracks_mask"][local_idx],
         "points_3d": image_info["points_3d"],
+        "track_vis_count": image_info.get("track_vis_count"),
         "is_keyframe": image_info.get("keyframe", [False] * len(frame_indices))[local_idx],
         "is_register": image_info.get("register", [False] * len(frame_indices))[local_idx],
         "is_invalid": image_info.get("invalid", [False] * len(frame_indices))[local_idx],
@@ -313,13 +325,10 @@ def visualize_frame(
 
     # Log tracks and 3D points from image_info
     if image_info is not None:
-        tracks = image_info['tracks']  # (N, 2)
-        tracks_mask = image_info['tracks_mask']  # (N,)
         points_3d = image_info['points_3d'] * scale  # (N, 3)
-        vis_scores = image_info['vis_scores']  # (N,)
 
-        # Log valid 3D points (finite + track mask)
-        valid_3d_mask = np.isfinite(points_3d).all(axis=-1) # & tracks_mask.astype(bool)
+        # Log valid 3D points (finite)
+        valid_3d_mask = np.isfinite(points_3d).all(axis=-1)
         print(f"Frame {frame_idx}: {valid_3d_mask.sum()} valid 3D points out of {len(points_3d)}")
         if valid_3d_mask.any():
             valid_points_3d = points_3d[valid_3d_mask]
@@ -438,33 +447,6 @@ def visualize_frame(
                 f"{frame_entity}/depth_after_reset_when_pnp_fail",
                 rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
             )
-
-        # # Valid tracks (in mask)
-        # valid_2d = tracks_mask
-        # if valid_2d.any():
-        #     valid_tracks = tracks[valid_2d]
-        #     rr.log(
-        #         f"{frame_entity}/tracks_valid",
-        #         rr.Points2D(
-        #             valid_tracks,
-        #             colors=np.array([[0, 255, 0]]),  # Green for valid
-        #             radii=3.0,
-        #         ),
-        #     )
-
-        # # Invalid tracks (not in mask)
-        # invalid_2d = ~tracks_mask
-        # if invalid_2d.any():
-        #     invalid_tracks = tracks[invalid_2d]
-        #     rr.log(
-        #         f"{frame_entity}/tracks_invalid",
-        #         rr.Points2D(
-        #             invalid_tracks,
-        #             colors=np.array([[255, 0, 0]]),  # Red for invalid
-        #             radii=2.0,
-        #         ),
-        #     )
-
 
     # Log hand mesh in object space
     if vis_hand and hand_mesh is not None and c2o is not None:
@@ -748,10 +730,8 @@ def main(args):
             continue
         image_info = get_frame_image_info(image_info_all, frame_idx)
 
-        # Compute per-track visibility count across keyframes
-        kf_flags = np.array(image_info_all.get("keyframe", [False] * len(image_info_all["frame_indices"])))
-        kf_track_mask = np.array(image_info_all["tracks_mask"])[kf_flags].astype(bool)
-        track_vis_count = kf_track_mask.sum(axis=0) if len(kf_track_mask) > 0 else np.zeros(len(image_info_all["points_3d"]))
+        # Use pre-computed track visibility count
+        track_vis_count = image_info.get("track_vis_count")
         if args.vis_type == "registered_valid" and image_info.get("is_invalid", False):
             print(f"Skipping invalid frame {frame_idx} in registered_valid mode")
             continue

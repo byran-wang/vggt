@@ -459,6 +459,13 @@ def load_pred_data(results_dir, SAM3D_dir, cond_index):
         allow_pickle=True,
     ).item()
 
+    # Merge shared static data if using split format
+    shared_path = results_dir / "shared_info.npy"
+    if shared_path.exists():
+        shared = np.load(shared_path, allow_pickle=True).item()
+        shared.update(image_info)
+        image_info = shared
+
     sam3d_transform = load_sam3d_transform(SAM3D_dir, cond_index)
     sam3d_to_cond_cam = sam3d_transform['sam3d_to_cond_cam']
     scale = sam3d_transform['scale']

@@ -424,26 +424,56 @@ def save_reproj_errors(image_info: Dict, register_idx: int, image: np.ndarray, r
     print(f"Saved reproj error image to {img_path}")
 
 
+_STATIC_KEYS = {
+    "frame_indices", "cond_idx", "intrinsics",
+}
+_DYNAMIC_KEYS = {
+    "points_3d", "keyframe", "register", "invalid", "c2o",
+    "depth_points_obj", "depth_after_PnP", "depth_after_reset_when_pnp_fail",
+    "depth_after_align_mesh", "depth_after_keyframes_opt",
+    "track_vis_count",
+}
+
+
 def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir: Path, only_save_register_order=False
 ) -> None:
-    """Save image info for joint optimization outputs."""
-    results_dir = results_dir / f"{register_idx:04d}"
+    """Save image info for joint optimization outputs.
+
+    Static data (tracks, vis_scores, tracks_mask, etc.) is saved once in
+    ``results_dir/shared_info.npy``.  Per-frame dynamic data (c2o, register,
+    keyframe, depth snapshots, etc.) is saved in
+    ``results_dir/{register_idx:04d}/image_info.npy``.
+    """
+    frame_dir = results_dir / f"{register_idx:04d}"
     from robust_hoi_pipeline.frame_management import save_register_order
-    save_register_order(results_dir / "../" , register_idx)
+    save_register_order(results_dir, register_idx)
     if only_save_register_order:
         return
-    
-    results_dir.mkdir(parents=True, exist_ok=True)
-    info_path = results_dir / "image_info.npy"
-    # Only save keys consumed by pipeline_joint_opt_vis.py and pipeline_joint_opt_eval.py
-    _SAVE_KEYS = {
-        "frame_indices", "cond_idx", "tracks", "vis_scores", "tracks_mask",
-        "points_3d", "keyframe", "register", "invalid", "c2o",
-        "depth_points_obj", "depth_after_PnP", "depth_after_reset_when_pnp_fail", "depth_after_align_mesh", "depth_after_keyframes_opt", "intrinsics",
-    }
-    filtered_info = {k: v for k, v in image_info.items() if k in _SAVE_KEYS}
-    np.save(info_path, filtered_info)
-    print(f"Saved image info to {results_dir}")
+
+    # Save static data once
+    shared_path = results_dir / "shared_info.npy"
+    if not shared_path.exists():
+        static_info = {k: v for k, v in image_info.items() if k in _STATIC_KEYS}
+        np.save(shared_path, static_info)
+        print(f"Saved shared static info to {shared_path}")
+
+    # Save only dynamic (per-registration) data
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    info_path = frame_dir / "image_info.npy"
+    dynamic_info = {k: v for k, v in image_info.items() if k in _DYNAMIC_KEYS}
+
+    # Pre-compute track_vis_count: per-track visibility across keyframes
+    tracks_mask = image_info.get("tracks_mask")
+    kf_flags = np.array(image_info.get("keyframe", [False] * len(image_info.get("frame_indices", []))))
+    if tracks_mask is not None and kf_flags.any():
+        kf_track_mask = np.array(tracks_mask)[kf_flags].astype(bool)
+        dynamic_info["track_vis_count"] = kf_track_mask.sum(axis=0)
+    else:
+        n_pts = len(image_info.get("points_3d", []))
+        dynamic_info["track_vis_count"] = np.zeros(n_pts, dtype=np.int32)
+
+    np.save(info_path, dynamic_info)
+    print(f"Saved image info to {frame_dir}")
 
 
 
@@ -458,7 +488,7 @@ def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir:
 
     # Save reprojection errors for the registered frame
     if image is not None:
-        save_reproj_errors(image_info, register_idx, image, results_dir)
+        save_reproj_errors(image_info, register_idx, image, frame_dir)
     
 
 
