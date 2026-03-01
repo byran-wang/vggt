@@ -1351,18 +1351,17 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
         bbox_pts_obj = _cam_points_to_object_points(bbox_pts_cam, ext0)
         _save_colored_points_debug(debug_dir, frame_idx, bbox_pts_obj, _dbg_image, ys, xs, "depth_after_bbox_in_obj")
 
-    if len(ys) < max_pts:
-        print(
-            f"[align_depth] Frame {frame_idx}: only {len(ys)} points in object bbox, "
-            f"need at least {max_pts}, skipping"
-        )
-        return False
+    has_enough_depth = len(ys) >= max_pts
+    if len(ys) == 0:
+        print(f"[align_depth] Frame {frame_idx}: no depth points in object bbox")
+    elif not has_enough_depth:
+        print(f"[align_depth] Frame {frame_idx}: only {len(ys)} depth points (< {max_pts}), disabling depth loss")
 
     if len(ys) > max_pts:
         sel = np.random.choice(len(ys), max_pts, replace=False)
         ys, xs = ys[sel], xs[sel]
 
-    pts_cam_sel = _depth_pixels_to_cam_points(d, K, ys, xs)
+    pts_cam_sel = _depth_pixels_to_cam_points(d, K, ys, xs) if len(ys) > 0 else None
 
     if not torch.cuda.is_available():
         print(f"[align_depth] Frame {frame_idx}: CUDA unavailable, skipping depth optimization")
@@ -1463,7 +1462,7 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
         _contact_debug = debug_dir if (debug_dir is not None and (it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1)) else None
         loss_contact = _compute_contact_loss(hand_verts_in_obj, obj_verts, device, debug_dir=_contact_debug, frame_idx=frame_idx, it=it + 1)
 
-        w_depth = 0.0
+        w_depth = 0.0 if not has_enough_depth else 0.0
         w_mask = 20.0
         w_reproj = 0.0
         w_contact = 1.0
@@ -1505,23 +1504,24 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
                 f"loss_contact={loss_contact.item():.3f}, valid={valid_count}"
             )
 
-    if not np.isfinite(best["loss"]) or best["valid"] < 100:
+    if not np.isfinite(best["loss"]):
         print(f"[align_depth] Frame {frame_idx}: optimization failed (best_valid={best['valid']})")
         return False
 
-    pts_obj_opt = (best["R"].T @ (pts_cam_sel - best["t"]).T).T
-    _save_obj_depth_points_debug(
-        debug_dir=debug_dir,
-        frame_idx=frame_idx,
-        pts_obj=pts_obj_opt,
-        filename_prefix="depth_obj_optimized",
-        color_rgba=(0, 255, 0, 255),
-    )
+    if pts_cam_sel is not None:
+        pts_obj_opt = (best["R"].T @ (pts_cam_sel - best["t"]).T).T
+        _save_obj_depth_points_debug(
+            debug_dir=debug_dir,
+            frame_idx=frame_idx,
+            pts_obj=pts_obj_opt,
+            filename_prefix="depth_obj_optimized",
+            color_rgba=(0, 255, 0, 255),
+        )
 
-    # Store optimized depth points in object space
-    depth_pts_obj = image_info_work.get("depth_points_obj")
-    if depth_pts_obj is not None:
-        depth_pts_obj[frame_idx] = pts_obj_opt.astype(np.float32)
+        # Store optimized depth points in object space
+        depth_pts_obj = image_info_work.get("depth_points_obj")
+        if depth_pts_obj is not None:
+            depth_pts_obj[frame_idx] = pts_obj_opt.astype(np.float32)
 
     extrinsics[frame_idx, :3, :3] = best["R"].astype(np.float32)
     extrinsics[frame_idx, :3, 3] = best["t"].astype(np.float32)
