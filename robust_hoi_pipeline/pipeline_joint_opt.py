@@ -1232,7 +1232,7 @@ def _get_finger_contact_idx():
     return _FINGER_CONTACT_IDX
 
 
-def _compute_contact_loss(hand_verts, obj_verts, device, contact_thresh=100000):
+def _compute_contact_loss(hand_verts, obj_verts, device, contact_thresh=100000, debug_dir=None, frame_idx=None, it=None):
     """Hand-object contact loss: attract nearby finger tip verts to object surface.
 
     Only uses finger tip vertices (from contact_zones.pkl) for the loss.
@@ -1246,6 +1246,16 @@ def _compute_contact_loss(hand_verts, obj_verts, device, contact_thresh=100000):
     if hand_verts.shape[1] <= finger_idx.max():
         return torch.tensor(0.0, device=device)
     finger_verts = hand_verts[0, finger_idx]  # (Nf, 3)
+
+    # Debug: save finger verts as ply
+    if debug_dir is not None and it is not None:
+        from pathlib import Path
+        contact_dir = Path(debug_dir) / "contact_loss"
+        contact_dir.mkdir(parents=True, exist_ok=True)
+        import trimesh
+        pc = trimesh.PointCloud(finger_verts.detach().cpu().numpy())
+        pc.export(str(contact_dir / f"finger_verts_{it}.ply"))
+
     # finger_verts: (Nf, 3), obj_verts: (1, Nv, 3)
     dists = torch.cdist(finger_verts.unsqueeze(0), obj_verts)[0]  # (Nf, Nv)
     min_dists, _ = dists.min(dim=1)  # (Nf,)
@@ -1447,7 +1457,8 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
         loss_reproj = _compute_reproj_loss(R, trans, trk_pts3d_t, trk_pts2d_t, K_t)
 
         # Hand-object contact loss: attract nearby hand verts to object surface
-        loss_contact = _compute_contact_loss(hand_verts_in_obj, obj_verts, device)
+        _contact_debug = debug_dir if (debug_dir is not None and (it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1)) else None
+        loss_contact = _compute_contact_loss(hand_verts_in_obj, obj_verts, device, debug_dir=_contact_debug, frame_idx=frame_idx, it=it + 1)
 
         w_depth = 0.1
         w_mask = 20.0
