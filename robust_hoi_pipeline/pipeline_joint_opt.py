@@ -23,7 +23,7 @@ from utils_simba.render import diff_renderer, projection_matrix_from_intrinsics
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_sam3d_transform
 from robust_hoi_pipeline.geometry_utils import compute_reproj_errors
 import os
-RUN_ON_PC = os.getenv("RUN_ON_PC", "").lower() == "true"
+RUN_ON_SERVER = os.getenv("RUN_ON_SERVER", "").lower() == "true"
 device = "cuda"
 
 class TeeStream:
@@ -494,9 +494,7 @@ def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir:
 
 def _build_default_joint_opt_args(output_dir: Path, cond_index: int) -> SimpleNamespace:
     """Create a minimal args namespace for frame management helpers."""
-    only_save_register_order = True
-    if RUN_ON_PC:
-        only_save_register_order = False
+    only_save_register_order = False
     return SimpleNamespace(
         output_dir=str(output_dir),
         cond_index=cond_index,
@@ -2034,9 +2032,10 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             # ).astype(image_info_work["track_mask"].dtype)
 
             # Align the frame with SAM3D mesh using depth with outlier rejection
-            debug_dir = None
-            if RUN_ON_PC:
-                debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
+            debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
+            if RUN_ON_SERVER:
+                debug_dir = None
+                
             # if sam3d_mesh is not None:
             if 1:
                 print(f"[register_remaining_frames] Aligning frame {next_frame_idx} with SAM3D mesh using depth")
