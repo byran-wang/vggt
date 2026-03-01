@@ -1259,7 +1259,7 @@ def _compute_contact_loss(hand_verts, obj_verts, device, contact_thresh=100000, 
     # finger_verts: (Nf, 3), obj_verts: (1, Nv, 3)
     dists = torch.cdist(finger_verts.unsqueeze(0), obj_verts)[0]  # (Nf, Nv)
     min_dists, _ = dists.min(dim=1)  # (Nf,)
-    contact_mask = min_dists < contact_thresh
+    contact_mask = 0.003 < min_dists
     if not contact_mask.any():
         return torch.tensor(0.0, device=device)
     return F.smooth_l1_loss(
