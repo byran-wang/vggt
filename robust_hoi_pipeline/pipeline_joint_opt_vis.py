@@ -638,6 +638,20 @@ def main(args):
         gt_mesh_path = data_gt["mesh_name.object"]
         log_mesh("world/gt_mesh", gt_mesh_path, static=True)
 
+        # Extract GT hand mesh data (camera-space vertices per frame + faces)
+        gt_hand_verts_cam = data_gt["v3d_c.right"] if "v3d_c.right" in data_gt else None
+        gt_hand_faces = data_gt["faces.right"] if "faces.right" in data_gt else None
+        if isinstance(gt_hand_verts_cam, np.ndarray) is False and gt_hand_verts_cam is not None:
+            gt_hand_verts_cam = gt_hand_verts_cam.numpy()
+        if isinstance(gt_hand_faces, np.ndarray) is False and gt_hand_faces is not None:
+            gt_hand_faces = gt_hand_faces.numpy()
+        # Seal the MANO mesh (close wrist opening)
+        if gt_hand_verts_cam is not None and gt_hand_faces is not None:
+            from common.body_models import seal_mano_mesh_np
+            gt_hand_verts_cam, gt_hand_faces = seal_mano_mesh_np(gt_hand_verts_cam, gt_hand_faces.astype(np.int64), is_rhand=True)
+            gt_hand_faces = gt_hand_faces.astype(np.int32)
+            print(f"Loaded GT hand mesh (sealed): {gt_hand_verts_cam.shape[1]} vertices, {len(gt_hand_faces)} faces")
+
 
     # Compute alignment transform from pred object space to GT object space
     # using the condition frame as the reference
@@ -668,20 +682,20 @@ def main(args):
         else:
             vertex_colors = np.ones((len(vertices), 3)) * 0.7  # Gray
 
-        # rr.log(
-        #     "world/sam3d/mesh",
-        #     rr.Mesh3D(
-        #         vertex_positions=vertices,
-        #         triangle_indices=faces,
-        #         vertex_colors=vertex_colors,
-        #     ),
-        #     static=True,
-        # )
         rr.log(
-            "world/sam3d/points",
-            rr.Points3D(vertices, colors=np.broadcast_to(np.array([255, 255, 0], dtype=np.uint8), vertices.shape), radii=0.0003),
+            "world/sam3d/mesh",
+            rr.Mesh3D(
+                vertex_positions=vertices,
+                triangle_indices=faces,
+                vertex_colors=vertex_colors,
+            ),
             static=True,
         )
+        # rr.log(
+        #     "world/sam3d/points",
+        #     rr.Points3D(vertices, colors=np.broadcast_to(np.array([255, 255, 0], dtype=np.uint8), vertices.shape), radii=0.0003),
+        #     static=True,
+        # )
 
     # Load HY omni mesh (in SAM3D space) from pipeline_HY_to_SAM3D
     hy_omni_path = out_dir / "pipeline_HY_to_SAM3D" / "HY_omni_in_sam3d.obj"
@@ -769,9 +783,26 @@ def main(args):
         if args.vis_all_cameras:
             visualize_all_cameras(image_info_all, frame_idx, scale=scale)
 
-        # Visualize GT camera pose
+        # Visualize GT camera pose and hand mesh
         if data_gt is not None and i < len(gt_o2c) and bool(gt_is_valid[i]):
             visualize_gt_frame(frame_idx, gt_o2c[i], preprocess_data, jpeg_quality=args.jpeg_quality)
+
+            # Log GT hand mesh in object space
+            if gt_hand_verts_cam is not None and gt_hand_faces is not None and i < len(gt_hand_verts_cam):
+                gt_c2o_i = np.linalg.inv(gt_o2c[i]).astype(np.float32)
+                hv_cam = gt_hand_verts_cam[i].astype(np.float32)
+                hv_obj = (gt_c2o_i[:3, :3] @ hv_cam.T).T + gt_c2o_i[:3, 3]
+                vertex_normals = compute_vertex_normals(hv_obj, gt_hand_faces)
+                rr.log(
+                    "world/gt_hand",
+                    rr.Mesh3D(
+                        vertex_positions=hv_obj,
+                        triangle_indices=gt_hand_faces,
+                        vertex_normals=vertex_normals,
+                        mesh_material=rr.Material(albedo_factor=[200, 180, 160]),
+                    ),
+                    static=False,
+                )
 
         # Log reprojection error image if available
         reproj_img_path = results_dir / f"{frame_idx:04d}" / "reproj_error.png"
