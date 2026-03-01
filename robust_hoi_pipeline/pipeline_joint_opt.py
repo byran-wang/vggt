@@ -1400,7 +1400,7 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
     rotvec = torch.tensor(init_rot, dtype=torch.float32, device=device, requires_grad=True)
     trans = torch.tensor(ext0[:3, 3].astype(np.float32), dtype=torch.float32, device=device, requires_grad=True)
 
-    optimizer = torch.optim.Adam([rotvec, trans], lr=2e-3)
+    optimizer = torch.optim.Adam([rotvec, trans], lr=10e-3)
     best = {"loss": float("inf"), "R": ext0[:3, :3].copy(), "t": ext0[:3, 3].copy(), "valid": 0}
 
     for it in range(num_iters):
