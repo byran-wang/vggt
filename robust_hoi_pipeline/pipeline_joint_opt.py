@@ -1282,7 +1282,7 @@ def _save_depth_debug_stages(debug_dir, frame_idx, d, K, extrinsics, ys, xs, dbg
         _save_colored_points_debug(debug_dir, frame_idx, masked_pts_obj, dbg_image, ys, xs, "depth_after_masked_in_obj")
 
 
-def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2000, num_iters=100, inlier_thresh=0.3, debug_dir=None):
+def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, num_iters=100, inlier_thresh=0.3, debug_dir=None):
     """Align a frame by optimizing pose with rendered-vs-observed depth/normal losses."""
 
 
@@ -1914,6 +1914,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         #     print_image_info_stats(image_info_work, invalid_cnt)
         #     continue
         
+        reproj_ok, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args)
         sucess, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args)
         if 1:
             print(f"[register_remaining_frames] Frame {next_frame_idx} align depth to mesh due to high reprojection error")
@@ -1935,7 +1936,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             # if sam3d_mesh is not None:
             if 1:
                 print(f"[register_remaining_frames] Aligning frame {next_frame_idx} with SAM3D mesh using depth")
-                sucess = _align_frame_with_mesh_depth(image_info_work, next_frame_idx, sam3d_mesh, 
+                sucess = _align_frame_with_sam3d(image_info_work, next_frame_idx, sam3d_mesh, 
                                              debug_dir=debug_dir
                                              )
                 if not sucess:

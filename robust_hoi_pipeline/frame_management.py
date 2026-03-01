@@ -235,7 +235,7 @@ def check_key_frame(image_info, frame_idx, rot_thresh, trans_thresh, depth_thres
     return True
 
 
-def check_reprojection_error(image_info, frame_idx, args, min_valid_points=150, skip_check=False):
+def check_reprojection_error(image_info, frame_idx, args, min_valid_points=150, min_valid_depth=10, skip_check=False):
     """Check if frame has high reprojection error using low-uncertainty 3D points.
 
     Reprojects 3D points (filtered by uncertainty threshold) to the frame and
@@ -293,7 +293,7 @@ def check_reprojection_error(image_info, frame_idx, args, min_valid_points=150, 
 
     # Filter points behind camera
     valid_z = cam_pts[:, 2] > 0
-    if (not skip_check) and (np.sum(valid_z) < 10):
+    if (not skip_check) and (np.sum(valid_z) < min_valid_depth):
         print(f"[check_reprjection_error] Frame {frame_idx}: insufficient points in front of camera, marking invalid")
         return False, mean_error
 
