@@ -439,7 +439,7 @@ def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir:
     _SAVE_KEYS = {
         "frame_indices", "cond_idx", "tracks", "vis_scores", "tracks_mask",
         "points_3d", "keyframe", "register", "invalid", "c2o",
-        "depth_points_obj", "intrinsics",
+        "depth_points_obj", "depth_after_PnP", "intrinsics",
     }
     filtered_info = {k: v for k, v in image_info.items() if k in _SAVE_KEYS}
     np.save(info_path, filtered_info)
@@ -836,6 +836,39 @@ def _smooth_normal_map_masked(normal_map, valid_mask, num_iters=2, kernel_size=3
         normal_chw = torch.where(normal_valid > 0, normal_chw, torch.zeros_like(normal_chw))
 
     return normal_chw[0].permute(1, 2, 0)
+
+
+def _save_depth_points_obj(image_info_work, frame_idx, tag="after_PnP",max_pts=5000):
+    """Back-project masked depth pixels to object space and store in image_info_work."""
+    depth_priors = image_info_work.get("depth_priors")
+    if depth_priors is None or depth_priors[frame_idx] is None:
+        return
+    depth_map = depth_priors[frame_idx]
+
+    intrinsics = image_info_work.get("intrinsics")
+    K = intrinsics[frame_idx] if intrinsics.ndim == 3 else intrinsics
+
+    extrinsic = image_info_work["extrinsics"][frame_idx]
+
+    # Valid depth pixels within object mask
+    vmask = depth_map > 0
+    masks = image_info_work.get("image_masks")
+    if masks is not None and masks[frame_idx] is not None:
+        vmask = vmask & (masks[frame_idx] > 0)
+    ys, xs = np.where(vmask)
+    if len(ys) == 0:
+        return
+
+    if len(ys) > max_pts:
+        idx = np.random.choice(len(ys), max_pts, replace=False)
+        ys, xs = ys[idx], xs[idx]
+
+    pts_cam = _depth_pixels_to_cam_points(depth_map, K, ys, xs)
+    pts_obj = _cam_points_to_object_points(pts_cam, extrinsic.astype(np.float64))
+
+    depth_after_pnp = image_info_work.get(f"depth_{tag}")
+    if depth_after_pnp is not None:
+        depth_after_pnp[frame_idx] = pts_obj.astype(np.float32)
 
 
 def _depth_pixels_to_cam_points(depth_map, K, ys, xs):
@@ -1775,6 +1808,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         "registered": np.array(image_info["register"], dtype=bool),
         "invalid": np.array(image_info["invalid"], dtype=bool),
         "depth_points_obj": image_info.get("depth_points_obj", [None] * len(frame_indices)),
+        "depth_after_PnP": image_info.get("depth_after_PnP", [None] * len(frame_indices)),
     }
 
     num_frames = len(frame_indices)
@@ -1812,6 +1846,8 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             continue
 
         register_new_frame_by_PnP(image_info_work, next_frame_idx, args)
+        # Save depth 3D points in object space for this frame
+        _save_depth_points_obj(image_info_work, next_frame_idx)
         mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
         # _filter_depth_by_object_bbox(image_info_work, next_frame_idx)
         
@@ -1942,6 +1978,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         image_info["c2o"] = np.linalg.inv(image_info_work["extrinsics"]).astype(np.float32)
         image_info["points_3d"] = image_info_work["points_3d"].astype(np.float32)
         image_info["depth_points_obj"] = image_info_work["depth_points_obj"]
+        image_info["depth_after_PnP"] = image_info_work["depth_after_PnP"]
         print_image_info_stats(image_info_work, invalid_cnt)
         save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
 
@@ -2015,6 +2052,7 @@ def main(args):
             "c2o": c2o_per_frame.astype(np.float32),
             "intrinsics": _stack_intrinsics(preprocessed_data["intrinsics"]),
             "depth_points_obj": [None] * len(frame_indices),
+            "depth_after_PnP": [None] * len(frame_indices),
         }
 
         # 6. Save image info

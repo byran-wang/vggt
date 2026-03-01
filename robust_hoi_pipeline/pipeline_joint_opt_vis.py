@@ -101,6 +101,7 @@ def get_frame_image_info(image_info: Dict, frame_idx: int) -> Optional[Dict]:
         "is_register": image_info.get("register", [False] * len(frame_indices))[local_idx],
         "is_invalid": image_info.get("invalid", [False] * len(frame_indices))[local_idx],
         "c2o": image_info["c2o"][local_idx],
+        "depth_after_PnP": image_info.get("depth_after_PnP", [None] * len(frame_indices))[local_idx],
         "depth_points_obj": None,
     }
     depth_pts = image_info.get("depth_points_obj")
@@ -352,6 +353,26 @@ def visualize_frame(
         else:
             rr.log(
                 f"{frame_entity}/depth_points_obj",
+                rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
+            )
+
+        # Log depth points after PnP registration (before any refinement)
+        depth_after_pnp = image_info.get('depth_after_PnP')
+        if depth_after_pnp is not None:
+            pts = np.asarray(depth_after_pnp, dtype=np.float32) * scale
+            if align_pred_to_gt is not None:
+                pts = (align_pred_to_gt[:3, :3] @ pts.T).T + align_pred_to_gt[:3, 3]
+            rr.log(
+                f"{frame_entity}/depth_after_PnP",
+                rr.Points3D(
+                    pts,
+                    colors=np.broadcast_to(np.array([255, 165, 0], dtype=np.uint8), pts.shape),
+                    radii=0.0003,
+                ),
+            )
+        else:
+            rr.log(
+                f"{frame_entity}/depth_after_PnP",
                 rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
             )
 
