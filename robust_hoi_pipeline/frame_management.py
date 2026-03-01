@@ -154,7 +154,7 @@ def check_frame_invalid(image_info, frame_idx, min_inlier_per_frame=10, min_dept
         depth_map = depth_priors[frame_idx]
         if torch.is_tensor(depth_map):
             depth_map = depth_map.detach().cpu().numpy()
-        valid_depth = int(np.count_nonzero(np.asarray(depth_map) > 0))
+        valid_depth = int(np.count_nonzero(np.asarray(depth_map) > 0.01))
         if valid_depth < min_depth_pixels:
             print(f"[check_frame_invalid] Frame {frame_idx} invalid: insufficient depth pixels ({valid_depth} < {min_depth_pixels})")
             return True

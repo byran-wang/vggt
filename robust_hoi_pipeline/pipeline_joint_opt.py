@@ -1861,12 +1861,13 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         print("+" * 50)
         print(f"Next frame to register: {image_info['frame_indices'][next_frame_idx]} (local idx {next_frame_idx})")
 
-        if check_frame_invalid(
-            image_info_work,
-            next_frame_idx,
-            min_inlier_per_frame=args.min_inlier_per_frame,
-            min_depth_pixels=args.min_depth_pixels,
-        ):
+        # if check_frame_invalid(
+        #     image_info_work,
+        #     next_frame_idx,
+        #     min_inlier_per_frame=args.min_inlier_per_frame,
+        #     min_depth_pixels=args.min_depth_pixels,
+        # ):
+        if 0:
             image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True  
             print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to insufficient inliers/depth pixels")
             invalid_cnt["insufficient_pixel"] += 1
@@ -1890,11 +1891,12 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         #     continue
         
         sucess, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args)
-        if not sucess:
+        if 1:
             print(f"[register_remaining_frames] Frame {next_frame_idx} align depth to mesh due to high reprojection error")
             # _reset_pose_to_nearest_registered(image_info_work, next_frame_idx)
-            _init_pose_from_hand(image_info_work, next_frame_idx)
-            mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
+            # _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_reset_when_pnp_fail")
+            # _init_pose_from_hand(image_info_work, next_frame_idx)
+            # mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
 
             # # Mask tracks without valid (finite) 3D points
             # finite_3d = np.isfinite(image_info_work["points_3d"]).all(axis=-1)
@@ -1907,7 +1909,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             if RUN_ON_PC:
                 debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
             # if sam3d_mesh is not None:
-            if 0:
+            if 1:
                 print(f"[register_remaining_frames] Aligning frame {next_frame_idx} with SAM3D mesh using depth")
                 sucess = _align_frame_with_mesh_depth(image_info_work, next_frame_idx, sam3d_mesh, 
                                              debug_dir=debug_dir
