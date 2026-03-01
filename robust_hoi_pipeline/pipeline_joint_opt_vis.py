@@ -9,6 +9,7 @@ import rerun as rr
 import trimesh
 
 import re
+import cv2
 
 import sys
 project_root = Path(__file__).parent.parent
@@ -100,6 +101,10 @@ def get_frame_image_info(image_info: Dict, frame_idx: int) -> Optional[Dict]:
         "is_register": image_info.get("register", [False] * len(frame_indices))[local_idx],
         "is_invalid": image_info.get("invalid", [False] * len(frame_indices))[local_idx],
         "c2o": image_info["c2o"][local_idx],
+        "depth_after_PnP": image_info.get("depth_after_PnP", [None] * len(frame_indices))[local_idx],
+        "depth_after_align_mesh": image_info.get("depth_after_align_mesh", [None] * len(frame_indices))[local_idx],
+        "depth_after_keyframes_opt": image_info.get("depth_after_keyframes_opt", [None] * len(frame_indices))[local_idx],
+        "depth_after_reset_when_pnp_fail": image_info.get("depth_after_reset_when_pnp_fail", [None] * len(frame_indices))[local_idx],
         "depth_points_obj": None,
     }
     depth_pts = image_info.get("depth_points_obj")
@@ -265,7 +270,22 @@ def visualize_frame(
                 img[-border_width:, :] = color
                 img[:, :border_width] = color
                 img[:, -border_width:] = color
-        rr.log(f"{frame_entity}/camera", rr.Image(img).compress(jpeg_quality=jpeg_quality), static=False)
+
+        # Draw object and hand mask boundaries on the image
+        kernel = np.ones((3, 3), dtype=np.uint8)
+        mask_obj = preprocess_data.get('mask_obj')
+        if mask_obj is not None:
+            mask_u8 = (mask_obj > 0).astype(np.uint8) * 255
+            boundary = cv2.dilate(mask_u8, kernel) - cv2.erode(mask_u8, kernel)
+            img[boundary > 127] = [0, 255, 0]  # Green for object
+
+        mask_hand = preprocess_data.get('mask_hand')
+        if mask_hand is not None:
+            mask_u8 = (mask_hand > 0).astype(np.uint8) * 255
+            boundary = cv2.dilate(mask_u8, kernel) - cv2.erode(mask_u8, kernel)
+            img[boundary > 127] = [255, 0, 255]  # Magenta for hand
+
+        rr.log(f"{frame_entity}/camera", rr.Image(img).compress(jpeg_quality=80), static=False)
 
     # # Log object mask
     # if preprocess_data['mask_obj'] is not None:
@@ -326,7 +346,7 @@ def visualize_frame(
             if align_pred_to_gt is not None:
                 depth_pts = (align_pred_to_gt[:3, :3] @ depth_pts.T).T + align_pred_to_gt[:3, 3]
             rr.log(
-                f"{frame_entity}/depth_obj_in_rectified",
+                f"{frame_entity}/depth_points_obj",
                 rr.Points3D(
                     depth_pts,
                     colors=np.broadcast_to(np.array([0, 200, 255], dtype=np.uint8), depth_pts.shape),
@@ -336,6 +356,86 @@ def visualize_frame(
         else:
             rr.log(
                 f"{frame_entity}/depth_points_obj",
+                rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
+            )
+
+        # Log depth points after PnP registration (before any refinement)
+        depth_after_pnp = image_info.get('depth_after_PnP')
+        if depth_after_pnp is not None:
+            pts = np.asarray(depth_after_pnp, dtype=np.float32) * scale
+            if align_pred_to_gt is not None:
+                pts = (align_pred_to_gt[:3, :3] @ pts.T).T + align_pred_to_gt[:3, 3]
+            rr.log(
+                f"{frame_entity}/depth_after_PnP",
+                rr.Points3D(
+                    pts,
+                    colors=np.broadcast_to(np.array([100, 165, 100], dtype=np.uint8), pts.shape),
+                    radii=0.0005,
+                ),
+            )
+        else:
+            rr.log(
+                f"{frame_entity}/depth_after_PnP",
+                rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
+            )
+
+        # Log depth points after align_frame_with_mesh_depth (magenta)
+        depth_after_align = image_info.get('depth_after_align_mesh')
+        if depth_after_align is not None:
+            pts = np.asarray(depth_after_align, dtype=np.float32) * scale
+            if align_pred_to_gt is not None:
+                pts = (align_pred_to_gt[:3, :3] @ pts.T).T + align_pred_to_gt[:3, 3]
+            rr.log(
+                f"{frame_entity}/depth_after_align_mesh",
+                rr.Points3D(
+                    pts,
+                    colors=np.broadcast_to(np.array([255, 0, 255], dtype=np.uint8), pts.shape),
+                    radii=0.0005,
+                ),
+            )
+        else:
+            rr.log(
+                f"{frame_entity}/depth_after_align_mesh",
+                rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
+            )
+
+        # Log depth points after joint keyframe optimization (yellow)
+        depth_after_kf_opt = image_info.get('depth_after_keyframes_opt')
+        if depth_after_kf_opt is not None:
+            pts = np.asarray(depth_after_kf_opt, dtype=np.float32) * scale
+            if align_pred_to_gt is not None:
+                pts = (align_pred_to_gt[:3, :3] @ pts.T).T + align_pred_to_gt[:3, 3]
+            rr.log(
+                f"{frame_entity}/depth_after_keyframes_opt",
+                rr.Points3D(
+                    pts,
+                    colors=np.broadcast_to(np.array([255, 255, 0], dtype=np.uint8), pts.shape),
+                    radii=0.0005,
+                ),
+            )
+        else:
+            rr.log(
+                f"{frame_entity}/depth_after_keyframes_opt",
+                rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
+            )
+
+        # Log depth points after reset when PnP fails (red)
+        depth_after_reset = image_info.get('depth_after_reset_when_pnp_fail')
+        if depth_after_reset is not None:
+            pts = np.asarray(depth_after_reset, dtype=np.float32) * scale
+            if align_pred_to_gt is not None:
+                pts = (align_pred_to_gt[:3, :3] @ pts.T).T + align_pred_to_gt[:3, 3]
+            rr.log(
+                f"{frame_entity}/depth_after_reset_when_pnp_fail",
+                rr.Points3D(
+                    pts,
+                    colors=np.broadcast_to(np.array([255, 80, 80], dtype=np.uint8), pts.shape),
+                    radii=0.0005,
+                ),
+            )
+        else:
+            rr.log(
+                f"{frame_entity}/depth_after_reset_when_pnp_fail",
                 rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
             )
 
@@ -538,6 +638,20 @@ def main(args):
         gt_mesh_path = data_gt["mesh_name.object"]
         log_mesh("world/gt_mesh", gt_mesh_path, static=True)
 
+        # Extract GT hand mesh data (camera-space vertices per frame + faces)
+        gt_hand_verts_cam = data_gt["v3d_c.right"] if "v3d_c.right" in data_gt else None
+        gt_hand_faces = data_gt["faces.right"] if "faces.right" in data_gt else None
+        if isinstance(gt_hand_verts_cam, np.ndarray) is False and gt_hand_verts_cam is not None:
+            gt_hand_verts_cam = gt_hand_verts_cam.numpy()
+        if isinstance(gt_hand_faces, np.ndarray) is False and gt_hand_faces is not None:
+            gt_hand_faces = gt_hand_faces.numpy()
+        # Seal the MANO mesh (close wrist opening)
+        if gt_hand_verts_cam is not None and gt_hand_faces is not None:
+            from common.body_models import seal_mano_mesh_np
+            gt_hand_verts_cam, gt_hand_faces = seal_mano_mesh_np(gt_hand_verts_cam, gt_hand_faces.astype(np.int64), is_rhand=True)
+            gt_hand_faces = gt_hand_faces.astype(np.int32)
+            print(f"Loaded GT hand mesh (sealed): {gt_hand_verts_cam.shape[1]} vertices, {len(gt_hand_faces)} faces")
+
 
     # Compute alignment transform from pred object space to GT object space
     # using the condition frame as the reference
@@ -568,20 +682,20 @@ def main(args):
         else:
             vertex_colors = np.ones((len(vertices), 3)) * 0.7  # Gray
 
-        # rr.log(
-        #     "world/sam3d/mesh",
-        #     rr.Mesh3D(
-        #         vertex_positions=vertices,
-        #         triangle_indices=faces,
-        #         vertex_colors=vertex_colors,
-        #     ),
-        #     static=True,
-        # )
         rr.log(
-            "world/sam3d/points",
-            rr.Points3D(vertices, colors=np.broadcast_to(np.array([255, 255, 0], dtype=np.uint8), vertices.shape), radii=0.0003),
+            "world/sam3d/mesh",
+            rr.Mesh3D(
+                vertex_positions=vertices,
+                triangle_indices=faces,
+                vertex_colors=vertex_colors,
+            ),
             static=True,
         )
+        # rr.log(
+        #     "world/sam3d/points",
+        #     rr.Points3D(vertices, colors=np.broadcast_to(np.array([255, 255, 0], dtype=np.uint8), vertices.shape), radii=0.0003),
+        #     static=True,
+        # )
 
     # Load HY omni mesh (in SAM3D space) from pipeline_HY_to_SAM3D
     hy_omni_path = out_dir / "pipeline_HY_to_SAM3D" / "HY_omni_in_sam3d.obj"
@@ -669,9 +783,26 @@ def main(args):
         if args.vis_all_cameras:
             visualize_all_cameras(image_info_all, frame_idx, scale=scale)
 
-        # Visualize GT camera pose
+        # Visualize GT camera pose and hand mesh
         if data_gt is not None and i < len(gt_o2c) and bool(gt_is_valid[i]):
             visualize_gt_frame(frame_idx, gt_o2c[i], preprocess_data, jpeg_quality=args.jpeg_quality)
+
+            # Log GT hand mesh in object space
+            if gt_hand_verts_cam is not None and gt_hand_faces is not None and i < len(gt_hand_verts_cam):
+                gt_c2o_i = np.linalg.inv(gt_o2c[i]).astype(np.float32)
+                hv_cam = gt_hand_verts_cam[i].astype(np.float32)
+                hv_obj = (gt_c2o_i[:3, :3] @ hv_cam.T).T + gt_c2o_i[:3, 3]
+                vertex_normals = compute_vertex_normals(hv_obj, gt_hand_faces)
+                rr.log(
+                    "world/gt_hand",
+                    rr.Mesh3D(
+                        vertex_positions=hv_obj,
+                        triangle_indices=gt_hand_faces,
+                        vertex_normals=vertex_normals,
+                        mesh_material=rr.Material(albedo_factor=[200, 180, 160]),
+                    ),
+                    static=False,
+                )
 
         # Log reprojection error image if available
         reproj_img_path = results_dir / f"{frame_idx:04d}" / "reproj_error.png"

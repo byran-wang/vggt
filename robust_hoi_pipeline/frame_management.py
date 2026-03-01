@@ -154,7 +154,7 @@ def check_frame_invalid(image_info, frame_idx, min_inlier_per_frame=10, min_dept
         depth_map = depth_priors[frame_idx]
         if torch.is_tensor(depth_map):
             depth_map = depth_map.detach().cpu().numpy()
-        valid_depth = int(np.count_nonzero(np.asarray(depth_map) > 0))
+        valid_depth = int(np.count_nonzero(np.asarray(depth_map) > 0.01))
         if valid_depth < min_depth_pixels:
             print(f"[check_frame_invalid] Frame {frame_idx} invalid: insufficient depth pixels ({valid_depth} < {min_depth_pixels})")
             return True
@@ -235,7 +235,7 @@ def check_key_frame(image_info, frame_idx, rot_thresh, trans_thresh, depth_thres
     return True
 
 
-def check_reprojection_error(image_info, frame_idx, args, min_valid_points=150, skip_check=False):
+def check_reprojection_error(image_info, frame_idx, args, min_valid_points=150, min_valid_depth=10, skip_check=False):
     """Check if frame has high reprojection error using low-uncertainty 3D points.
 
     Reprojects 3D points (filtered by uncertainty threshold) to the frame and
@@ -293,7 +293,7 @@ def check_reprojection_error(image_info, frame_idx, args, min_valid_points=150, 
 
     # Filter points behind camera
     valid_z = cam_pts[:, 2] > 0
-    if (not skip_check) and (np.sum(valid_z) < 10):
+    if (not skip_check) and (np.sum(valid_z) < min_valid_depth):
         print(f"[check_reprjection_error] Frame {frame_idx}: insufficient points in front of camera, marking invalid")
         return False, mean_error
 

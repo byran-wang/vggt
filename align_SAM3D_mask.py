@@ -11,6 +11,7 @@ from PIL import Image
 import pickle
 from pathlib import Path
 from typing import Optional
+import cv2
 
 
 sys.path.append("notebook")
@@ -290,7 +291,8 @@ def load_hand_pose(
     hand_verts = hand_provider.get_hand_verts_cam(hand_pose_suffix, hand_index)
     hand_faces = hand_provider.get_hand_faces(hand_pose_suffix)
     scale = hand_provider.get_hand_scale(hand_pose_suffix)
-    verts = verts * scale  # Apply scale to vertices    
+    if hand_verts is not None and scale is not None:
+        hand_verts = hand_verts * float(scale)
 
     if hand_verts is not None:
         print(f"Loaded hand pose: {len(hand_verts)} vertices, mode={hand_pose_suffix}, index={hand_index}")
@@ -395,8 +397,15 @@ def optimize_o2c_with_mask(
     # Create nvdiffrast context
     glctx = dr.RasterizeCudaContext() if 'cuda' in device else dr.RasterizeGLContext()
 
-    # Identity transform for hand (already in camera space)
+    # Identity transform for rendering (we'll transform verts manually)
     identity = torch.eye(4, dtype=torch.float32, device=device)
+
+    # Pre-compute merged faces (indices are constant across iterations)
+    if hand_verts_t is not None:
+        num_obj_verts = obj_verts.shape[1]
+        merged_faces = torch.cat([obj_faces, hand_faces_t + num_obj_verts], dim=0)
+    else:
+        merged_faces = obj_faces
 
     # Optimization loop
     best_loss = float("inf")
@@ -410,20 +419,24 @@ def optimize_o2c_with_mask(
         o2c_t_new = o2c_t_orig + pose_residual[3:]
         o2c_current = axis_angle_t_to_matrix(o2c_r, o2c_t_new, o2c_s_orig)
 
-        # Render object silhouette (transform object verts by o2c)
-        rgb_obj, _ = diff_renderer(
-            obj_verts, obj_faces, color_obj, projection, o2c_current, resolution, glctx
-        )
-        sil_pred = rgb_obj[..., 1]  # Green channel as silhouette
+        # Transform object verts to camera space using o2c_current
+        ones = torch.ones_like(obj_verts[..., :1])  # (1, N, 1)
+        obj_verts_homo = torch.cat([obj_verts, ones], dim=-1)  # (1, N, 4)
+        obj_verts_cam = (o2c_current @ obj_verts_homo[0].T).T[:, :3].unsqueeze(0)  # (1, N, 3)
 
-        # Render hand silhouette if available (hand already in camera space, use identity)
+        # Merge object and hand meshes for rendering
         if hand_verts_t is not None:
-            rgb_hand, _ = diff_renderer(
-                hand_verts_t, hand_faces_t, hand_color, projection, identity, resolution, glctx
-            )
-            sil_hand = rgb_hand[..., 1]
-            # Combine silhouettes (union)
-            sil_pred = torch.clamp(sil_pred + sil_hand, 0, 1)
+            merged_verts = torch.cat([obj_verts_cam, hand_verts_t], dim=1)
+            merged_colors = torch.cat([color_obj, hand_color], dim=1)
+        else:
+            merged_verts = obj_verts_cam
+            merged_colors = color_obj
+
+        # Render merged mesh with identity (verts already in camera space)
+        rgb_merged, _ = diff_renderer(
+            merged_verts, merged_faces, merged_colors, projection, identity, resolution, glctx
+        )
+        sil_pred = rgb_merged[..., 1]  # Green channel as silhouette
 
         # Compute IoU loss
         inter = (sil_pred * target_mask_t).sum()
@@ -431,18 +444,27 @@ def optimize_o2c_with_mask(
         iou = inter / (union + 1e-6)
         loss = 1.0 - iou
 
-        # Save debug images periodically
-        if debug_dir and it % 50 == 0:
+        # Save debug boundary overlay every 5 iterations
+        if debug_dir and it % 10 == 0:
             os.makedirs(debug_dir, exist_ok=True)
-            sil_np = sil_pred.detach().cpu().numpy()
-            Image.fromarray((sil_np * 255).astype(np.uint8)).save(
-                os.path.join(debug_dir, f"sil_{it:04d}.png")
-            )
-            if it == 0:
-                tgt_np = target_mask_t.detach().cpu().numpy()
-                Image.fromarray((tgt_np * 255).astype(np.uint8)).save(
-                    os.path.join(debug_dir, "target_mask.png")
-                )
+            sil_np = (sil_pred.detach().cpu().numpy() * 255).astype(np.uint8)
+            tgt_np = (target_mask_t.detach().cpu().numpy() * 255).astype(np.uint8)
+
+            # Extract boundaries using morphological gradient
+            kernel = np.ones((3, 3), dtype=np.uint8)
+            pred_boundary = cv2.dilate(sil_np, kernel) - cv2.erode(sil_np, kernel)
+            tgt_boundary = cv2.dilate(tgt_np, kernel) - cv2.erode(tgt_np, kernel)
+
+            # Compose: gray background, green = target boundary, red = pred boundary
+            canvas = np.full((H, W, 3), 128, dtype=np.uint8)
+            canvas[tgt_boundary > 127] = [0, 255, 0]    # target in green
+            canvas[pred_boundary > 127] = [255, 0, 0]   # pred in red
+
+            # Draw loss text
+            text = f"it={it} IoU={iou.item():.4f} loss={loss.item():.4f}"
+            cv2.putText(canvas, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+            Image.fromarray(canvas).save(os.path.join(debug_dir, f"boundary_{it:04d}.png"))
 
         # Track best
         if loss.item() < best_loss:
@@ -462,8 +484,42 @@ def optimize_o2c_with_mask(
         o2c_t_best = o2c_t_orig + best_pose_residual[3:]
         o2c_optimized = axis_angle_t_to_matrix(o2c_r_best, o2c_t_best, o2c_s_orig)
         o2c_optimized_np = o2c_optimized.detach().cpu().numpy()
+
+        # Save final boundary for the best pose
+        if debug_dir:
+            with torch.no_grad():
+                ones = torch.ones_like(obj_verts[..., :1])
+                obj_verts_homo = torch.cat([obj_verts, ones], dim=-1)
+                obj_verts_cam = (o2c_optimized @ obj_verts_homo[0].T).T[:, :3].unsqueeze(0)
+                if hand_verts_t is not None:
+                    best_verts = torch.cat([obj_verts_cam, hand_verts_t], dim=1)
+                    best_colors = torch.cat([color_obj, hand_color], dim=1)
+                else:
+                    best_verts = obj_verts_cam
+                    best_colors = color_obj
+                rgb_best, _ = diff_renderer(
+                    best_verts, merged_faces, best_colors, projection, identity, resolution, glctx
+                )
+                sil_best = rgb_best[..., 1]
+                iou_best = (sil_best * target_mask_t).sum() / ((sil_best + target_mask_t).sum() - (sil_best * target_mask_t).sum() + 1e-6)
+
+            sil_np = (sil_best.cpu().numpy() * 255).astype(np.uint8)
+            tgt_np = (target_mask_t.cpu().numpy() * 255).astype(np.uint8)
+            kernel = np.ones((3, 3), dtype=np.uint8)
+            pred_boundary = cv2.dilate(sil_np, kernel) - cv2.erode(sil_np, kernel)
+            tgt_boundary = cv2.dilate(tgt_np, kernel) - cv2.erode(tgt_np, kernel)
+            canvas = np.full((H, W, 3), 128, dtype=np.uint8)
+            canvas[tgt_boundary > 127] = [0, 255, 0]
+            canvas[pred_boundary > 127] = [255, 0, 0]
+            text = f"BEST IoU={iou_best.item():.4f} loss={best_loss:.4f}"
+            cv2.putText(canvas, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            os.makedirs(debug_dir, exist_ok=True)
+            Image.fromarray(canvas).save(os.path.join(debug_dir, "boundary_best.png"))
+            print(f"Saved final boundary to {debug_dir}/boundary_best.png")
     else:
         o2c_optimized_np = o2c_init
+
+        o2c_optimized_np = o2c_optimized.detach().cpu().numpy()
 
     return o2c_optimized_np, best_loss
 
@@ -472,23 +528,22 @@ def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     image_path = os.path.join(args.data_dir, "rgb", f"{args.cond_index:04d}.jpg")
     obj_mask_path = os.path.join(args.data_dir, "mask_object", f"{args.cond_index:04d}.png")
-    inpaint_image_path = os.path.join(args.data_dir, "inpaint", f"{args.cond_index:04d}_rgba.png")
-    inpaint_mask_path = os.path.join(args.data_dir, "inpaint", f"{args.cond_index:04d}_rgba.png")
+    # inpaint_image_path = os.path.join(args.data_dir, "inpaint", f"{args.cond_index:04d}_rgba.png")
+    # inpaint_mask_path = os.path.join(args.data_dir, "inpaint", f"{args.cond_index:04d}_rgba.png")
     hand_mask_path = os.path.join(args.data_dir, "mask_hand", f"{args.cond_index:04d}.png")
-    hand_mask_path = ""
     depth_file = os.path.join(args.data_dir, "depth", f"{args.cond_index:04d}.png")
     meta_file = os.path.join(args.data_dir, "meta", f"{args.cond_index:04d}.pkl")
     SAM3D_dir = os.path.join(args.data_dir, "SAM3D", f"{args.cond_index:04d}")
     hand_pose_dir = args.data_dir
-    hand_pose_dir = ""
+    # hand_pose_dir = ""
 
     # Check required input files
-    if not os.path.exists(inpaint_image_path):
-        print(f"Image {inpaint_image_path} not found.")
-        return
-    if not os.path.exists(inpaint_mask_path):
-        print(f"Mask {inpaint_mask_path} not found.")
-        return
+    # if not os.path.exists(inpaint_image_path):
+    #     print(f"Image {inpaint_image_path} not found.")
+    #     return
+    # if not os.path.exists(inpaint_mask_path):
+    #     print(f"Mask {inpaint_mask_path} not found.")
+    #     return
     if not os.path.exists(depth_file):
         print(f"Depth file {depth_file} not found.")
         return
@@ -500,13 +555,12 @@ def main(args):
     camera_json_path = os.path.join(SAM3D_dir, "camera.json")
     scene_glb_path = os.path.join(SAM3D_dir, "scene.glb")
 
-
     # --- Load image, mask ---
-    print(f"Loading inpaint image: {inpaint_image_path}")
-    inpaint_image = load_image(inpaint_image_path)
-    print(f"Loading inpaint mask: {inpaint_mask_path}")
-    inpaint_mask = load_mask(inpaint_mask_path)
-    height, width = inpaint_image.shape[:2]
+    print(f"Loading inpaint image: {image_path}")
+    image_raw = load_image(image_path)
+    print(f"Loading inpaint mask: {obj_mask_path}")
+    obj_mask = load_mask(obj_mask_path)
+    height, width = image_raw.shape[:2]
 
     # --- Load depth and intrinsics to create pointmap ---
     print(f"Loading depth: {depth_file}")
@@ -545,11 +599,20 @@ def main(args):
         hand_mask = load_mask(hand_mask_path)
     else:
         print(f"[WARNING] Hand mask not found: {hand_mask_path}, using empty mask")
-        hand_mask = np.zeros_like(inpaint_mask)
+        hand_mask = np.zeros_like(obj_mask)
 
     # Merge the object mask and hand mask to merged mask for optimization
-    merged_mask = inpaint_mask | hand_mask
-    print(f"Merged mask: obj={inpaint_mask.sum()} + hand={hand_mask.sum()} = merged={merged_mask.sum()} pixels")
+    merged_mask = obj_mask | hand_mask
+    print(f"Merged mask: obj={obj_mask.sum()} + hand={hand_mask.sum()} = merged={merged_mask.sum()} pixels")
+
+    # Save debug mask images
+    if args.out_dir:
+        debug_mask_dir = os.path.join(args.out_dir, "debug")
+        os.makedirs(debug_mask_dir, exist_ok=True)
+        Image.fromarray((obj_mask * 255).astype(np.uint8)).save(os.path.join(debug_mask_dir, "mask_object.png"))
+        Image.fromarray((hand_mask * 255).astype(np.uint8)).save(os.path.join(debug_mask_dir, "mask_hand.png"))
+        Image.fromarray((merged_mask * 255).astype(np.uint8)).save(os.path.join(debug_mask_dir, "mask_merged.png"))
+        print(f"Saved debug masks to {debug_mask_dir}/")
 
     # Merge the object mesh and hand mesh to merged mesh for optimization
     merged_mesh = mesh_in_cam
@@ -571,7 +634,7 @@ def main(args):
 
     # Visualize camera frustum, pointmap, mesh, and hand in Rerun (before optimization)
     if args.vis:
-        visualize_optimization_rerun(inpaint_image, merged_mask, pointmap, mesh_in_cam, K, hand_verts, hand_faces,
+        visualize_optimization_rerun(image_raw, merged_mask, pointmap, mesh_in_cam, K, hand_verts, hand_faces,
                                     app_name="align_SAM3D_before_optimized")
 
     # Optimize the o2c to fit the rendered merged mesh to merged mask
@@ -611,11 +674,15 @@ def main(args):
 
         # Copy image to output directory
         shutil.copy(image_path, os.path.join(args.out_dir, "image.png"))
-        print(f"Copied inpaint image to {args.out_dir}/image.png")
+        print(f"Copied image to {args.out_dir}/image.png")
 
-        # Copy mask to output directory
-        shutil.copy(obj_mask_path, os.path.join(args.out_dir, "mask.png"))
-        print(f"Copied object mask to {args.out_dir}/mask.png")
+        # Copy object mask to output directory
+        shutil.copy(obj_mask_path, os.path.join(args.out_dir, "obj_mask.png"))
+        print(f"Copied object mask to {args.out_dir}/obj_mask.png")
+
+        # Copy hand mask to output directory
+        shutil.copy(hand_mask_path, os.path.join(args.out_dir, "hand_mask.png"))
+        print(f"Copied hand mask to {args.out_dir}/hand_mask.png")
 
         # Save optimized mesh
         mesh_in_cam_optimized.export(os.path.join(args.out_dir, "mesh_aligned.ply"))
@@ -637,7 +704,7 @@ def main(args):
     # Visualize after optimization
     if args.vis:
         visualize_optimization_rerun(
-            inpaint_image, merged_mask, pointmap, mesh_in_cam_optimized, K, hand_verts, hand_faces,
+            image_raw, merged_mask, pointmap, mesh_in_cam_optimized, K, hand_verts, hand_faces,
             app_name="align_SAM3D_after_optimized"
         )
 

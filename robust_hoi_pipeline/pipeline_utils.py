@@ -163,23 +163,30 @@ def load_sam3d_transform(sam3d_dir: Path, cond_idx: int) -> Dict:
         - cam2obj: (4, 4) camera-to-object transformation
     """
     transform_path = sam3d_dir / f"{cond_idx:04d}" / "aligned_transform.json"
-    if not transform_path.exists():
-        raise FileNotFoundError(f"SAM3D transform not found: {transform_path}")
+    # transform_path = sam3d_dir / "../SAM3D" / f"{cond_idx:04d}" / "camera.json"
+    if transform_path == sam3d_dir / f"{cond_idx:04d}" / "aligned_transform.json":
+        if not transform_path.exists():
+            raise FileNotFoundError(f"SAM3D transform not found: {transform_path}")        
+        with open(transform_path, "r") as f:
+            transform_data = json.load(f)
 
-    with open(transform_path, "r") as f:
-        transform_data = json.load(f)
-
-    rotation = np.array(transform_data["rotation"], dtype=np.float32)  # (3, 3)
-    translation = np.array(transform_data["translation"], dtype=np.float32)  # (3,)
-    scale = float(transform_data["scale"])
-    sam3d_to_cond_cam = np.array(transform_data["matrix"], dtype=np.float32)  # (4, 4)
-    cond_cam_to_sam3d = np.linalg.inv(sam3d_to_cond_cam)
+        sam3d_to_cam_scale = float(transform_data["scale"])
+        sam3d_to_cond_cam = np.array(transform_data["matrix"], dtype=np.float32)  # (4, 4)
+        cond_cam_to_sam3d = np.linalg.inv(sam3d_to_cond_cam)
+    elif transform_path == sam3d_dir / "../SAM3D" / f"{cond_idx:04d}" / "camera.json":
+        if not transform_path.exists():
+            raise FileNotFoundError(f"SAM3D transform not found: {transform_path}")
+        with open(transform_path, "r") as f:
+            transform_data = json.load(f)
+            sam3d_to_cond_cam = np.array(transform_data["blw2cvc"], dtype=np.float32)  # (4, 4)
+            cond_cam_to_sam3d = np.linalg.inv(sam3d_to_cond_cam)
+            # get the scale from the rotation part of the camera_to_world matrix
+            sam3d_to_cam_scale = np.linalg.norm(sam3d_to_cond_cam[:3, 0])
+        
 
 
     return {
-        'scale': scale,
-        'rotation': rotation,
-        'translation': translation,
+        'scale': sam3d_to_cam_scale,
         'sam3d_to_cond_cam': sam3d_to_cond_cam,
         "cond_cam_to_sam3d": cond_cam_to_sam3d,
     }
