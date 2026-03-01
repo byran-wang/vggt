@@ -1772,6 +1772,31 @@ def _reset_pose_to_nearest_registered(image_info_work, frame_idx):
         print(f"[reproj_recovery] Reset frame {frame_idx} pose to nearest registered frame {nearest_idx}")
 
 
+def _check_pose_moved(image_info_work, frame_idx, min_rot=2, min_trans=0.005):
+    """Check whether a frame's pose differs from its nearest registered neighbor.
+
+    Returns True if the pose moved sufficiently, False if it barely changed
+    (suggesting PnP collapsed to a near-duplicate).
+    """
+    registered = np.asarray(image_info_work["registered"]).astype(bool)
+    invalid = np.asarray(image_info_work["invalid"]).astype(bool)
+    valid_reg = registered & (~invalid)
+    reg_idx = np.where(valid_reg)[0]
+    if reg_idx.size == 0:
+        return True
+    nearest_idx = reg_idx[np.argmin(np.abs(reg_idx - frame_idx))]
+    T_curr = image_info_work["extrinsics"][frame_idx]
+    T_near = image_info_work["extrinsics"][nearest_idx]
+    R_delta = T_curr[:3, :3] @ T_near[:3, :3].T
+    angle = np.rad2deg(np.arccos(np.clip((np.trace(R_delta) - 1) / 2, -1.0, 1.0)))
+    trans = np.linalg.norm(T_curr[:3, 3] - T_near[:3, 3])
+    if angle < min_rot and trans < min_trans:
+        print(f"[check_pose_moved] Frame {frame_idx} pose barely moved "
+              f"(rot={angle:.2f}°, trans={trans:.4f}), nearest={nearest_idx}")
+        return False
+    return True
+
+
 def _init_pose_from_hand(image_info_work, frame_idx):
     """Initialize frame pose using hand pose for frame_idx frame.
 
@@ -1915,8 +1940,9 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         #     continue
         
         reproj_ok, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args)
-        sucess, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args)
-        if 1:
+        is_moved = _check_pose_moved(image_info_work, next_frame_idx)
+
+        if is_moved:
             print(f"[register_remaining_frames] Frame {next_frame_idx} align depth to mesh due to high reprojection error")
             # _reset_pose_to_nearest_registered(image_info_work, next_frame_idx)
             # _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_reset_when_pnp_fail")
