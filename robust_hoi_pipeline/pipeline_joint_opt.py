@@ -1403,6 +1403,11 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
     optimizer = torch.optim.Adam([rotvec, trans], lr=10e-3)
     best = {"loss": float("inf"), "R": ext0[:3, :3].copy(), "t": ext0[:3, 3].copy(), "valid": 0}
 
+    # Check initial contact loss; if hand is too far from object, reset pose to nearby frame
+    contact_status = _check_contact_and_reset(rotvec, trans, hand_verts_in_cam, obj_verts, image_info_work, frame_idx, device)
+    if contact_status == "skip":
+        return True  # initial pose already has good contact, skip optimization
+
     for it in range(num_iters):
         optimizer.zero_grad()
         R = rodrigues(rotvec)
@@ -1811,6 +1816,38 @@ def _reset_pose_to_nearest_registered(image_info_work, frame_idx):
         nearest_idx = reg_idx[np.argmin(np.abs(reg_idx - frame_idx))]
         image_info_work["extrinsics"][frame_idx] = image_info_work["extrinsics"][nearest_idx].copy()
         print(f"[reproj_recovery] Reset frame {frame_idx} pose to nearest registered frame {nearest_idx}")
+
+
+def _check_contact_and_reset(rotvec, trans, hand_verts_in_cam, obj_verts, image_info_work, frame_idx, device, thresh_contact=0.02):
+    """Check initial contact loss and reset pose to nearby frame if too large.
+
+    Returns:
+        "reset" if pose was reset to a nearby registered frame,
+        "skip" if contact is already good (optimization can be skipped),
+        "ok" if hand_verts_in_cam is None (no hand data, proceed normally).
+    """
+    if hand_verts_in_cam is None:
+        return "ok"
+    with torch.no_grad():
+        R_init = rodrigues(rotvec)
+        hand_in_obj = ((hand_verts_in_cam[0] - trans[None, :]) @ R_init).unsqueeze(0)
+        contact_loss = _compute_contact_loss(hand_in_obj, obj_verts, device)
+        loss_val = contact_loss.item()
+        if loss_val > thresh_contact:
+            print(f"[align_depth] Frame {frame_idx}: initial contact loss {loss_val:.4f} > {thresh_contact}, resetting pose to nearby frame")
+            registered = np.asarray(image_info_work["registered"]).astype(bool)
+            invalid = np.asarray(image_info_work["invalid"]).astype(bool)
+            reg_idx = np.where(registered & ~invalid)[0]
+            if reg_idx.size > 0:
+                nearest_idx = reg_idx[np.argmin(np.abs(reg_idx - frame_idx))]
+                ext_near = image_info_work["extrinsics"][nearest_idx]
+                rotvec.data.copy_(torch.tensor(ScipyRotation.from_matrix(ext_near[:3, :3]).as_rotvec().astype(np.float32), device=device))
+                trans.data.copy_(torch.tensor(ext_near[:3, 3].astype(np.float32), device=device))
+                print(f"[align_depth] Frame {frame_idx}: reset to nearest registered frame {nearest_idx}")
+            return "reset"
+        else:
+            print(f"[align_depth] Frame {frame_idx}: initial contact loss {loss_val:.4f} within threshold {thresh_contact}, skipping pose reset")
+            return "skip"
 
 
 def _check_pose_moved(image_info_work, frame_idx, min_rot=2, min_trans=0.005):
