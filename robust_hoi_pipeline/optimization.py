@@ -1007,7 +1007,7 @@ def register_new_frame_by_PnP(image_info, frame_idx, args, iters=100):
 
     if missing:
         print(f"[register_new_frame] Missing inputs: {missing}; skipping registration.")
-        return image_info
+        return False
 
     # Get 2D tracks for this frame
     tracks_2d = pred_tracks[frame_idx]  # [N, 2]
@@ -1017,7 +1017,7 @@ def register_new_frame_by_PnP(image_info, frame_idx, args, iters=100):
     visible_mask = mask.astype(bool)
     if not visible_mask.any():
         print(f"[register_new_frame] Frame {frame_idx}: No visible tracks, skipping.")
-        return image_info
+        return False
 
     pts_3d = points_3d[visible_mask].astype(np.float64)  # [M, 3]
     pts_2d = tracks_2d[visible_mask].astype(np.float64)  # [M, 2]
@@ -1030,7 +1030,7 @@ def register_new_frame_by_PnP(image_info, frame_idx, args, iters=100):
 
     if len(pts_3d) < 10:
         print(f"[register_new_frame] Frame {frame_idx}: Only {len(pts_3d)} visible points (need >= 10), skipping.")
-        return image_info
+        return False
 
     # Get intrinsic matrix for this frame
     K = intrinsics[frame_idx].astype(np.float64)
@@ -1112,7 +1112,7 @@ def register_new_frame_by_PnP(image_info, frame_idx, args, iters=100):
     print(f"[register_new_frame] Frame {frame_idx}: PnP success with {len(inliers)}/{len(pts_3d)} inliers, "
           f"mean reproj error: {reproj_err:.2f}px")
 
-    return image_info
+    return True
 
 
 def propagate_uncertainty_and_build_image_info(images, image_path_list, base_image_path_list, original_coords,
