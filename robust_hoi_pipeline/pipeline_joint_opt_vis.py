@@ -76,18 +76,34 @@ def load_hand_mesh(data_preprocess_dir: Path, frame_idx: int) -> Optional[trimes
 def load_image_info(results_dir: Path) -> Optional[Dict]:
     """Load image info from pipeline_joint_opt.py output.
 
-    Supports both the split format (shared_info.npy + per-frame image_info.npy)
-    and the legacy single-file format for backwards compatibility.
+    Supports compressed format (.pkl.gz), split format (shared + per-frame),
+    and legacy single-file .npy format for backwards compatibility.
     """
-    info_path = results_dir / "image_info.npy"
-    if not info_path.exists():
-        return None
-    per_frame = np.load(info_path, allow_pickle=True).item()
+    import gzip
+    import pickle
 
-    # Try loading shared static data (new split format)
-    shared_path = results_dir.parent / "shared_info.npy"
-    if shared_path.exists():
-        shared = np.load(shared_path, allow_pickle=True).item()
+    # Try compressed format first
+    gz_path = results_dir / "image_info.pkl.gz"
+    npy_path = results_dir / "image_info.npy"
+
+    if gz_path.exists():
+        with gzip.open(gz_path, "rb") as f:
+            per_frame = pickle.load(f)
+    elif npy_path.exists():
+        per_frame = np.load(npy_path, allow_pickle=True).item()
+    else:
+        return None
+
+    # Try loading shared static data
+    shared_gz = results_dir.parent / "shared_info.pkl.gz"
+    shared_npy = results_dir.parent / "shared_info.npy"
+    if shared_gz.exists():
+        with gzip.open(shared_gz, "rb") as f:
+            shared = pickle.load(f)
+        shared.update(per_frame)
+        return shared
+    elif shared_npy.exists():
+        shared = np.load(shared_npy, allow_pickle=True).item()
         shared.update(per_frame)
         return shared
 

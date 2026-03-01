@@ -435,6 +435,20 @@ _DYNAMIC_KEYS = {
 }
 
 
+def _save_compressed(path: Path, data: dict) -> None:
+    """Save dict as gzip-compressed pickle."""
+    import gzip
+    with gzip.open(path, "wb") as f:
+        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _load_compressed(path: Path) -> dict:
+    """Load dict from gzip-compressed pickle."""
+    import gzip
+    with gzip.open(path, "rb") as f:
+        return pickle.load(f)
+
+
 def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir: Path, only_save_register_order=False
 ) -> None:
     """Save image info for joint optimization outputs.
@@ -451,15 +465,15 @@ def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir:
         return
 
     # Save static data once
-    shared_path = results_dir / "shared_info.npy"
+    shared_path = results_dir / "shared_info.pkl.gz"
     if not shared_path.exists():
         static_info = {k: v for k, v in image_info.items() if k in _STATIC_KEYS}
-        np.save(shared_path, static_info)
+        _save_compressed(shared_path, static_info)
         print(f"Saved shared static info to {shared_path}")
 
     # Save only dynamic (per-registration) data
     frame_dir.mkdir(parents=True, exist_ok=True)
-    info_path = frame_dir / "image_info.npy"
+    info_path = frame_dir / "image_info.pkl.gz"
     dynamic_info = {k: v for k, v in image_info.items() if k in _DYNAMIC_KEYS}
 
     # Pre-compute track_vis_count: per-track visibility across keyframes
@@ -472,7 +486,7 @@ def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir:
         n_pts = len(image_info.get("points_3d", []))
         dynamic_info["track_vis_count"] = np.zeros(n_pts, dtype=np.int32)
 
-    np.save(info_path, dynamic_info)
+    _save_compressed(info_path, dynamic_info)
     print(f"Saved image info to {frame_dir}")
 
 
