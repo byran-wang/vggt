@@ -2302,13 +2302,10 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         
         reproj_ok, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args)
         is_moved = _check_pose_moved(image_info_work, next_frame_idx)
-        debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
-        if RUN_ON_SERVER:
-            debug_dir = None
-        if 1:
-            _reset_and_track_foundation_pose(image_info_work, next_frame_idx, sam3d_mesh, debug_dir=debug_dir)
+            
 
-        if is_moved:
+        # if is_moved:
+        if 0:
             print(f"[register_remaining_frames] Frame {next_frame_idx} align depth to mesh due to high reprojection error")
             # _reset_pose_to_nearest_registered(image_info_work, next_frame_idx)
             # _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_reset_when_pnp_fail")
@@ -2322,10 +2319,6 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             # ).astype(image_info_work["track_mask"].dtype)
 
             # Align the frame with SAM3D mesh using depth with outlier rejection
-            debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
-            if RUN_ON_SERVER:
-                debug_dir = None
-                
             # if sam3d_mesh is not None:
             if 1:
                 print(f"[register_remaining_frames] Aligning frame {next_frame_idx} with SAM3D mesh using depth")
@@ -2403,25 +2396,25 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
 
 
-        # Joint optimize keyframe poses + 3D points against NeuS mesh
-        can_joint_opt = (latest_neus_mesh is not None or args.no_optimize_with_point_to_plane)
-        if can_joint_opt and image_info_work["keyframe"].sum() >= args.min_track_number:
-            try:
-                mesh_path = None if args.no_optimize_with_point_to_plane else latest_neus_mesh
-                _joint_optimize_keyframes(
-                    image_info_work, mesh_path, cond_local_idx,
-                    min_track_number=args.min_track_number,
-                )
-                # Print reprojection error after joint optimization for the newly registered frame
-                kf_indices_arr = np.where(image_info_work["keyframe"].astype(bool))[0]
-                print_frame_reproj_error(image_info_work, next_frame_idx, tag="joint_opt")
-                # Mask tracks with reprojection error > joint_opt_reproj_thresh
-                for ki in kf_indices_arr:
-                    mask_track_for_outliers(image_info_work, ki, args.joint_opt_reproj_thresh,
-                                           min_track_number=args.min_track_number)
-                _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_keyframes_opt")
-            except Exception as exc:
-                print(f"[register_remaining_frames] joint optimization failed: {exc}")
+        # # Joint optimize keyframe poses + 3D points against NeuS mesh
+        # can_joint_opt = (latest_neus_mesh is not None or args.no_optimize_with_point_to_plane)
+        # if can_joint_opt and image_info_work["keyframe"].sum() >= args.min_track_number:
+        #     try:
+        #         mesh_path = None if args.no_optimize_with_point_to_plane else latest_neus_mesh
+        #         _joint_optimize_keyframes(
+        #             image_info_work, mesh_path, cond_local_idx,
+        #             min_track_number=args.min_track_number,
+        #         )
+        #         # Print reprojection error after joint optimization for the newly registered frame
+        #         kf_indices_arr = np.where(image_info_work["keyframe"].astype(bool))[0]
+        #         print_frame_reproj_error(image_info_work, next_frame_idx, tag="joint_opt")
+        #         # Mask tracks with reprojection error > joint_opt_reproj_thresh
+        #         for ki in kf_indices_arr:
+        #             mask_track_for_outliers(image_info_work, ki, args.joint_opt_reproj_thresh,
+        #                                    min_track_number=args.min_track_number)
+        #         _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_keyframes_opt")
+        #     except Exception as exc:
+        #         print(f"[register_remaining_frames] joint optimization failed: {exc}")
 
         image_info["register"] = image_info_work["registered"].tolist()
         image_info["invalid"] = image_info_work["invalid"].tolist()
