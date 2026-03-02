@@ -8,12 +8,10 @@ export CUDA_PATH='/usr/local/cuda-11.8'
 export LD_LIBRARY_PATH="/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH"
 
 declare -A device_sequences=(
-  [0]="ABF12 BB12"
-  [1]="ABF14 BB13"
-  [2]="GPMF12 GPMF14"
-  [3]="MC1 MDF12"
-  [4]="MC4 MDF14"
-  [5]="ShSu10 ShSu14"
+  [2]="ABF12 GPMF12 GPMF14"
+  [3]="ABF14 MC1 MDF12"
+  [4]="MC4 MDF14 BB12"
+  [5]="ShSu10 ShSu14 BB13"
   [6]="SM2 SM4 GSF12"
   [7]="SMu1 SMu40 GSF13"     
 
