@@ -362,7 +362,7 @@ if __name__ == "__main__":
     parser.add_argument("--vggsfm_max_points_num", type=int, default=163840)
     parser.add_argument("--vggsfm_fine_tracking", action="store_true", default=False)
     parser.add_argument("--max_vis_matches", type=int, default=200)
-    parser.add_argument("--window_size", type=int, default=201, help="Number of frames per sliding window")
+    parser.add_argument("--window_size", type=int, default=301, help="Number of frames per sliding window")
     parser.add_argument("--anchor_interval", type=int, default=5, help="Interval between anchor frames")
 
     main(parser.parse_args())
