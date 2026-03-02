@@ -1474,10 +1474,23 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
         _contact_debug = debug_dir if (debug_dir is not None and (it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1)) else None
         loss_contact = _compute_contact_loss(hand_verts_in_obj, obj_verts, device, debug_dir=_contact_debug, frame_idx=frame_idx, it=it + 1)
 
-        w_depth = 0.0 if not has_enough_depth else 1.0
+        first_half = it < num_iters // 2
+        if first_half:
+            w_depth = 0.0
+            w_contact = 1.0
+        else:
+            w_depth = 1.0 if has_enough_depth else 0.0
+            w_contact = 0.0 if has_enough_depth else 1.0
         w_mask = 20.0
         w_reproj = 0.0
-        w_contact = 1.0
+
+        if it == 0:
+            print(f"[align_depth] Frame {frame_idx}: 1st half weights: w_depth={w_depth}, w_contact={w_contact}, w_mask={w_mask}, w_reproj={w_reproj}")
+        elif it == num_iters // 2:
+            print(f"[align_depth] Frame {frame_idx}: 2nd half weights: w_depth={w_depth}, w_contact={w_contact}, w_mask={w_mask}, w_reproj={w_reproj}")
+            if has_enough_depth:
+                best = {"loss": float("inf"), "R": ext0[:3, :3].copy(), "t": ext0[:3, 3].copy(), "valid": 0}
+                print(f"[align_depth] Frame {frame_idx}: reset best loss for 2nd half (depth loss active)")
 
         loss = w_depth * loss_depth + w_mask * loss_iou  + w_contact * loss_contact #w_reproj * loss_reproj
 
