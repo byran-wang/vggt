@@ -2118,6 +2118,9 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
         print("+" * 50)
         print(f"Next frame to register: {image_info['frame_indices'][next_frame_idx]} (local idx {next_frame_idx})")
+        debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
+        if RUN_ON_SERVER:
+            debug_dir = None
 
         # if check_frame_invalid(
         #     image_info_work,
