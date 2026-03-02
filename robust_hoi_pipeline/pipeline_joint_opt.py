@@ -1513,9 +1513,8 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
                 )
             print(
                 f"[align_depth] Frame {frame_idx}: iter {it+1}/{num_iters}, total {loss.item():.3f} "
-                f"loss_d={loss_depth.item():.3f}, "
-                f"loss_iou={loss_iou.item():.3f}, loss_reproj={loss_reproj.item():.3f}, "
-                f"loss_contact={loss_contact.item():.3f}, valid={valid_count}"
+                f"loss_contact={loss_contact.item():.3f}, loss_iou={loss_iou.item():.3f}, "
+                f"loss_d={loss_depth.item():.3f}, loss_reproj={loss_reproj.item():.3f}, valid={valid_count}"
             )
 
     if not np.isfinite(best["loss"]):
