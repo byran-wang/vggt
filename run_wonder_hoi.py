@@ -105,6 +105,7 @@ class run_wonder_hoi:
                 "hoi_pipeline_HY_to_SAM3D": self.hoi_pipeline_HY_to_SAM3D,
                 "hoi_pipeline_joint_opt": self.hoi_pipeline_joint_opt,
                 "hoi_pipeline_reg_remaining": self.hoi_pipeline_reg_remaining,
+                "hoi_pipeline_align_frame_debug": self.hoi_pipeline_align_frame_debug,
                 "hoi_pipeline_HY_gen": self.hoi_pipeline_HY_gen,
                 "hoi_pipeline_HY_omni_gen": self.hoi_pipeline_HY_omni_gen,
             },
@@ -1652,6 +1653,27 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
+    def hoi_pipeline_align_frame_debug(self, scene_name, **kwargs):
+        self.print_header(f"hoi pipeline align frame debug for {scene_name}")
+        out_dir = f"{vggt_code_dir}/output/{scene_name}"
+        input_dir = f"{out_dir}/pipeline_joint_opt/debug_align_frame_inputs"
+
+        # Find all saved input pickles
+        import glob
+        pkl_files = sorted(glob.glob(f"{input_dir}/align_frame_inputs_*.pkl"))
+        if not pkl_files:
+            print(f"No saved align_frame inputs found in {input_dir}")
+            return
+
+        for pkl_path in pkl_files:
+            debug_dir = f"{out_dir}/pipeline_joint_opt/debug_offline"
+            cmd = f"cd {vggt_code_dir} && "
+            cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/align_frame_with_sam3d.py "
+            cmd += f"--input_pkl {pkl_path} "
+            cmd += f"--debug_dir {debug_dir} "
+            print(cmd)
+            os.system(cmd)
+
     def _eval_sum(self, scene_name, fit_mode):
         """Run evaluation for a specific stage (before/after pose refinement)"""
         self.print_header(f"evaluate summary ({fit_mode}) for {scene_name}")
@@ -2003,6 +2025,7 @@ if __name__ == "__main__":
                 "hoi_pipeline_HY_omni_gen",
                 "hoi_pipeline_joint_opt",
                 "hoi_pipeline_reg_remaining",
+                "hoi_pipeline_align_frame_debug",
                 "hoi_pipeline_HY_gen",
                 "ho3d_eval_intrinsic",
                 "ho3d_eval_trans",

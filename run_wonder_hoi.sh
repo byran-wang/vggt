@@ -64,6 +64,8 @@ python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_
 
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_joint_opt --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_reg_remaining --seq_list $seq_list --rebuild
+# Debug: re-run _align_frame_with_sam3d offline on saved inputs
+# python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_align_frame_debug --seq_list $seq_list
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_joint_opt --seq_list $seq_list --vis
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_joint_opt --seq_list $seq_list --eval
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_neus_init --seq_list $seq_list --rebuild

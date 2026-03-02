@@ -2051,8 +2051,49 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 
             # if sam3d_mesh is not None:
             if 1:
+                # Save inputs for offline debugging (slim: only frame_idx data for large per-frame lists)
+                _debug_save_dir = output_dir / "pipeline_joint_opt" / "debug_align_frame_inputs"
+                _debug_save_dir.mkdir(parents=True, exist_ok=True)
+                _save_path = _debug_save_dir / f"align_frame_inputs_{next_frame_idx:04d}.pkl"
+                print(f"[debug] Saving _align_frame_with_sam3d inputs to {_save_path}")
+                import pickle as _pkl
+                _fi = next_frame_idx
+
+                def _get_frame(lst, idx):
+                    if lst is not None and idx < len(lst):
+                        return lst[idx]
+                    return None
+
+                _slim_info = {
+                    # small global arrays — keep full
+                    "frame_indices": image_info_work["frame_indices"],
+                    "extrinsics": image_info_work["extrinsics"],
+                    "intrinsics": image_info_work["intrinsics"],
+                    "points_3d": image_info_work.get("points_3d"),
+                    "pred_tracks": image_info_work.get("pred_tracks"),
+                    "track_mask": image_info_work.get("track_mask"),
+                    "keyframe": image_info_work.get("keyframe"),
+                    "registered": image_info_work.get("registered"),
+                    "invalid": image_info_work.get("invalid"),
+                    # large per-frame data — only save frame_idx entry
+                    "depth_priors": {_fi: _get_frame(image_info_work.get("depth_priors"), _fi)},
+                    "normal_priors": {_fi: _get_frame(image_info_work.get("normal_priors"), _fi)},
+                    "images": {_fi: _get_frame(image_info_work.get("images"), _fi)},
+                    "image_masks": {_fi: _get_frame(image_info_work.get("image_masks"), _fi)},
+                    "image_masks_hand": {_fi: _get_frame(image_info_work.get("image_masks_hand"), _fi)},
+                    "hand_meshes_right": {_fi: _get_frame(image_info_work.get("hand_meshes_right"), _fi)},
+                    "depth_points_obj": {_fi: _get_frame(image_info_work.get("depth_points_obj"), _fi)},
+                }
+                with open(_save_path, "wb") as _f:
+                    _pkl.dump({
+                        "image_info_work": _slim_info,
+                        "frame_idx": _fi,
+                        "obj_mesh": sam3d_mesh,
+                        "debug_dir": debug_dir,
+                    }, _f)
+
                 print(f"[register_remaining_frames] Aligning frame {next_frame_idx} with SAM3D mesh using depth")
-                sucess = _align_frame_with_sam3d(image_info_work, next_frame_idx, sam3d_mesh, 
+                sucess = _align_frame_with_sam3d(image_info_work, next_frame_idx, sam3d_mesh,
                                              debug_dir=debug_dir
                                              )
                 if not sucess:
