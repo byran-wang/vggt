@@ -119,6 +119,7 @@ cd $HOME && rm -rf eigen-3.4.0 eigen-3.4.0.tar.gz
 
 # Build extensions
 cd third_party/FoundationPose
+# Note: ignore the mycuda setup error.
 CMAKE_PREFIX_PATH=~/miniconda3/envs/vggsfm_tmp/lib/python3.10/site-packages/pybind11/share/cmake/pybind11 bash build_all_conda.sh
 cd ../../
 
