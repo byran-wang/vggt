@@ -4,6 +4,11 @@
     "**/dataset_HO3D": true,
     "**/dataset_ZED": true
   },
+  "search.exclude": {
+      "**/output": true,
+      "**/output_server": true,
+      "**/output*": true,
+  },
   "python-envs.defaultEnvManager": "ms-python.python:conda",
   "python-envs.defaultPackageManager": "ms-python.python:conda",
   "python-envs.pythonProjects": []
