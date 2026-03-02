@@ -1496,6 +1496,7 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
     obs_depth = torch.tensor(d.astype(np.float32), dtype=torch.float32, device=device)
     obs_mask = _build_observation_mask(H, W, ys, xs, device)
 
+    ext0 = extrinsics[frame_idx].astype(np.float64)
     init_rot = ScipyRotation.from_matrix(ext0[:3, :3]).as_rotvec().astype(np.float32)
     rotvec = torch.tensor(init_rot, dtype=torch.float32, device=device, requires_grad=True)
     trans = torch.tensor(ext0[:3, 3].astype(np.float32), dtype=torch.float32, device=device, requires_grad=True)
@@ -1933,14 +1934,24 @@ def _joint_optimize_keyframes(
     print(f"[joint_opt] Done. Refined {int(opt_mask.sum())} poses, "
           f"{int(finite_mask.sum())} 3D points.")
     
-def _reset_pose_to_nearest_registered(image_info_work, frame_idx):
-    """Reset a frame's pose to that of the nearest valid registered frame."""
+def _find_nearest_registered_frame(image_info_work, frame_idx):
+    """Find the nearest valid registered frame index.
+
+    Returns the index into image_info_work arrays, or None if no valid
+    registered frame exists.
+    """
     registered = np.asarray(image_info_work["registered"]).astype(bool)
     invalid = np.asarray(image_info_work["invalid"]).astype(bool)
-    valid_reg = registered & (~invalid)
-    reg_idx = np.where(valid_reg)[0]
-    if reg_idx.size > 0:
-        nearest_idx = reg_idx[np.argmin(np.abs(reg_idx - frame_idx))]
+    reg_idx = np.where(registered & ~invalid)[0]
+    if reg_idx.size == 0:
+        return None
+    return int(reg_idx[np.argmin(np.abs(reg_idx - frame_idx))])
+
+
+def _reset_pose_to_nearest_registered(image_info_work, frame_idx):
+    """Reset a frame's pose to that of the nearest valid registered frame."""
+    nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
+    if nearest_idx is not None:
         image_info_work["extrinsics"][frame_idx] = image_info_work["extrinsics"][nearest_idx].copy()
         print(f"[reproj_recovery] Reset frame {frame_idx} pose to nearest registered frame {nearest_idx}")
 
@@ -1962,11 +1973,8 @@ def _check_contact_and_reset(rotvec, trans, hand_verts_in_cam, obj_verts, image_
         loss_val = contact_loss.item()
         if loss_val > thresh_contact:
             print(f"[align_depth] Frame {frame_idx}: initial contact loss {loss_val:.4f} > {thresh_contact}, resetting pose to nearby frame")
-            registered = np.asarray(image_info_work["registered"]).astype(bool)
-            invalid = np.asarray(image_info_work["invalid"]).astype(bool)
-            reg_idx = np.where(registered & ~invalid)[0]
-            if reg_idx.size > 0:
-                nearest_idx = reg_idx[np.argmin(np.abs(reg_idx - frame_idx))]
+            nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
+            if nearest_idx is not None:
                 ext_near = image_info_work["extrinsics"][nearest_idx]
                 rotvec.data.copy_(torch.tensor(ScipyRotation.from_matrix(ext_near[:3, :3]).as_rotvec().astype(np.float32), device=device))
                 trans.data.copy_(torch.tensor(ext_near[:3, 3].astype(np.float32), device=device))
@@ -1983,13 +1991,9 @@ def _check_pose_moved(image_info_work, frame_idx, min_rot=2, min_trans=0.005):
     Returns True if the pose moved sufficiently, False if it barely changed
     (suggesting PnP collapsed to a near-duplicate).
     """
-    registered = np.asarray(image_info_work["registered"]).astype(bool)
-    invalid = np.asarray(image_info_work["invalid"]).astype(bool)
-    valid_reg = registered & (~invalid)
-    reg_idx = np.where(valid_reg)[0]
-    if reg_idx.size == 0:
+    nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
+    if nearest_idx is None:
         return True
-    nearest_idx = reg_idx[np.argmin(np.abs(reg_idx - frame_idx))]
     T_curr = image_info_work["extrinsics"][frame_idx]
     T_near = image_info_work["extrinsics"][nearest_idx]
     R_delta = T_curr[:3, :3] @ T_near[:3, :3].T
