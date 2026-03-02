@@ -27,3 +27,7 @@ pymcubes
 nerfacc==0.3.3
 torch_efficient_distloss
 tensorboard
+
+# foundationpose
+transformations==2024.6.1
+ruamel.yaml==0.18.6
