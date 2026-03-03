@@ -108,7 +108,7 @@ cd ../../../
 
 
 # ---- FoundationPose
-
+conda install -n vggsfm_tmp -c conda-forge boost-cpp -y
 # Install Eigen3 3.4.0
 cd $HOME && wget -q https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz && \
 tar -xzf eigen-3.4.0.tar.gz && \

@@ -655,15 +655,46 @@ def main(args):
     # using the condition frame as the reference
 
     align_pred_to_gt = None
-
     if data_gt is not None and len(gt_o2c) > 0:
         image_info = load_image_info(results_dir / f"{frame_indices[-1]:04d}")
-        pred_frame_indices = image_info["frame_indices"]
-        cond_local = pred_frame_indices.index(cond_idx)
-        gt_cond_idx = frame_indices.index(cond_idx)        
-        first_c2o = np.array(image_info["c2o"])
-        first_c2o[:, :3, 3] *= scale
-        align_pred_to_gt = np.linalg.inv(gt_o2c[gt_cond_idx]) @ np.linalg.inv(first_c2o[cond_local])
+        if image_info is None:
+            print("Warning: failed to load image_info for alignment; skip pred-to-GT alignment.")
+        else:
+            pred_frame_indices = image_info.get("frame_indices", [])
+            if len(pred_frame_indices) == 0:
+                print("Warning: image_info has empty frame_indices; skip pred-to-GT alignment.")
+            else:
+                # Try condition frame first; if its GT is invalid, walk register order to find a valid GT frame.
+                try:
+                    start_idx = frame_indices.index(cond_idx)
+                except ValueError:
+                    start_idx = 0
+                    print(f"Warning: cond_idx {cond_idx} not found in register_order, fallback search from start.")
+
+                search_order = list(range(start_idx, len(frame_indices))) + list(range(0, start_idx))
+                gt_cond_idx = None
+                ref_frame_idx = None
+                for idx in search_order:
+                    if idx >= len(gt_o2c) or idx >= len(gt_is_valid):
+                        continue
+                    if not bool(gt_is_valid[idx]):
+                        continue
+                    fid = frame_indices[idx]
+                    if fid not in pred_frame_indices:
+                        continue
+                    gt_cond_idx = idx
+                    ref_frame_idx = fid
+                    break
+
+                if gt_cond_idx is None:
+                    print("Warning: no valid GT frame found in register_order for alignment; skip pred-to-GT alignment.")
+                else:
+                    if ref_frame_idx != cond_idx:
+                        print(f"Info: cond_idx {cond_idx} GT invalid/unavailable, fallback to frame {ref_frame_idx} for alignment.")
+                    cond_local = pred_frame_indices.index(ref_frame_idx)
+                    first_c2o = np.array(image_info["c2o"])
+                    first_c2o[:, :3, 3] *= scale
+                    align_pred_to_gt = np.linalg.inv(gt_o2c[gt_cond_idx]) @ np.linalg.inv(first_c2o[cond_local])
 
     if SAM3D_mesh is not None:
         vertices = np.array(SAM3D_mesh.vertices, dtype=np.float32) * scale

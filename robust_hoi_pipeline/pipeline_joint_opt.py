@@ -90,30 +90,26 @@ def _run_foundation_pose_track(obj_mesh, rgb, depth, ob_mask, K, current_o2c, de
         print("[FoundationPose] Missing inputs, skipping tracking")
         return None
 
-    try:
-        est = _get_foundation_pose(obj_mesh, debug_dir=debug_dir)
 
-        # Convert current_o2c (original-mesh space) to centered-mesh space.
-        # FoundationPose stores pose_last in centered space:
-        #   pose_returned = pose_centered @ tf_to_center
-        # so pose_centered = pose_returned @ inv(tf_to_center)
-        # inv(tf_to_center) just translates by +model_center.
-        tf_to_center = est.get_tf_to_centered_mesh()          # (4,4) CUDA tensor
-        tf_from_center = torch.eye(4, device='cuda', dtype=torch.float)
-        tf_from_center[:3, 3] = -tf_to_center[:3, 3]          # +model_center
+    est = _get_foundation_pose(obj_mesh, debug_dir=debug_dir)
 
-        o2c_t = torch.as_tensor(current_o2c, device='cuda', dtype=torch.float)
-        est.pose_last = (o2c_t @ tf_from_center).reshape(1, 4, 4)
+    # Convert current_o2c (original-mesh space) to centered-mesh space.
+    # FoundationPose stores pose_last in centered space:
+    #   pose_returned = pose_centered @ tf_to_center
+    # so pose_centered = pose_returned @ inv(tf_to_center)
+    # inv(tf_to_center) just translates by +model_center.
+    tf_to_center = est.get_tf_to_centered_mesh()          # (4,4) CUDA tensor
+    tf_from_center = torch.eye(4, device='cuda', dtype=torch.float)
+    tf_from_center[:3, 3] = -tf_to_center[:3, 3]          # +model_center
 
-        pose = est.track_one(rgb=rgb, depth=depth, K=K, iteration=5)
-        if pose is None or not np.isfinite(pose).all():
-            print("[FoundationPose] Tracking returned invalid pose")
-            return None
-        print(f"[FoundationPose] Tracking succeeded, pose translation: {pose[:3, 3]}")
-        return pose.astype(np.float64)
-    except Exception as exc:
-        print(f"[FoundationPose] Tracking failed: {exc}")
-        return None
+    o2c_t = torch.as_tensor(current_o2c, device='cuda', dtype=torch.float)
+    est.pose_last = (o2c_t @ tf_from_center).reshape(1, 4, 4)
+
+    pose = est.track_one(rgb=rgb, depth=depth, K=K, iteration=5)
+    if pose is None or not np.isfinite(pose).all():
+        raise RuntimeError("[FoundationPose] Tracking returned invalid pose")
+    print(f"[FoundationPose] Tracking succeeded, pose translation: {pose[:3, 3]}")
+    return pose.astype(np.float64)
 
 
 class TeeStream:
@@ -599,6 +595,8 @@ def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir:
 def _build_default_joint_opt_args(output_dir: Path, cond_index: int) -> SimpleNamespace:
     """Create a minimal args namespace for frame management helpers."""
     only_save_register_order = False
+    if RUN_ON_SERVER:
+        only_save_register_order = True
     return SimpleNamespace(
         output_dir=str(output_dir),
         cond_index=cond_index,
@@ -2091,7 +2089,7 @@ def check_which_estimate_is_better_and_update(
     return best_pose, True
 
 
-def _check_contact_and_reset(hand_verts_in_cam, obj_verts, image_info_work, frame_idx, device, thresh_contact=0.02):
+def _check_contact_and_reset(hand_verts_in_cam, obj_verts, image_info_work, frame_idx, device, thresh_contact=0.04):
     """Check initial contact loss and reset pose to nearby frame if too large.
 
     Returns:
@@ -2102,25 +2100,25 @@ def _check_contact_and_reset(hand_verts_in_cam, obj_verts, image_info_work, fram
     if hand_verts_in_cam is None:
         return "ok"
     with torch.no_grad():
-        # Initialize optimization vars from current frame pose in image_info_work.
+        # Use current frame pose from image_info_work for contact check.
         ext0 = image_info_work["extrinsics"][frame_idx].astype(np.float64)
-        init_rot = ScipyRotation.from_matrix(ext0[:3, :3]).as_rotvec().astype(np.float32)
-        rotvec = torch.tensor(init_rot, dtype=torch.float32, device=device, requires_grad=True)
-        trans = torch.tensor(ext0[:3, 3].astype(np.float32), dtype=torch.float32, device=device, requires_grad=True)
-
-        R_init = rodrigues(rotvec)
+        R_init = torch.tensor(ext0[:3, :3].astype(np.float32), dtype=torch.float32, device=device)
+        trans = torch.tensor(ext0[:3, 3].astype(np.float32), dtype=torch.float32, device=device)
         hand_in_obj = ((hand_verts_in_cam[0] - trans[None, :]) @ R_init).unsqueeze(0)
         contact_loss = _compute_contact_loss(hand_in_obj, obj_verts, device)
         loss_val = contact_loss.item()
+        
         if loss_val > thresh_contact:
             print(f"[align_depth] Frame {frame_idx}: initial contact loss {loss_val:.4f} > {thresh_contact}, resetting pose to nearby frame")
             nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
             if nearest_idx is not None:
-                ext_near = image_info_work["extrinsics"][nearest_idx]
-                rotvec.data.copy_(torch.tensor(ScipyRotation.from_matrix(ext_near[:3, :3]).as_rotvec().astype(np.float32), device=device))
-                trans.data.copy_(torch.tensor(ext_near[:3, 3].astype(np.float32), device=device))
+                ext_near = image_info_work["extrinsics"][nearest_idx].astype(np.float32)
+                image_info_work["extrinsics"][frame_idx, :3, :3] = ext_near[:3, :3]
+                image_info_work["extrinsics"][frame_idx, :3, 3] = ext_near[:3, 3]
                 print(f"[align_depth] Frame {frame_idx}: reset to nearest registered frame {nearest_idx}")
-            return "reset"
+                return "reset"
+            print(f"[align_depth] Frame {frame_idx}: no nearby registered frame found, reset skipped")
+            return "ok"
         else:
             print(f"[align_depth] Frame {frame_idx}: initial contact loss {loss_val:.4f} within threshold {thresh_contact}, skipping pose reset")
             return "skip"
@@ -2238,14 +2236,14 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
     num_frames = len(frame_indices)
     latest_neus_mesh = neus_init_mesh
-
-    sam_3d_mesh_file = f"{sam3d_root_dir}/mesh.obj"
-
+    sam_3d_mesh_file = f"{Path(str(sam3d_root_dir).replace('SAM3D_aligned_post_process', 'SAM3D'))}/scene.glb"
     # Load the SAM3D mesh for depth-based alignment
     sam3d_mesh = None
     if sam3d_root_dir is not None and Path(sam_3d_mesh_file).exists():
         import trimesh
         sam3d_mesh = trimesh.load(str(sam_3d_mesh_file), process=False)
+        if isinstance(sam3d_mesh, trimesh.Scene):
+            sam3d_mesh = sam3d_mesh.dump(concatenate=True)
         print(f"Loaded SAM3D mesh: {len(sam3d_mesh.vertices)} vertices")
 
 
@@ -2256,8 +2254,9 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
         print("+" * 50)
         print(f"Next frame to register: {image_info['frame_indices'][next_frame_idx]} (local idx {next_frame_idx})")
-        # debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
-        debug_dir = None
+        debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
+        if RUN_ON_SERVER:
+            debug_dir = None
 
         # if check_frame_invalid(
         #     image_info_work,
