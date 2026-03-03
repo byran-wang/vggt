@@ -2,9 +2,18 @@
   "files.exclude": {
     "**/ho3d_v3": true,
     "**/dataset_HO3D": true,
-    "**/dataset_ZED": true
+    "**/dataset_ZED": true,
+      "**/output": true,
+      "**/output_server": true,
+      "**/output*": true,    
+  },
+  "search.exclude": {
+      "**/output": true,
+      "**/output_server": true,
+      "**/output*": true,
   },
   "python-envs.defaultEnvManager": "ms-python.python:conda",
   "python-envs.defaultPackageManager": "ms-python.python:conda",
+  "python.condaPath": "~/miniconda3/bin/conda",
   "python-envs.pythonProjects": []
 }

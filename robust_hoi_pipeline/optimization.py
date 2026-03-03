@@ -970,7 +970,14 @@ def build_reconstruction_from_tracks(
     )
 
 
-def register_new_frame_by_PnP(image_info, frame_idx, args, iters=100):
+def register_new_frame_by_PnP(
+    image_info,
+    frame_idx,
+    args,
+    iters=100,
+    update_pose=True,
+    return_pose=False,
+):
     """Estimate pose of frame `frame_idx` using PnP with existing 3D points and 2D tracks.
 
     Uses RANSAC-based PnP to robustly estimate the camera pose from 2D-3D correspondences.
@@ -985,8 +992,14 @@ def register_new_frame_by_PnP(image_info, frame_idx, args, iters=100):
         depth_weight: Weight for depth consistency loss (unused, kept for API compatibility)
 
     Returns:
-        Updated image_info (in-place)
+        - if return_pose is False: bool success
+        - if return_pose is True: (estimated_o2c_pose, success)
     """
+    def _ret(pose, success):
+        if return_pose:
+            return pose, bool(success)
+        return bool(success)
+
     points_3d = image_info.get("points_3d")
     extrinsics = image_info.get("extrinsics")
     intrinsics = image_info.get("intrinsics")
@@ -1007,7 +1020,7 @@ def register_new_frame_by_PnP(image_info, frame_idx, args, iters=100):
 
     if missing:
         print(f"[register_new_frame] Missing inputs: {missing}; skipping registration.")
-        return False
+        return _ret(None, False)
 
     # Get 2D tracks for this frame
     tracks_2d = pred_tracks[frame_idx]  # [N, 2]
@@ -1017,7 +1030,7 @@ def register_new_frame_by_PnP(image_info, frame_idx, args, iters=100):
     visible_mask = mask.astype(bool)
     if not visible_mask.any():
         print(f"[register_new_frame] Frame {frame_idx}: No visible tracks, skipping.")
-        return False
+        return _ret(None, False)
 
     pts_3d = points_3d[visible_mask].astype(np.float64)  # [M, 3]
     pts_2d = tracks_2d[visible_mask].astype(np.float64)  # [M, 2]
@@ -1030,7 +1043,7 @@ def register_new_frame_by_PnP(image_info, frame_idx, args, iters=100):
 
     if len(pts_3d) < 10:
         print(f"[register_new_frame] Frame {frame_idx}: Only {len(pts_3d)} visible points (need >= 10), skipping.")
-        return False
+        return _ret(None, False)
 
     # Get intrinsic matrix for this frame
     K = intrinsics[frame_idx].astype(np.float64)
@@ -1072,7 +1085,7 @@ def register_new_frame_by_PnP(image_info, frame_idx, args, iters=100):
 
     if not success or inliers is None or len(inliers) < 4:
         print(f"[register_new_frame] Frame {frame_idx}: PnP failed (inliers={len(inliers) if inliers is not None else 0}), keeping initial pose.")
-        return image_info
+        return _ret(None, False)
 
     # Refine with all inliers using iterative PnP
     inlier_mask = np.zeros(len(pts_3d), dtype=bool)
@@ -1100,9 +1113,13 @@ def register_new_frame_by_PnP(image_info, frame_idx, args, iters=100):
     R, _ = cv2.Rodrigues(rvec)
     t = tvec.flatten()
 
-    # Update extrinsics
-    extrinsics[frame_idx, :3, :3] = R.astype(np.float32)
-    extrinsics[frame_idx, :3, 3] = t.astype(np.float32)
+    estimated_pose = np.eye(4, dtype=np.float64)
+    estimated_pose[:3, :3] = R
+    estimated_pose[:3, 3] = t
+
+    if update_pose:
+        extrinsics[frame_idx, :3, :3] = R.astype(np.float32)
+        extrinsics[frame_idx, :3, 3] = t.astype(np.float32)
 
     # Compute reprojection error for logging
     proj_pts, _ = cv2.projectPoints(pts_3d_inliers, rvec, tvec, K, None)
@@ -1112,7 +1129,7 @@ def register_new_frame_by_PnP(image_info, frame_idx, args, iters=100):
     print(f"[register_new_frame] Frame {frame_idx}: PnP success with {len(inliers)}/{len(pts_3d)} inliers, "
           f"mean reproj error: {reproj_err:.2f}px")
 
-    return True
+    return _ret(estimated_pose, True)
 
 
 def propagate_uncertainty_and_build_image_info(images, image_path_list, base_image_path_list, original_coords,

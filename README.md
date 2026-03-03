@@ -107,6 +107,23 @@ python setup.py install
 cd ../../../
 
 
+# ---- FoundationPose
+
+# Install Eigen3 3.4.0
+cd $HOME && wget -q https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz && \
+tar -xzf eigen-3.4.0.tar.gz && \
+cd eigen-3.4.0 && mkdir build && cd build
+cmake .. -Wno-dev -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-std=c++14 ..
+sudo make install
+cd $HOME && rm -rf eigen-3.4.0 eigen-3.4.0.tar.gz
+
+# Build extensions
+cd third_party/FoundationPose
+# Note: ignore the mycuda setup error.
+CMAKE_PREFIX_PATH=~/miniconda3/envs/vggsfm_tmp/lib/python3.10/site-packages/pybind11/share/cmake/pybind11 bash build_all_conda.sh
+cd ../../
+
+
 ```
 
 Alternatively, you can install VGGT as a package (<a href="docs/package.md">click here</a> for details).

@@ -13,3 +13,6 @@
 [submodule "third_party/mast3r"]
 	path = third_party/mast3r
 	url = https://github.com/naver/mast3r
+[submodule "third_party/FoundationPose"]
+	path = third_party/FoundationPose
+	url = git@github.com:byran-wang/FoundationPose.git
