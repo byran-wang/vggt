@@ -201,12 +201,9 @@ def align_pred_to_gt(valid_extrinsics, gt_o2c, valid_frame_indices,
     return valid_extrinsics @ align_tf
 
 
-def visualize_gt_and_pred_in_rerun(data_gt, pred_extrinsics, frame_indices, SAM3D_dir, jpeg_quality=85):
+def visualize_gt_and_pred_in_rerun(data_gt, pred_extrinsics, frame_indices, SAM3D_dir,
+                                   jpeg_quality=85, world_mode="camera"):
     """Visualize GT and predicted poses with meshes in rerun.
-
-    For each frame, transforms the GT canonical mesh vertices by the o2c pose
-    (object-to-camera) and logs them as colored meshes alongside camera
-    intrinsics and images for both GT and predicted poses.
 
     Args:
         data_gt: Ground truth data dict (from gt.load_data) with keys:
@@ -214,6 +211,9 @@ def visualize_gt_and_pred_in_rerun(data_gt, pred_extrinsics, frame_indices, SAM3
         pred_extrinsics: (M, 4, 4) predicted object-to-camera matrices for valid frames
         frame_indices: (M,) frame indices corresponding to pred_extrinsics
         SAM3D_dir: Path to SAM3D_aligned_post_process directory
+        jpeg_quality: JPEG quality for compressed images
+        world_mode: "camera" (camera fixed, object moves) or
+                    "object" (object fixed at identity, cameras move)
     """
     import rerun as rr
     rr.init("pipeline_joint_opt_eval", spawn=True)
@@ -245,72 +245,134 @@ def visualize_gt_and_pred_in_rerun(data_gt, pred_extrinsics, frame_indices, SAM3
     gt_K = data_gt["K"].numpy() if torch.is_tensor(data_gt["K"]) else np.array(data_gt["K"])
     data_preprocess_dir = SAM3D_dir.parent / "pipeline_preprocess"
 
-    # Log mesh geometry once in object space; per-frame pose is applied via Transform3D.
+    mesh_kwargs = {}
     if gt_verts_can is not None and gt_faces is not None:
-        pred_mesh_kwargs = {
-            "vertex_positions": gt_verts_can.astype(np.float32),
-            "triangle_indices": gt_faces,
-        }
-        gt_mesh_kwargs = {
+        mesh_kwargs = {
             "vertex_positions": gt_verts_can.astype(np.float32),
             "triangle_indices": gt_faces,
         }
         if gt_vertex_colors is not None:
-            pred_mesh_kwargs["vertex_colors"] = gt_vertex_colors
-            gt_mesh_kwargs["vertex_colors"] = gt_vertex_colors
-        rr.log("world/pred_camera/object/mesh", rr.Mesh3D(**pred_mesh_kwargs), static=True)
-        rr.log("world/gt_camera/object/mesh", rr.Mesh3D(**gt_mesh_kwargs), static=True)
-    for i, fid in enumerate(frame_indices):
-        rr.set_time_sequence("frame", i)
+            mesh_kwargs["vertex_colors"] = gt_vertex_colors
 
-        preprocess_data = load_preprocessed_frame(data_preprocess_dir, fid)
-        img = preprocess_data.get("image")
-        K_pred = preprocess_data.get("intrinsics")
+    if world_mode == "object":
+        # Object-centric: mesh at identity, cameras move around it.
+        if mesh_kwargs:
+            rr.log("world/object/mesh", rr.Mesh3D(**mesh_kwargs), static=True)
 
-        # Predicted: update object pose in camera coordinates.
-        pred_o2c = pred_extrinsics[i].astype(np.float32)
-        pred_entity = "world/pred_camera"
-        rr.log(pred_entity, rr.Transform3D(
-            translation=np.zeros_like(pred_o2c[:3, 3]), mat3x3=np.eye(3)))
-        rr.log(
-            f"{pred_entity}/object",
-            rr.Transform3D(translation=pred_o2c[:3, 3], mat3x3=pred_o2c[:3, :3]),
-        )
-        if img is not None and K_pred is not None:
-            H, W = img.shape[:2]
-            rr.log(
-                f"{pred_entity}/camera",
-                rr.Pinhole(
-                    resolution=[W, H],
-                    focal_length=[float(K_pred[0, 0]), float(K_pred[1, 1])],
-                    principal_point=[float(K_pred[0, 2]), float(K_pred[1, 2])],
-                    image_plane_distance=1.0,
-                ),
-            )
-            rr.log(f"{pred_entity}/camera", rr.Image(img).compress(jpeg_quality=jpeg_quality))
+        pred_origins = []
+        gt_origins = []
 
-        # GT: update object pose in camera coordinates.
-        if i < len(gt_o2c) and bool(gt_is_valid[i]):
-            gt_o2c_i = gt_o2c[i].astype(np.float32)
-            gt_entity = "world/gt_camera"
-            rr.log(gt_entity, rr.Transform3D(
-                translation=np.zeros_like(gt_o2c_i[:3, 3]), mat3x3=np.eye(3)))
-            rr.log(
-                f"{gt_entity}/object",
-                rr.Transform3D(translation=gt_o2c_i[:3, 3], mat3x3=gt_o2c_i[:3, :3]),
-            )
-            if img is not None:
+        # Pre-log all camera poses as static so they are all visible.
+        for i, fid in enumerate(frame_indices):
+            preprocess_data = load_preprocessed_frame(data_preprocess_dir, fid)
+            img = preprocess_data.get("image")
+            K_pred = preprocess_data.get("intrinsics")
+
+            pred_c2o = np.linalg.inv(pred_extrinsics[i]).astype(np.float32)
+            pred_origins.append(pred_c2o[:3, 3].copy())
+            pred_entity = f"world/pred_cameras/{fid:04d}"
+            rr.log(pred_entity, rr.Transform3D(
+                translation=pred_c2o[:3, 3], mat3x3=pred_c2o[:3, :3],
+                axis_length=0.01), static=True)
+            if img is not None and K_pred is not None:
                 H, W = img.shape[:2]
                 rr.log(
-                    f"{gt_entity}/camera",
+                    f"{pred_entity}/camera",
                     rr.Pinhole(
                         resolution=[W, H],
-                        focal_length=[float(gt_K[0, 0]), float(gt_K[1, 1])],
-                        principal_point=[float(gt_K[0, 2]), float(gt_K[1, 2])],
+                        focal_length=[float(K_pred[0, 0]), float(K_pred[1, 1])],
+                        principal_point=[float(K_pred[0, 2]), float(K_pred[1, 2])],
+                        image_plane_distance=0.02,
+                    ),
+                    static=True,
+                )
+                rr.log(f"{pred_entity}/camera", rr.Image(img).compress(jpeg_quality=jpeg_quality), static=True)
+
+            if i < len(gt_o2c) and bool(gt_is_valid[i]):
+                gt_c2o = np.linalg.inv(gt_o2c[i]).astype(np.float32)
+                gt_origins.append(gt_c2o[:3, 3].copy())
+                gt_entity = f"world/gt_cameras/{fid:04d}"
+                rr.log(gt_entity, rr.Transform3D(
+                    translation=gt_c2o[:3, 3], mat3x3=gt_c2o[:3, :3],
+                    axis_length=0.01), static=True)
+                if img is not None:
+                    H, W = img.shape[:2]
+                    rr.log(
+                        f"{gt_entity}/camera",
+                        rr.Pinhole(
+                            resolution=[W, H],
+                            focal_length=[float(gt_K[0, 0]), float(gt_K[1, 1])],
+                            principal_point=[float(gt_K[0, 2]), float(gt_K[1, 2])],
+                            image_plane_distance=0.02,
+                        ),
+                        static=True,
+                    )
+                    rr.log(f"{gt_entity}/camera", rr.Image(img).compress(jpeg_quality=jpeg_quality), static=True)
+
+        # Draw camera trajectory curves connecting consecutive camera origins.
+        if len(pred_origins) >= 2:
+            pred_pts = np.array(pred_origins, dtype=np.float32)
+            rr.log("world/pred_cameras/trajectory",
+                    rr.LineStrips3D([pred_pts], colors=[[128, 128, 128]]), static=True)
+        if len(gt_origins) >= 2:
+            gt_pts = np.array(gt_origins, dtype=np.float32)
+            rr.log("world/gt_cameras/trajectory",
+                    rr.LineStrips3D([gt_pts], colors=[[128, 128, 128]]), static=True)
+    else:
+        # Camera-centric (default): camera fixed, object moves per frame.
+        if mesh_kwargs:
+            rr.log("world/pred_camera/object/mesh", rr.Mesh3D(**mesh_kwargs), static=True)
+            rr.log("world/gt_camera/object/mesh", rr.Mesh3D(**mesh_kwargs), static=True)
+
+        for i, fid in enumerate(frame_indices):
+            rr.set_time_sequence("frame", i)
+
+            preprocess_data = load_preprocessed_frame(data_preprocess_dir, fid)
+            img = preprocess_data.get("image")
+            K_pred = preprocess_data.get("intrinsics")
+
+            pred_o2c = pred_extrinsics[i].astype(np.float32)
+            pred_entity = "world/pred_camera"
+            rr.log(pred_entity, rr.Transform3D(
+                translation=np.zeros_like(pred_o2c[:3, 3]), mat3x3=np.eye(3)))
+            rr.log(
+                f"{pred_entity}/object",
+                rr.Transform3D(translation=pred_o2c[:3, 3], mat3x3=pred_o2c[:3, :3]),
+            )
+            if img is not None and K_pred is not None:
+                H, W = img.shape[:2]
+                rr.log(
+                    f"{pred_entity}/camera",
+                    rr.Pinhole(
+                        resolution=[W, H],
+                        focal_length=[float(K_pred[0, 0]), float(K_pred[1, 1])],
+                        principal_point=[float(K_pred[0, 2]), float(K_pred[1, 2])],
                         image_plane_distance=1.0,
                     ),
                 )
-                rr.log(f"{gt_entity}/camera", rr.Image(img).compress(jpeg_quality=jpeg_quality))
+                rr.log(f"{pred_entity}/camera", rr.Image(img).compress(jpeg_quality=jpeg_quality))
+
+            if i < len(gt_o2c) and bool(gt_is_valid[i]):
+                gt_o2c_i = gt_o2c[i].astype(np.float32)
+                gt_entity = "world/gt_camera"
+                rr.log(gt_entity, rr.Transform3D(
+                    translation=np.zeros_like(gt_o2c_i[:3, 3]), mat3x3=np.eye(3)))
+                rr.log(
+                    f"{gt_entity}/object",
+                    rr.Transform3D(translation=gt_o2c_i[:3, 3], mat3x3=gt_o2c_i[:3, :3]),
+                )
+                if img is not None:
+                    H, W = img.shape[:2]
+                    rr.log(
+                        f"{gt_entity}/camera",
+                        rr.Pinhole(
+                            resolution=[W, H],
+                            focal_length=[float(gt_K[0, 0]), float(gt_K[1, 1])],
+                            principal_point=[float(gt_K[0, 2]), float(gt_K[1, 2])],
+                            image_plane_distance=1.0,
+                        ),
+                    )
+                    rr.log(f"{gt_entity}/camera", rr.Image(img).compress(jpeg_quality=jpeg_quality))
 
 
 def filter_invalid_gt_frames(data_gt, data_pred):
@@ -570,7 +632,7 @@ def main(args):
 
     visualize_gt_and_pred_in_rerun(
         data_gt, aligned_pred_extrinsics, data_pred["valid_frame_indices"], SAM3D_dir,
-        jpeg_quality=args.jpeg_quality,
+        jpeg_quality=args.jpeg_quality, world_mode=args.world_mode,
     )
     
 
@@ -590,6 +652,10 @@ def parse_args():
                          help="JPEG quality for compressed image logging to rerun (1-100)")
     parser.add_argument("--hand_mode", type=str, default="trans",
                          help="Hand fit mode for HandDataProvider (e.g. 'rot', 'trans', 'intrinsic')")
+    parser.add_argument("--world_mode", type=str, default="object",
+                         choices=["camera", "object"],
+                         help="'camera': camera fixed, object moves. "
+                              "'object': object fixed at identity, cameras move.")
     
     args = parser.parse_args()
     from easydict import EasyDict
