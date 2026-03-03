@@ -2234,13 +2234,14 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
     num_frames = len(frame_indices)
     latest_neus_mesh = neus_init_mesh
-
-    sam_3d_mesh_file = f"{sam3d_root_dir}/mesh.obj"
+    sam_3d_mesh_file = f"{Path(str(sam3d_root_dir).replace('SAM3D_aligned_post_process', 'SAM3D'))}/scene.glb"
     # Load the SAM3D mesh for depth-based alignment
     sam3d_mesh = None
     if sam3d_root_dir is not None and Path(sam_3d_mesh_file).exists():
         import trimesh
         sam3d_mesh = trimesh.load(str(sam_3d_mesh_file), process=False)
+        if isinstance(sam3d_mesh, trimesh.Scene):
+            sam3d_mesh = sam3d_mesh.dump(concatenate=True)
         print(f"Loaded SAM3D mesh: {len(sam3d_mesh.vertices)} vertices")
 
 
