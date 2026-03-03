@@ -2102,25 +2102,25 @@ def _check_contact_and_reset(hand_verts_in_cam, obj_verts, image_info_work, fram
     if hand_verts_in_cam is None:
         return "ok"
     with torch.no_grad():
-        # Initialize optimization vars from current frame pose in image_info_work.
+        # Use current frame pose from image_info_work for contact check.
         ext0 = image_info_work["extrinsics"][frame_idx].astype(np.float64)
-        init_rot = ScipyRotation.from_matrix(ext0[:3, :3]).as_rotvec().astype(np.float32)
-        rotvec = torch.tensor(init_rot, dtype=torch.float32, device=device, requires_grad=True)
-        trans = torch.tensor(ext0[:3, 3].astype(np.float32), dtype=torch.float32, device=device, requires_grad=True)
-
-        R_init = rodrigues(rotvec)
+        R_init = torch.tensor(ext0[:3, :3].astype(np.float32), dtype=torch.float32, device=device)
+        trans = torch.tensor(ext0[:3, 3].astype(np.float32), dtype=torch.float32, device=device)
         hand_in_obj = ((hand_verts_in_cam[0] - trans[None, :]) @ R_init).unsqueeze(0)
         contact_loss = _compute_contact_loss(hand_in_obj, obj_verts, device)
         loss_val = contact_loss.item()
+        
         if loss_val > thresh_contact:
             print(f"[align_depth] Frame {frame_idx}: initial contact loss {loss_val:.4f} > {thresh_contact}, resetting pose to nearby frame")
             nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
             if nearest_idx is not None:
-                ext_near = image_info_work["extrinsics"][nearest_idx]
-                rotvec.data.copy_(torch.tensor(ScipyRotation.from_matrix(ext_near[:3, :3]).as_rotvec().astype(np.float32), device=device))
-                trans.data.copy_(torch.tensor(ext_near[:3, 3].astype(np.float32), device=device))
+                ext_near = image_info_work["extrinsics"][nearest_idx].astype(np.float32)
+                image_info_work["extrinsics"][frame_idx, :3, :3] = ext_near[:3, :3]
+                image_info_work["extrinsics"][frame_idx, :3, 3] = ext_near[:3, 3]
                 print(f"[align_depth] Frame {frame_idx}: reset to nearest registered frame {nearest_idx}")
-            return "reset"
+                return "reset"
+            print(f"[align_depth] Frame {frame_idx}: no nearby registered frame found, reset skipped")
+            return "ok"
         else:
             print(f"[align_depth] Frame {frame_idx}: initial contact loss {loss_val:.4f} within threshold {thresh_contact}, skipping pose reset")
             return "skip"
@@ -2240,7 +2240,6 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
     latest_neus_mesh = neus_init_mesh
 
     sam_3d_mesh_file = f"{sam3d_root_dir}/mesh.obj"
-
     # Load the SAM3D mesh for depth-based alignment
     sam3d_mesh = None
     if sam3d_root_dir is not None and Path(sam_3d_mesh_file).exists():
