@@ -29,7 +29,7 @@ sequences = {
     "cond_select_strategy": "manual", # manual or object_hand_ratio    
     "frame_star": 0,
     "frame_end": 9999,
-    "frame_interval": 5,
+    "frame_interval": 1,
     "frame_number": 1000,   
     "obj_num": 6,
     "obj_1_cond_idx": 0,
