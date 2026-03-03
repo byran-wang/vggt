@@ -595,6 +595,8 @@ def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir:
 def _build_default_joint_opt_args(output_dir: Path, cond_index: int) -> SimpleNamespace:
     """Create a minimal args namespace for frame management helpers."""
     only_save_register_order = False
+    if RUN_ON_SERVER:
+        only_save_register_order = True
     return SimpleNamespace(
         output_dir=str(output_dir),
         cond_index=cond_index,
