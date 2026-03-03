@@ -2087,7 +2087,7 @@ def check_which_estimate_is_better_and_update(
     return best_pose, True
 
 
-def _check_contact_and_reset(hand_verts_in_cam, obj_verts, image_info_work, frame_idx, device, thresh_contact=0.02):
+def _check_contact_and_reset(hand_verts_in_cam, obj_verts, image_info_work, frame_idx, device, thresh_contact=0.04):
     """Check initial contact loss and reset pose to nearby frame if too large.
 
     Returns:
