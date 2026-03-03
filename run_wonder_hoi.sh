@@ -66,6 +66,7 @@ python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_reg_remaining --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_joint_opt --seq_list $seq_list --vis
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_joint_opt --seq_list $seq_list --eval
+python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_joint_opt_eval_vis --seq_list $seq_list
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_neus_init --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum --seq_list $seq_list
 
