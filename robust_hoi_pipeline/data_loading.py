@@ -7,19 +7,17 @@
 """
 Data loading and preprocessing functions for the COLMAP pipeline.
 """
-
 import os
 import glob
 from pathlib import Path
-
 import numpy as np
 import torch
 
 from vggt.utils.load_fn import load_and_preprocess_images_square, load_intrinsics, GEN_3D
 
 from .geometry_utils import adjust_intrinsic_for_new_image_size
+# breakpoint()
 from .visualization_io import save_input_data
-import open3d as o3d
 
 
 def get_image_list_ZED(args):

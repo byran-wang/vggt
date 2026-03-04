@@ -21,8 +21,12 @@ export LD_LIBRARY_PATH="/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH"
 
 # )
 
+# declare -A device_sequences=(
+#   [0]="CUB1 CUB2 DUC1 DUC2 TC3 TC4 WC3 WC4"
+# )
+
 declare -A device_sequences=(
-  [0]="CUP3 CUP4"
+  [0]="CUB2"
 )
 
 current_dir=$(pwd)
@@ -33,18 +37,40 @@ for device in "${!device_sequences[@]}"; do
   sequences=${device_sequences[$device]}
   
   (
-    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-      --execute_list obj_process \
-      --process_list ho3d_obj_SAM3D_gen ho3d_align_SAM3D_mask ho3d_align_SAM3D_pts \
-      --seq_list $sequences --rebuild \
-      --dataset_dir /mnt/sata/Documents/dataset/ZED_wenxuan
+    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    # --execute_list hand_pose_postprocess \
+    # --process_list fit_hand_intrinsic fit_hand_trans fit_hand_rot \
+    # --seq_list $sequences --rebuild \
+    # --conda_type anaconda3 \
+    # --dataset_dir /home/simba-1/Documents/dataset/ZED_wenxuan
 
+    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    # --execute_list obj_process \
+    # --process_list hoi_pipeline_data_preprocess hoi_pipeline_get_corres \
+    # --seq_list $sequences --rebuild \
+    # --conda_type anaconda3 \
+    # --dataset_dir /home/simba-1/Documents/dataset/ZED_wenxuan
 
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-      --execute_list obj_process \
-      --process_list ho3d_SAM3D_post_process \
-      --seq_list $sequences --rebuild \
-      --dataset_dir /mnt/sata/Documents/dataset/ZED_wenxuan
+    --execute_list obj_process \
+    --process_list hoi_pipeline_get_corres \
+    --seq_list $sequences --rebuild \
+    --conda_type anaconda3 \
+    --dataset_dir /home/simba-1/Documents/dataset/ZED_wenxuan    
+
+    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    --execute_list obj_process \
+    --process_list hoi_pipeline_joint_opt \
+    --seq_list $sequences --rebuild \
+    --conda_type anaconda3 \
+    --dataset_dir /home/simba-1/Documents/dataset/ZED_wenxuan
+
+    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    # --execute_list obj_process \
+    # --process_list hoi_pipeline_joint_opt \
+    # --seq_list $sequences --vis \
+    # --conda_type anaconda3 \
+    # --dataset_dir /home/simba-1/Documents/dataset/ZED_wenxuan
 
   ) &
 done

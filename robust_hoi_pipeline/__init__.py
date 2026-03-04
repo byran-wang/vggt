@@ -11,7 +11,9 @@ This package provides a modular pipeline for 3D reconstruction from RGBD sequenc
 """
 
 from .args_config import parse_args, set_seed
+
 from .data_loading import load_inputs_and_gen3d, get_image_list, save_intrinsics
+# breakpoint()
 from .track_prediction import (
     run_VGGT,
     predict_initial_tracks_wrapper,
@@ -19,6 +21,7 @@ from .track_prediction import (
     prep_valid_correspondences,
     sample_points_at_track_locations,
 )
+
 from .pose_estimation import (
     estimate_initial_poses,
     estimate_extrinsic,
@@ -70,6 +73,7 @@ from .tsdf_fusion import (
     select_keyframes,
     visualize_tsdf_fusion_rerun,
 )
+
 from .pipeline import robust_hoi_pipeline, setup_environment
 
 __all__ = [
