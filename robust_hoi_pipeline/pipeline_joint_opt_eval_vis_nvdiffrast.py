@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from sqlalchemy import desc
 import torch
 from tqdm import tqdm
 import trimesh
@@ -128,6 +127,83 @@ def build_mesh_in_object_space(mesh_path: Path, frame_indices, c2o, scale, sam3d
     return mesh_obj
 
 
+def _mesh_vertex_colors(mesh: trimesh.Trimesh, default_rgb=(190, 190, 190)):
+    """Return per-vertex RGB colors for mesh; fallback to a uniform color."""
+    n = len(mesh.vertices)
+    colors = None
+    if hasattr(mesh, "visual") and hasattr(mesh.visual, "vertex_colors"):
+        vc = np.asarray(mesh.visual.vertex_colors)
+        if vc.ndim == 2 and vc.shape[0] == n and vc.shape[1] >= 3:
+            colors = vc[:, :3].astype(np.uint8)
+    if colors is None:
+        colors = np.tile(np.asarray(default_rgb, dtype=np.uint8)[None], (n, 1))
+    return colors
+
+
+def load_hand_mesh_for_frame(data_preprocess_dir: Path, frame_idx: int):
+    """Load right-hand mesh for one frame from preprocessing output."""
+    hand_mesh_path = data_preprocess_dir / "hand" / f"{frame_idx:04d}_right.obj"
+    if not hand_mesh_path.exists():
+        return None
+    try:
+        hand_mesh = trimesh.load(str(hand_mesh_path), process=False, force="mesh")
+    except Exception:
+        return None
+
+    verts = np.asarray(hand_mesh.vertices, dtype=np.float32)
+    faces = np.asarray(hand_mesh.faces, dtype=np.int32)
+    if verts.ndim != 2 or verts.shape[1] != 3 or faces.ndim != 2 or faces.shape[1] != 3:
+        return None
+    return {"vertices": verts, "faces": faces}
+
+
+def ensure_sealed_right_hand_mesh(verts: np.ndarray, faces: np.ndarray):
+    """Seal MANO right-hand mesh if needed (close wrist opening)."""
+    verts = np.asarray(verts, dtype=np.float32)
+    faces = np.asarray(faces, dtype=np.int64)
+    if verts.ndim != 2 or verts.shape[1] != 3 or faces.ndim != 2 or faces.shape[1] != 3:
+        return verts, faces.astype(np.int32)
+
+    # Already sealed MANO mesh contains wrist-center index 778.
+    if verts.shape[0] >= 779 and int(faces.max()) >= 778:
+        return verts, faces.astype(np.int32)
+
+    # Canonical MANO right hand is 778 verts. Seal it explicitly.
+    if verts.shape[0] == 778:
+        try:
+            from common.body_models import seal_mano_mesh_np
+
+            sealed_verts, sealed_faces = seal_mano_mesh_np(verts[None], faces, is_rhand=True)
+            return sealed_verts[0].astype(np.float32), sealed_faces.astype(np.int32)
+        except Exception as exc:
+            print(f"[warn] Failed to seal hand mesh for current frame: {exc}")
+
+    return verts, faces.astype(np.int32)
+
+
+def build_merged_object_hand_mesh(object_mesh: trimesh.Trimesh, hand_mesh_cam: dict, c2o_scaled: np.ndarray):
+    """Build merged object+hand mesh in object space for one frame."""
+    obj_verts = np.asarray(object_mesh.vertices, dtype=np.float32)
+    obj_faces = np.asarray(object_mesh.faces, dtype=np.int32)
+    obj_colors = _mesh_vertex_colors(object_mesh)
+
+    hand_verts_cam, hand_faces = ensure_sealed_right_hand_mesh(
+        hand_mesh_cam["vertices"], hand_mesh_cam["faces"]
+    )
+    # Hand meshes are stored in camera space. Convert to object space for merging.
+    hand_verts_obj = (c2o_scaled[:3, :3] @ hand_verts_cam.T).T + c2o_scaled[:3, 3]
+    hand_verts_obj = hand_verts_obj.astype(np.float32)
+
+    merged_verts = np.concatenate([obj_verts, hand_verts_obj], axis=0)
+    merged_faces = np.concatenate([obj_faces, hand_faces + obj_verts.shape[0]], axis=0)
+    hand_colors = np.tile(np.array([[225, 186, 160]], dtype=np.uint8), (hand_verts_obj.shape[0], 1))
+    merged_colors = np.concatenate([obj_colors, hand_colors], axis=0)
+
+    merged_mesh = trimesh.Trimesh(vertices=merged_verts, faces=merged_faces, process=False)
+    merged_mesh.visual.vertex_colors = merged_colors
+    return merged_mesh
+
+
 def overlay_normal(raw_img, normal_tensor, depth_tensor, alpha):
     normal = normal_tensor[0].detach().cpu().numpy()  # (H, W, 3), [-1, 1]
     depth = depth_tensor[0].detach().cpu().numpy()  # (H, W)
@@ -226,6 +302,13 @@ def main(args):
         K = _normalize_intrinsics(K)
         H, W = image.shape[:2]
         o2c = torch.as_tensor(o2c_all[local_idx][None], dtype=torch.float32, device="cuda")
+        mesh_tensors_frame = mesh_tensors
+        if args.render_hand:
+            hand_mesh_cam = load_hand_mesh_for_frame(data_preprocess_dir, int(frame_idx))
+            if hand_mesh_cam is not None:
+                merged_mesh = build_merged_object_hand_mesh(mesh_obj, hand_mesh_cam, c2o_scaled[local_idx])
+                mesh_tensors_frame = make_mesh_tensors(merged_mesh, device="cuda")
+
         _, depth, normal = nvdiffrast_render(
             K=K,
             H=H,
@@ -234,7 +317,7 @@ def main(args):
             glctx=glctx,
             context="cuda",
             get_normal=True,
-            mesh_tensors=mesh_tensors,
+            mesh_tensors=mesh_tensors_frame,
             output_size=(H, W),
             use_light=False,
             extra={},
@@ -274,6 +357,12 @@ def parse_args():
     parser.add_argument("--out_dir", type=str, required=True, help="Output directory for visualization")
     parser.add_argument("--fps", type=int, default=6, help="Output video FPS")
     parser.add_argument("--alpha", type=float, default=0.8, help="Overlay weight for rendered normals")
+    parser.add_argument(
+        "--render_hand",
+        action="store_true",
+        default=True,
+        help="Render sealed right-hand mesh together with the object mesh",
+    )
     parser.add_argument("--rebuild", action="store_true", help="Clear previous visualization outputs")
     return parser.parse_args()
 

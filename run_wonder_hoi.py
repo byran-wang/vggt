@@ -1658,6 +1658,9 @@ class run_wonder_hoi:
         cmd += f"--out_dir {out_dir}/pipeline_joint_opt/eval/ "
         cmd += f"--SAM3D_dir {data_dir}/SAM3D_aligned_post_process "
         cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        render_hand = str(kwargs.get("render_hand", "false")).lower() in {"1", "true", "yes", "y"}
+        if render_hand:
+            cmd += f"--render_hand "
         if self.rebuild:
             cmd += f"--rebuild "
        
