@@ -85,6 +85,7 @@ python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum_intr
 
 ######################################## baseline #########################################
 python run_wonder_hoi.py --execute_list baseline --process_list foundation_pose_eval_vis --seq_list $seq_list
+python run_wonder_hoi.py --execute_list baseline --process_list gt_eval_vis --seq_list $seq_list
 
 ######################################## data transfer #########################################
 cd /home/simba/Documents/dataset/BundleSDF && rsync -azvp --no-o --no-g -e "ssh -p 2026" HO3D_v3 root@180.184.148.133:/mnt/afs/shibo/Documents/dataset/BundleSDF/

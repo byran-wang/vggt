@@ -122,6 +122,7 @@ class run_wonder_hoi:
             },
             "baseline": {
                 "foundation_pose_eval_vis": self.foundation_pose_eval_vis,
+                "gt_eval_vis": self.gt_eval_vis,
             },
         }
 
@@ -1819,6 +1820,36 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
+    def gt_eval_vis(self, scene_name, **kwargs):
+        self.print_header(f"gt eval vis for {scene_name}")
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+        out_dir = kwargs.get("out_dir", f"{vggt_code_dir}/output_baseline/{scene_name}/gt/")
+
+        if self.rebuild:
+            cmd = f"rm -rf {out_dir}"
+            print(cmd)
+            os.system(cmd)
+
+        cmd = f"cd {vggt_code_dir} && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/eval_gt_vis.py "
+        cmd += f"--data_dir {data_dir} "
+        cmd += f"--out_dir {out_dir} "
+
+        render_hand = str(kwargs.get("render_hand", "false")).lower() in {"1", "true", "yes", "y"}
+        if render_hand:
+            cmd += f"--render_hand "
+        if "fps" in kwargs:
+            cmd += f"--fps {kwargs['fps']} "
+        if "alpha" in kwargs:
+            cmd += f"--alpha {kwargs['alpha']} "
+        if "max_frames" in kwargs:
+            cmd += f"--max_frames {kwargs['max_frames']} "
+        if self.rebuild:
+            cmd += f"--rebuild "
+
+        print(cmd)
+        os.system(cmd)
+
 def main(args, extras):
     # Convert extras list to dictionary
     extras_dict = {}
@@ -2071,6 +2102,7 @@ if __name__ == "__main__":
                 "eval_sum_rot",
                 "eval_sum",
                 "foundation_pose_eval_vis",
+                "gt_eval_vis",
                 ],
         help="Specify the process option.", 
         nargs='+',  # To accept multiple values in a list
