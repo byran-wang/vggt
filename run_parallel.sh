@@ -78,7 +78,7 @@ for device in "${!device_sequences[@]}"; do
     echo "Running fit_hand on CUDA device $device with sequences: $sequences"
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
       --execute_list obj_process \
-      --process_list eval_sum \
+      --process_list eval_sum hoi_pipeline_joint_opt_eval_vis eval_sum_vis \
       --seq_list $sequences --rebuild
 
 
