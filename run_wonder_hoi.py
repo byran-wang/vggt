@@ -41,6 +41,7 @@ class run_wonder_hoi:
             "data_convert": {
                 "ZED_parse_data": self.ZED_parse_data,
                 "convert_zed_depth_to_ply": self.convert_zed_depth_to_ply,
+                "soft_link_depth": self.soft_link_depth,
                 "get_depth_from_foundation_stereo": self.get_depth_from_foundation_stereo,
                 "hot3d_cp_images": self.hot3d_cp_images,
                 "hot3d_gen_meta": self.hot3d_gen_meta,
@@ -522,8 +523,6 @@ class run_wonder_hoi:
         os.system(cmd)
 
     def fit_hand_step(self, scene_name, mode, output_dir, **kwargs):
-        frame_number = self.seq_config['frame_number']
-        frame_interval = self.seq_config["frame_interval"]
 
         cmd_parts = [
             f"cd {vggt_code_dir}/generator &&",
@@ -1073,6 +1072,9 @@ class run_wonder_hoi:
         os.system(cmd)
 
     def get_depth_from_foundation_stereo(self,seq_name, **kwargs):
+        if dataset_type != "zed":
+            print("only support zed dataset type")
+            return
         #iterate over all scene_name in dataset_dir
         self.print_header(f"get depth from foundation stereo for {seq_name}")
         if self.rebuild:
@@ -1098,6 +1100,10 @@ class run_wonder_hoi:
 
     def convert_zed_depth_to_ply(self, scene_name, **kwargs):
         #iterate over all scene_name in dataset_dir
+        if dataset_type != "zed":
+            print("only support zed dataset type")
+            return
+        
         self.print_header(f"convert depth to ply for {scene_name}")
         if self.rebuild:
             cmd = f"cd {self.dataset_dir}/{scene_name} && rm -rf ply_zed"
@@ -1108,6 +1114,17 @@ class run_wonder_hoi:
             f"{self.conda_dir}/envs/vggsfm_tmp/bin/python depth_to_ply.py " \
             f"--input_dir {self.dataset_dir}/{scene_name} " \
             f"--ply_interval 10 --use_rgb"
+        print(cmd)
+        os.system(cmd)
+
+    def soft_link_depth(self, scene_name, **kwargs):
+        if dataset_type != "zed":
+            print("only support zed dataset type")
+            return
+        
+        self.print_header(f"soft link depth for {scene_name}")
+        scene_dir = f"{self.dataset_dir}/{scene_name}"
+        cmd = f"cd {scene_dir} && rm -rf depth && ln -s depth_fs depth"
         print(cmd)
         os.system(cmd)
 
@@ -1958,6 +1975,7 @@ if __name__ == "__main__":
                 "ZED_read_data",
                 "ZED_parse_data",
                 "convert_zed_depth_to_ply",
+                "soft_link_depth",
                 "get_depth_from_foundation_stereo",
                 "estimate_hand_pose",
                 "estimate_obj_pose",
