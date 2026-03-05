@@ -17,7 +17,7 @@ class run_wonder_hoi:
         self.seq_list = args.seq_list
         self.execute_list = args.execute_list
         self.process_list = args.process_list
-        self.dataset_dir = args.dataset_dir
+        self.dataset_dir = dataset_dir
         self.reconstruction_dir = args.reconstruction_dir
         self.rebuild = args.rebuild
         self.vis = args.vis
@@ -1113,11 +1113,26 @@ class run_wonder_hoi:
 
     def ZED_parse_data(self,scene_name, **kwargs):
         self.print_header(f"ZED parse data for {scene_name}")
+        scene_dir = f"{self.dataset_dir}/{scene_name}"
+        out_dir = f"{scene_dir}/"
 
-        cmd = f"cd {home_dir}/Documents/project/zed-sdk/recording/export/svo/python && " \
-            f"{self.conda_dir}/bin/python svo_export.py --mode 2" \
-            f" --input_svo_file {self.dataset_dir}/{scene_name}/{scene_name}.svo2" \
-            f" --output_path_dir {self.dataset_dir}/{scene_name}/"
+        if self.rebuild:
+            cmd = f"cd {out_dir} && rm -rf depth_zed rgb meta"
+            print(cmd)
+            os.system(cmd)
+
+        interval = int(kwargs.get("interval", 3))
+        cmd = f"cd {vggt_code_dir}/third_party/zed-sdk/recording/export/svo/python && "
+        cmd += f"LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6 {self.conda_dir}/bin/python3 svo_export.py "
+        cmd += f"--mode 2 "
+        cmd += f" --input_svo_file {self.dataset_dir}/{scene_name}/{scene_name}.svo2 "
+        cmd += f"--output_path_dir {scene_dir}/ "
+        cmd += f"--interval {interval} "
+        cmd += f"--resize_width 1.0 "
+        cmd += f"--resize_height 1.0 "
+        cmd += f"--crop_width 960 "
+        cmd += f"--crop_height 720 "
+        print(cmd)
         os.system(cmd)
 
     def ZED_read_data(self):
@@ -1967,25 +1982,16 @@ if __name__ == "__main__":
         ###### hot3d ##########
         # "P0003_c701bd11",
 
-        ###### ho3d part 1 ##########
-        "ABF12",
-        "ABF14",
-        "GPMF12",
-        "GPMF14",    
-        "MC1",
-        "MC4",
-        "MDF12",
-        "MDF14",
-        "ShSu10",
-        "ShSu14",
-        "SM2",
-        "SM4",
-        "SMu1",
-        "SMu40",
-        "BB12",
-        "BB13", 
-        "GSF12",
-        "GSF13",
+        ###### in-the-wild captured by ZED ##########
+        "CUB1",
+        "CUB2",
+        "DUC1",
+        "DUC2",
+        "TC3",
+        "TC4",
+        "WC3",
+        "WC4",
+
               
 
         # ###### ho3d full ##########
