@@ -1081,8 +1081,8 @@ class run_wonder_hoi:
             print(cmd)
             os.system(cmd)
 
-        cmd = f"cd {home_dir}/Documents/project/FoundationStereo && " \
-            f"proxychains4 {self.conda_dir}/envs/foundation_stereo/bin/python " \
+        cmd = f"cd {vggt_code_dir}/third_party/FoundationStereo && " \
+            f"{self.conda_dir}/envs/foundation_stereo/bin/python " \
             "scripts/run_video.py " \
             f"--left_dir {self.dataset_dir}/{seq_name}/ir/ " \
             f"--right_dir {self.dataset_dir}/{seq_name}/ir/ " \
