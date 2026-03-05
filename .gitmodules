@@ -25,3 +25,6 @@
 [submodule "third_party/sam3"]
 	path = third_party/sam3
 	url = git@github.com:byran-wang/sam3.git
+[submodule "third_party/hamer"]
+	path = third_party/hamer
+	url = git@github.com:byran-wang/hamer.git

@@ -423,7 +423,7 @@ class run_wonder_hoi:
 
         # hamer inference
 
-        cmd = f"cd {self.code_dir}/generator/hamer && "
+        cmd = f"cd {vggt_code_dir}/third_party/hamer && "
         cmd += f"{self.conda_dir}/envs/hamer/bin/python demo.py "
         cmd += f"--img_folder {data_dir}/rgb "
         cmd += f"--out_folder {out_dir} "
@@ -440,10 +440,8 @@ class run_wonder_hoi:
         self.print_header(f"validate hamer results for {scene_name}")
         data_dir = f"{self.dataset_dir}/{scene_name}/hands"
         out_dir = f"{self.dataset_dir}/{scene_name}/hands"
-        data_dir = f"{self.dataset_dir}/{scene_name}/hands"
-        out_dir = f"{self.dataset_dir}/{scene_name}/hands"
 
-        cmd = ""
+        cmd = f"cd {vggt_code_dir} && "
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python ./interpolate.py "
         cmd += f" --dataset_dir {data_dir} "
         cmd += f" --out_dir {out_dir} "
