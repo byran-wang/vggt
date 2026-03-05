@@ -22,3 +22,6 @@
 [submodule "third_party/FoundationStereo"]
 	path = third_party/FoundationStereo
 	url = git@github.com:byran-wang/FoundationStereo.git
+[submodule "third_party/sam3"]
+	path = third_party/sam3
+	url = git@github.com:byran-wang/sam3.git
