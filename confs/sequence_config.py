@@ -12,13 +12,17 @@ else:
 if dataset == "zed":
     dataset_dir = f"{home_dir}/Documents/dataset/ZED_wenxuan/"
     dataset_type = "zed"
+    if RUN_ON_SERVER:
+        vggt_code_dir = f"{home_dir.rstrip('/')}/Documents/project/vggt_wenxuan_new"
+    else:
+        vggt_code_dir = f"{home_dir.rstrip('/')}/Documents/project/vggt"
 
     from confs.sequence_config_zed import sequences, sequence_name_list
 elif dataset == "ho3d":
     dataset_dir = f"{home_dir}/Documents/dataset/BundleSDF/HO3D_v3/train/"
     dataset_type = "ho3d"
+    vggt_code_dir = f"{home_dir.rstrip('/')}/Documents/project/vggt"
     from confs.sequence_config_ho3d import sequences, sequence_name_list
 else:
     raise ValueError(f"Please 'export DATASET=zed or ho3d' at first")           
 
-vggt_code_dir = f"{home_dir.rstrip('/')}/Documents/project/vggt"
