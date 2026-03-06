@@ -16,7 +16,7 @@ seq_list="MC1"
 ##################### HO3D Processing Pipeline ######################
 ##########################################################################
 
-####Note: following steps run on local pc, since they need the monitor.
+####Note: following steps run on local pc, since they need the monitor to check.
 # collect ZED raw data
 python run_wonder_hoi.py --execute_list data_read --process_list ZED_read_data  --seq_list $seq_list --rebuild 
 # pase left image, right image, intrinsic and zed depth from raw data with downsample 3
