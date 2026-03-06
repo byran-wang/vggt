@@ -75,20 +75,27 @@ def main(args):
     )
 
     if foundation_frames_dir is None:
-        raise FileNotFoundError(f"No overlay frame dir found under {foundation_dir}")
+        print(f"WARNING: No overlay frame dir found under {foundation_dir}, skipping.")
     if joint_opt_frames_dir is None:
-        raise FileNotFoundError(f"No overlay frame dir found under {joint_opt_dir}")
+        print(f"WARNING: No overlay frame dir found under {joint_opt_dir}, skipping.")
     if gt_frames_dir is None:
-        raise FileNotFoundError(f"No overlay frame dir found under {gt_dir}")
+        print(f"WARNING: No overlay frame dir found under {gt_dir}, skipping.")
 
-    f_frames = _list_frames(foundation_frames_dir)
-    j_frames = _list_frames(joint_opt_frames_dir)
-    g_frames = _list_frames(gt_frames_dir)
+    named_frame_lists = []
+    if foundation_frames_dir is not None:
+        named_frame_lists.append(("foundation", _list_frames(foundation_frames_dir)))
+    if joint_opt_frames_dir is not None:
+        named_frame_lists.append(("joint_opt", _list_frames(joint_opt_frames_dir)))
+    if gt_frames_dir is not None:
+        named_frame_lists.append(("gt", _list_frames(gt_frames_dir)))
 
-    n = min(len(f_frames), len(j_frames), len(g_frames))
+    if not named_frame_lists:
+        raise RuntimeError("No valid frame directories found; cannot merge.")
+
+    n = min(len(fl) for _, fl in named_frame_lists)
     if n == 0:
         raise RuntimeError(
-            f"Empty input frames: foundation={len(f_frames)}, joint_opt={len(j_frames)}, gt={len(g_frames)}"
+            "Empty input frames: " + ", ".join(f"{name}={len(fl)}" for name, fl in named_frame_lists)
         )
 
     if args.rebuild and out_dir.exists():
@@ -97,22 +104,27 @@ def main(args):
     merge_frames_dir.mkdir(parents=True, exist_ok=True)
 
     print(
-        f"Merging {n} frames (foundation={len(f_frames)}, joint_opt={len(j_frames)}, gt={len(g_frames)})"
+        f"Merging {n} frames (" + ", ".join(f"{name}={len(fl)}" for name, fl in named_frame_lists) + ")"
     )
 
     for i in tqdm(range(n), desc="Merging eval videos"):
         imgs = []
-        for frame_path in (f_frames[i], j_frames[i], g_frames[i]):
-            img = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
+        for _name, frame_list in named_frame_lists:
+            img = cv2.imread(str(frame_list[i]), cv2.IMREAD_COLOR)
             if img is None:
-                raise RuntimeError(f"Failed to read frame: {frame_path}")
+                raise RuntimeError(f"Failed to read frame: {frame_list[i]}")
             imgs.append(img)
 
         target_h = min(im.shape[0] for im in imgs)
         imgs = [_resize_to_height(im, target_h) for im in imgs]
 
         sep = np.full((target_h, args.line_width, 3), args.line_gray, dtype=np.uint8)
-        merged = np.concatenate([imgs[0], sep, imgs[1], sep, imgs[2]], axis=1)
+        parts = []
+        for idx, im in enumerate(imgs):
+            if idx > 0:
+                parts.append(sep)
+            parts.append(im)
+        merged = np.concatenate(parts, axis=1)
 
         out_p = merge_frames_dir / f"{i:06d}.png"
         cv2.imwrite(str(out_p), merged)
