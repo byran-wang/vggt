@@ -107,8 +107,46 @@ python setup.py install
 cd ../../../
 
 
+# ---- FoundationPose
+conda install -n vggsfm_tmp -c conda-forge boost-cpp -y
+# Install Eigen3 3.4.0
+cd $HOME && wget -q https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz && \
+tar -xzf eigen-3.4.0.tar.gz && \
+cd eigen-3.4.0 && mkdir build && cd build
+cmake .. -Wno-dev -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-std=c++14 ..
+sudo make install
+cd $HOME && rm -rf eigen-3.4.0 eigen-3.4.0.tar.gz
+
+# Build extensions
+cd third_party/FoundationPose
+# Note: ignore the mycuda setup error.
+CMAKE_PREFIX_PATH=~/miniconda3/envs/vggsfm_tmp/lib/python3.10/site-packages/pybind11/share/cmake/pybind11 bash build_all_conda.sh
+cd ../../
+
+
 ```
 
+## Third party lib installation
+```bash
+# ---- hamer
+set -e
+cd third_party/hamer
+
+/home/shibo/.conda/envs/hamer/bin/python -m pip install -e ".[all]" 
+/home/shibo/.conda/envs/hamer/bin/python -m pip install -e third-party/ViTPose
+# we do not need to install detecton2 to detect hand bbox. And use wilor_yolo to detect hand bbox
+rsync -azvp pretrained_models  shibo@3090_server1:/data1/shibo/Documents/project/vggt_wenxuan_new/third_party/hamer/ #copy pretrained model from wilor_yolo
+cd ..
+mkdir -p hamer/_DATA/data/mano
+cp -r ../code/body_models/* hamer/_DATA/data/mano
+
+# ---- FoundationStereo
+# read installation in third_party/FoundationStereo
+rsync -azvp pretrained_models  shibo@3090_server1:/data1/shibo/Documents/project/vggt_wenxuan_new/third_party/FoundationStereo/
+
+
+
+```
 Alternatively, you can install VGGT as a package (<a href="docs/package.md">click here</a> for details).
 
 

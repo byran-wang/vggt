@@ -8,6 +8,9 @@ import numpy as np
 import rerun as rr
 import trimesh
 
+import re
+import cv2
+
 import sys
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -18,6 +21,29 @@ from utils_simba.rerun import log_mesh
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_preprocessed_frame
 from robust_hoi_pipeline.frame_management import load_register_indices
 from robust_hoi_pipeline.pipeline_utils import load_sam3d_transform
+
+
+def parse_frame_logs(log_path: Path) -> Dict[int, str]:
+    """Parse log.txt into per-frame log blocks.
+
+    Each block starts with 'Next frame to register: {fid} (local idx {idx})'
+    and ends with '+++...+++'. Returns {frame_id: log_text}.
+    """
+    if not log_path.exists():
+        return {}
+    text = log_path.read_text()
+    pattern = re.compile(
+        r"Next frame to register: (\d+) \(local idx \d+\)"
+        r"(.*?)"
+        r"(?=\+{10,}|\Z)",
+        re.DOTALL,
+    )
+    result = {}
+    for m in pattern.finditer(text):
+        fid = int(m.group(1))
+        block = m.group(0).strip()
+        result[fid] = block
+    return result
 
 
 def compute_vertex_normals(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
@@ -48,11 +74,41 @@ def load_hand_mesh(data_preprocess_dir: Path, frame_idx: int) -> Optional[trimes
 
 
 def load_image_info(results_dir: Path) -> Optional[Dict]:
-    """Load image info from pipeline_joint_opt.py output."""
-    info_path = results_dir / "image_info.npy"
-    if not info_path.exists():
+    """Load image info from pipeline_joint_opt.py output.
+
+    Supports compressed format (.pkl.gz), split format (shared + per-frame),
+    and legacy single-file .npy format for backwards compatibility.
+    """
+    import gzip
+    import pickle
+
+    # Try compressed format first
+    gz_path = results_dir / "image_info.pkl.gz"
+    npy_path = results_dir / "image_info.npy"
+
+    if gz_path.exists():
+        with gzip.open(gz_path, "rb") as f:
+            per_frame = pickle.load(f)
+    elif npy_path.exists():
+        per_frame = np.load(npy_path, allow_pickle=True).item()
+    else:
         return None
-    return np.load(info_path, allow_pickle=True).item()
+
+    # Try loading shared static data
+    shared_gz = results_dir.parent / "shared_info.pkl.gz"
+    shared_npy = results_dir.parent / "shared_info.npy"
+    if shared_gz.exists():
+        with gzip.open(shared_gz, "rb") as f:
+            shared = pickle.load(f)
+        shared.update(per_frame)
+        return shared
+    elif shared_npy.exists():
+        shared = np.load(shared_npy, allow_pickle=True).item()
+        shared.update(per_frame)
+        return shared
+
+    # Legacy: single file contains everything
+    return per_frame
 
 
 def get_frame_image_info(image_info: Dict, frame_idx: int) -> Optional[Dict]:
@@ -67,14 +123,16 @@ def get_frame_image_info(image_info: Dict, frame_idx: int) -> Optional[Dict]:
     except ValueError:
         return None
     result = {
-        "tracks": image_info["tracks"][local_idx],
-        "vis_scores": image_info["vis_scores"][local_idx],
-        "tracks_mask": image_info["tracks_mask"][local_idx],
         "points_3d": image_info["points_3d"],
+        "track_vis_count": image_info.get("track_vis_count"),
         "is_keyframe": image_info.get("keyframe", [False] * len(frame_indices))[local_idx],
         "is_register": image_info.get("register", [False] * len(frame_indices))[local_idx],
         "is_invalid": image_info.get("invalid", [False] * len(frame_indices))[local_idx],
         "c2o": image_info["c2o"][local_idx],
+        "depth_after_PnP": image_info.get("depth_after_PnP", [None] * len(frame_indices))[local_idx],
+        "depth_after_align_mesh": image_info.get("depth_after_align_mesh", [None] * len(frame_indices))[local_idx],
+        "depth_after_keyframes_opt": image_info.get("depth_after_keyframes_opt", [None] * len(frame_indices))[local_idx],
+        "depth_after_reset_when_pnp_fail": image_info.get("depth_after_reset_when_pnp_fail", [None] * len(frame_indices))[local_idx],
         "depth_points_obj": None,
     }
     depth_pts = image_info.get("depth_points_obj")
@@ -114,6 +172,7 @@ def visualize_gt_frame(
     frame_idx: int,
     gt_o2c: np.ndarray,
     preprocess_data: Dict,
+    jpeg_quality: int = 85,
 ):
     """Visualize GT camera pose and image for a single frame."""
     gt_frame_entity = "world/gt_current_frame"
@@ -139,7 +198,7 @@ def visualize_gt_frame(
             ),
             static=False,
         )
-        rr.log(f"{gt_frame_entity}/camera", rr.Image(preprocess_data['image']), static=False)
+        rr.log(f"{gt_frame_entity}/camera", rr.Image(preprocess_data['image']).compress(jpeg_quality=jpeg_quality), static=False)
 
 
 def visualize_all_cameras(
@@ -215,6 +274,7 @@ def visualize_frame(
     align_pred_to_gt: Optional[np.ndarray] = None,
     hand_mesh: Optional[trimesh.Trimesh] = None,
     vis_hand: bool = True,
+    jpeg_quality: int = 85,
 ):
 
     frame_entity = "world/current_frame"
@@ -238,7 +298,22 @@ def visualize_frame(
                 img[-border_width:, :] = color
                 img[:, :border_width] = color
                 img[:, -border_width:] = color
-        rr.log(f"{frame_entity}/camera", rr.Image(img), static=False)
+
+        # Draw object and hand mask boundaries on the image
+        kernel = np.ones((3, 3), dtype=np.uint8)
+        mask_obj = preprocess_data.get('mask_obj')
+        if mask_obj is not None:
+            mask_u8 = (mask_obj > 0).astype(np.uint8) * 255
+            boundary = cv2.dilate(mask_u8, kernel) - cv2.erode(mask_u8, kernel)
+            img[boundary > 127] = [0, 255, 0]  # Green for object
+
+        mask_hand = preprocess_data.get('mask_hand')
+        if mask_hand is not None:
+            mask_u8 = (mask_hand > 0).astype(np.uint8) * 255
+            boundary = cv2.dilate(mask_u8, kernel) - cv2.erode(mask_u8, kernel)
+            img[boundary > 127] = [255, 0, 255]  # Magenta for hand
+
+        rr.log(f"{frame_entity}/camera", rr.Image(img).compress(jpeg_quality=80), static=False)
 
     # # Log object mask
     # if preprocess_data['mask_obj'] is not None:
@@ -266,13 +341,10 @@ def visualize_frame(
 
     # Log tracks and 3D points from image_info
     if image_info is not None:
-        tracks = image_info['tracks']  # (N, 2)
-        tracks_mask = image_info['tracks_mask']  # (N,)
         points_3d = image_info['points_3d'] * scale  # (N, 3)
-        vis_scores = image_info['vis_scores']  # (N,)
 
-        # Log valid 3D points (finite + track mask)
-        valid_3d_mask = np.isfinite(points_3d).all(axis=-1) # & tracks_mask.astype(bool)
+        # Log valid 3D points (finite)
+        valid_3d_mask = np.isfinite(points_3d).all(axis=-1)
         print(f"Frame {frame_idx}: {valid_3d_mask.sum()} valid 3D points out of {len(points_3d)}")
         if valid_3d_mask.any():
             valid_points_3d = points_3d[valid_3d_mask]
@@ -312,32 +384,85 @@ def visualize_frame(
                 rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
             )
 
-        # # Valid tracks (in mask)
-        # valid_2d = tracks_mask
-        # if valid_2d.any():
-        #     valid_tracks = tracks[valid_2d]
-        #     rr.log(
-        #         f"{frame_entity}/tracks_valid",
-        #         rr.Points2D(
-        #             valid_tracks,
-        #             colors=np.array([[0, 255, 0]]),  # Green for valid
-        #             radii=3.0,
-        #         ),
-        #     )
+        # Log depth points after PnP registration (before any refinement)
+        depth_after_pnp = image_info.get('depth_after_PnP')
+        if depth_after_pnp is not None:
+            pts = np.asarray(depth_after_pnp, dtype=np.float32) * scale
+            if align_pred_to_gt is not None:
+                pts = (align_pred_to_gt[:3, :3] @ pts.T).T + align_pred_to_gt[:3, 3]
+            rr.log(
+                f"{frame_entity}/depth_after_PnP",
+                rr.Points3D(
+                    pts,
+                    colors=np.broadcast_to(np.array([100, 165, 100], dtype=np.uint8), pts.shape),
+                    radii=0.0005,
+                ),
+            )
+        else:
+            rr.log(
+                f"{frame_entity}/depth_after_PnP",
+                rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
+            )
 
-        # # Invalid tracks (not in mask)
-        # invalid_2d = ~tracks_mask
-        # if invalid_2d.any():
-        #     invalid_tracks = tracks[invalid_2d]
-        #     rr.log(
-        #         f"{frame_entity}/tracks_invalid",
-        #         rr.Points2D(
-        #             invalid_tracks,
-        #             colors=np.array([[255, 0, 0]]),  # Red for invalid
-        #             radii=2.0,
-        #         ),
-        #     )
+        # Log depth points after align_frame_with_mesh_depth (magenta)
+        depth_after_align = image_info.get('depth_after_align_mesh')
+        if depth_after_align is not None:
+            pts = np.asarray(depth_after_align, dtype=np.float32) * scale
+            if align_pred_to_gt is not None:
+                pts = (align_pred_to_gt[:3, :3] @ pts.T).T + align_pred_to_gt[:3, 3]
+            rr.log(
+                f"{frame_entity}/depth_after_align_mesh",
+                rr.Points3D(
+                    pts,
+                    colors=np.broadcast_to(np.array([255, 0, 255], dtype=np.uint8), pts.shape),
+                    radii=0.0005,
+                ),
+            )
+        else:
+            rr.log(
+                f"{frame_entity}/depth_after_align_mesh",
+                rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
+            )
 
+        # Log depth points after joint keyframe optimization (yellow)
+        depth_after_kf_opt = image_info.get('depth_after_keyframes_opt')
+        if depth_after_kf_opt is not None:
+            pts = np.asarray(depth_after_kf_opt, dtype=np.float32) * scale
+            if align_pred_to_gt is not None:
+                pts = (align_pred_to_gt[:3, :3] @ pts.T).T + align_pred_to_gt[:3, 3]
+            rr.log(
+                f"{frame_entity}/depth_after_keyframes_opt",
+                rr.Points3D(
+                    pts,
+                    colors=np.broadcast_to(np.array([255, 255, 0], dtype=np.uint8), pts.shape),
+                    radii=0.0005,
+                ),
+            )
+        else:
+            rr.log(
+                f"{frame_entity}/depth_after_keyframes_opt",
+                rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
+            )
+
+        # Log depth points after reset when PnP fails (red)
+        depth_after_reset = image_info.get('depth_after_reset_when_pnp_fail')
+        if depth_after_reset is not None:
+            pts = np.asarray(depth_after_reset, dtype=np.float32) * scale
+            if align_pred_to_gt is not None:
+                pts = (align_pred_to_gt[:3, :3] @ pts.T).T + align_pred_to_gt[:3, 3]
+            rr.log(
+                f"{frame_entity}/depth_after_reset_when_pnp_fail",
+                rr.Points3D(
+                    pts,
+                    colors=np.broadcast_to(np.array([255, 80, 80], dtype=np.uint8), pts.shape),
+                    radii=0.0005,
+                ),
+            )
+        else:
+            rr.log(
+                f"{frame_entity}/depth_after_reset_when_pnp_fail",
+                rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
+            )
 
     # Log hand mesh in object space
     if vis_hand and hand_mesh is not None and c2o is not None:
@@ -361,6 +486,64 @@ def visualize_frame(
             f"{frame_entity}/hand_mesh",
             rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0),
         )
+
+    # Log masked depth as 3D point clouds in object space
+
+    depth = preprocess_data.get('depth')
+    K = preprocess_data.get('intrinsics')
+    if depth is not None and K is not None and c2o is not None:
+        mask_obj = preprocess_data.get('mask_obj')
+        mask_hand = preprocess_data.get('mask_hand')
+
+        def _backproject_masked_depth(depth_map, mask, K, c2o, scale, max_pts=5000):
+            """Back-project masked depth pixels to 3D object-space points."""
+            valid = (depth_map > 0) & (mask > 0)
+            ys, xs = np.where(valid)
+            if len(ys) == 0:
+                return None
+            if len(ys) > max_pts:
+                sel = np.random.choice(len(ys), max_pts, replace=False)
+                ys, xs = ys[sel], xs[sel]
+            zs = depth_map[ys, xs].astype(np.float32)
+            xc = (xs.astype(np.float32) - K[0, 2]) * zs / K[0, 0]
+            yc = (ys.astype(np.float32) - K[1, 2]) * zs / K[1, 1]
+            pts_cam = np.stack([xc, yc, zs], axis=-1)
+            pts_obj = (c2o[:3, :3] @ pts_cam.T).T * scale + c2o[:3, 3]
+            return pts_obj
+
+        # Object depth points (orange)
+        if mask_obj is not None:
+            pts_obj_depth = _backproject_masked_depth(depth, mask_obj, K, c2o, scale)
+            if pts_obj_depth is not None:
+                rr.log(
+                    f"{frame_entity}/depth_obj",
+                    rr.Points3D(
+                        pts_obj_depth,
+                        colors=np.broadcast_to(np.array([255, 165, 0], dtype=np.uint8), pts_obj_depth.shape),
+                        radii=0.0005,
+                    ),
+                    static=False,
+                )
+            else:
+                rr.log(f"{frame_entity}/depth_obj",
+                       rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0))
+
+        # Hand depth points (cyan)
+        if mask_hand is not None:
+            pts_hand_depth = _backproject_masked_depth(depth, mask_hand, K, c2o, scale)
+            if pts_hand_depth is not None:
+                rr.log(
+                    f"{frame_entity}/depth_hand",
+                    rr.Points3D(
+                        pts_hand_depth,
+                        colors=np.broadcast_to(np.array([0, 200, 255], dtype=np.uint8), pts_hand_depth.shape),
+                        radii=0.0005,
+                    ),
+                    static=False,
+                )
+            else:
+                rr.log(f"{frame_entity}/depth_hand",
+                       rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0))
 
     # Log camera pose and intrinsics
     if preprocess_data.get('intrinsics') is not None and preprocess_data.get('image') is not None and c2o is not None:
@@ -403,6 +586,9 @@ def main(args):
     tracks_dir = data_dir / "pipeline_corres"
     results_dir = out_dir / "pipeline_joint_opt"
 
+    # Parse per-frame log blocks from log.txt
+    frame_logs = parse_frame_logs(results_dir / "log.txt")
+
     # Initialize Rerun
     import rerun.blueprint as rrb
     blueprint = rrb.Blueprint(
@@ -411,6 +597,7 @@ def main(args):
             rrb.Vertical(
                 rrb.Spatial2DView(name="Camera", origin="world/current_frame/camera"),
                 rrb.Spatial2DView(name="Reproj Error", origin="reproj_error"),
+                rrb.TextLogView(name="Frame Log", origin="frame_log"),
             ),
             column_shares=[2, 1],
         ),
@@ -449,20 +636,65 @@ def main(args):
         gt_mesh_path = data_gt["mesh_name.object"]
         log_mesh("world/gt_mesh", gt_mesh_path, static=True)
 
+        # Extract GT hand mesh data (camera-space vertices per frame + faces)
+        gt_hand_verts_cam = data_gt["v3d_c.right"] if "v3d_c.right" in data_gt else None
+        gt_hand_faces = data_gt["faces.right"] if "faces.right" in data_gt else None
+        if isinstance(gt_hand_verts_cam, np.ndarray) is False and gt_hand_verts_cam is not None:
+            gt_hand_verts_cam = gt_hand_verts_cam.numpy()
+        if isinstance(gt_hand_faces, np.ndarray) is False and gt_hand_faces is not None:
+            gt_hand_faces = gt_hand_faces.numpy()
+        # Seal the MANO mesh (close wrist opening)
+        if gt_hand_verts_cam is not None and gt_hand_faces is not None:
+            from common.body_models import seal_mano_mesh_np
+            gt_hand_verts_cam, gt_hand_faces = seal_mano_mesh_np(gt_hand_verts_cam, gt_hand_faces.astype(np.int64), is_rhand=True)
+            gt_hand_faces = gt_hand_faces.astype(np.int32)
+            print(f"Loaded GT hand mesh (sealed): {gt_hand_verts_cam.shape[1]} vertices, {len(gt_hand_faces)} faces")
+
 
     # Compute alignment transform from pred object space to GT object space
     # using the condition frame as the reference
 
     align_pred_to_gt = None
-
     if data_gt is not None and len(gt_o2c) > 0:
         image_info = load_image_info(results_dir / f"{frame_indices[-1]:04d}")
-        pred_frame_indices = image_info["frame_indices"]
-        cond_local = pred_frame_indices.index(cond_idx)
-        gt_cond_idx = frame_indices.index(cond_idx)        
-        first_c2o = np.array(image_info["c2o"])
-        first_c2o[:, :3, 3] *= scale
-        align_pred_to_gt = np.linalg.inv(gt_o2c[gt_cond_idx]) @ np.linalg.inv(first_c2o[cond_local])
+        if image_info is None:
+            print("Warning: failed to load image_info for alignment; skip pred-to-GT alignment.")
+        else:
+            pred_frame_indices = image_info.get("frame_indices", [])
+            if len(pred_frame_indices) == 0:
+                print("Warning: image_info has empty frame_indices; skip pred-to-GT alignment.")
+            else:
+                # Try condition frame first; if its GT is invalid, walk register order to find a valid GT frame.
+                try:
+                    start_idx = frame_indices.index(cond_idx)
+                except ValueError:
+                    start_idx = 0
+                    print(f"Warning: cond_idx {cond_idx} not found in register_order, fallback search from start.")
+
+                search_order = list(range(start_idx, len(frame_indices))) + list(range(0, start_idx))
+                gt_cond_idx = None
+                ref_frame_idx = None
+                for idx in search_order:
+                    if idx >= len(gt_o2c) or idx >= len(gt_is_valid):
+                        continue
+                    if not bool(gt_is_valid[idx]):
+                        continue
+                    fid = frame_indices[idx]
+                    if fid not in pred_frame_indices:
+                        continue
+                    gt_cond_idx = idx
+                    ref_frame_idx = fid
+                    break
+
+                if gt_cond_idx is None:
+                    print("Warning: no valid GT frame found in register_order for alignment; skip pred-to-GT alignment.")
+                else:
+                    if ref_frame_idx != cond_idx:
+                        print(f"Info: cond_idx {cond_idx} GT invalid/unavailable, fallback to frame {ref_frame_idx} for alignment.")
+                    cond_local = pred_frame_indices.index(ref_frame_idx)
+                    first_c2o = np.array(image_info["c2o"])
+                    first_c2o[:, :3, 3] *= scale
+                    align_pred_to_gt = np.linalg.inv(gt_o2c[gt_cond_idx]) @ np.linalg.inv(first_c2o[cond_local])
 
     if SAM3D_mesh is not None:
         vertices = np.array(SAM3D_mesh.vertices, dtype=np.float32) * scale
@@ -479,20 +711,20 @@ def main(args):
         else:
             vertex_colors = np.ones((len(vertices), 3)) * 0.7  # Gray
 
-        # rr.log(
-        #     "world/sam3d/mesh",
-        #     rr.Mesh3D(
-        #         vertex_positions=vertices,
-        #         triangle_indices=faces,
-        #         vertex_colors=vertex_colors,
-        #     ),
-        #     static=True,
-        # )
         rr.log(
-            "world/sam3d/points",
-            rr.Points3D(vertices, colors=np.broadcast_to(np.array([255, 255, 0], dtype=np.uint8), vertices.shape), radii=0.0003),
+            "world/sam3d/mesh",
+            rr.Mesh3D(
+                vertex_positions=vertices,
+                triangle_indices=faces,
+                vertex_colors=vertex_colors,
+            ),
             static=True,
         )
+        # rr.log(
+        #     "world/sam3d/points",
+        #     rr.Points3D(vertices, colors=np.broadcast_to(np.array([255, 255, 0], dtype=np.uint8), vertices.shape), radii=0.0003),
+        #     static=True,
+        # )
 
     # Load HY omni mesh (in SAM3D space) from pipeline_HY_to_SAM3D
     hy_omni_path = out_dir / "pipeline_HY_to_SAM3D" / "HY_omni_in_sam3d.obj"
@@ -545,10 +777,8 @@ def main(args):
             continue
         image_info = get_frame_image_info(image_info_all, frame_idx)
 
-        # Compute per-track visibility count across keyframes
-        kf_flags = np.array(image_info_all.get("keyframe", [False] * len(image_info_all["frame_indices"])))
-        kf_track_mask = np.array(image_info_all["tracks_mask"])[kf_flags].astype(bool)
-        track_vis_count = kf_track_mask.sum(axis=0) if len(kf_track_mask) > 0 else np.zeros(len(image_info_all["points_3d"]))
+        # Use pre-computed track visibility count
+        track_vis_count = image_info.get("track_vis_count")
         if args.vis_type == "registered_valid" and image_info.get("is_invalid", False):
             print(f"Skipping invalid frame {frame_idx} in registered_valid mode")
             continue
@@ -573,22 +803,44 @@ def main(args):
             align_pred_to_gt=align_pred_to_gt,
             hand_mesh=hand_mesh,
             vis_hand=args.vis_hand,
+            jpeg_quality=args.jpeg_quality,
         )
 
         # Visualize all camera poses
         if args.vis_all_cameras:
             visualize_all_cameras(image_info_all, frame_idx, scale=scale)
 
-        # Visualize GT camera pose
+        # Visualize GT camera pose and hand mesh
         if data_gt is not None and i < len(gt_o2c) and bool(gt_is_valid[i]):
-            visualize_gt_frame(frame_idx, gt_o2c[i], preprocess_data)
+            visualize_gt_frame(frame_idx, gt_o2c[i], preprocess_data, jpeg_quality=args.jpeg_quality)
+
+            # Log GT hand mesh in object space
+            if gt_hand_verts_cam is not None and gt_hand_faces is not None and i < len(gt_hand_verts_cam):
+                gt_c2o_i = np.linalg.inv(gt_o2c[i]).astype(np.float32)
+                hv_cam = gt_hand_verts_cam[i].astype(np.float32)
+                hv_obj = (gt_c2o_i[:3, :3] @ hv_cam.T).T + gt_c2o_i[:3, 3]
+                vertex_normals = compute_vertex_normals(hv_obj, gt_hand_faces)
+                rr.log(
+                    "world/gt_hand",
+                    rr.Mesh3D(
+                        vertex_positions=hv_obj,
+                        triangle_indices=gt_hand_faces,
+                        vertex_normals=vertex_normals,
+                        mesh_material=rr.Material(albedo_factor=[200, 180, 160]),
+                    ),
+                    static=False,
+                )
 
         # Log reprojection error image if available
         reproj_img_path = results_dir / f"{frame_idx:04d}" / "reproj_error.png"
         if reproj_img_path.exists():
             from PIL import Image
             reproj_img = np.array(Image.open(reproj_img_path).convert("RGB"))
-            rr.log("reproj_error", rr.Image(reproj_img), static=False)
+            rr.log("reproj_error", rr.Image(reproj_img).compress(jpeg_quality=args.jpeg_quality), static=False)
+
+        # Log per-frame registration log
+        if frame_idx in frame_logs:
+            rr.log("frame_log", rr.TextLog(frame_logs[frame_idx]), static=False)
 
 
 
@@ -604,7 +856,7 @@ if __name__ == "__main__":
                         help="Maximum number of frames to visualize (-1 for all)")
     parser.add_argument("--vis_type", type=str, default="all", choices=["all", "registered_valid", "keyframes"],
                         help="Type of frames to visualize")
-    parser.add_argument("--vis_gt", action="store_true", default=True,
+    parser.add_argument("--vis_gt", type=int, default=1,
                         help="Visualize ground truth mesh and camera poses")
     parser.add_argument("--min_track_number", type=int, default=4,
                         help="Minimum track visibility count for green coloring")
@@ -612,6 +864,8 @@ if __name__ == "__main__":
                         help="Visualize all camera poses from image_info, not just the current frame")
     parser.add_argument("--vis_hand", action="store_true", default=True,
                         help="Visualize hand mesh in object space")
+    parser.add_argument("--jpeg_quality", type=int, default=30,
+                        help="JPEG compression quality for camera images (0-100)")
 
     args = parser.parse_args()
     main(args)

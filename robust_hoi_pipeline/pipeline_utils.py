@@ -10,6 +10,22 @@ import json
 from utils_simba.depth import get_depth, get_normal
 
 
+def _load_pickle_compat(path: Path):
+    with open(path, "rb") as f:
+        try:
+            return pickle.load(f)
+        except ModuleNotFoundError as e:
+            if "numpy._core" not in str(e):
+                raise
+            f.seek(0)
+            class _NumpyCompatUnpickler(pickle.Unpickler):
+                def find_class(self, module, name):
+                    if module.startswith("numpy._core"):
+                        module = module.replace("numpy._core", "numpy.core", 1)
+                    return super().find_class(module, name)
+            return _NumpyCompatUnpickler(f).load()
+
+
 def load_frame_list(data_preprocess_dir: Path) -> List[int]:
     """Load frame list from preprocessed data directory."""
     frame_list_path = data_preprocess_dir / "frame_list.txt"
@@ -46,8 +62,7 @@ def load_preprocessed_frame(data_preprocess_dir: Path, frame_idx: int) -> Dict:
 
     meta_path = data_preprocess_dir / "meta" / f"{frame_idx:04d}.pkl"
     if meta_path.exists():
-        with open(meta_path, "rb") as f:
-            meta = pickle.load(f)
+        meta = _load_pickle_compat(meta_path)
         data["intrinsics"] = meta.get("intrinsics")
         data["hand_pose"] = meta.get("hand_pose")
     else:
@@ -79,8 +94,7 @@ def _normalize_intrinsics_array(raw_value) -> np.ndarray:
 
 def load_intrinsics_from_meta(meta_file: str) -> np.ndarray:
     """Load camera intrinsics from a meta pickle file."""
-    with open(meta_file, "rb") as f:
-        meta_data = pickle.load(f)
+    meta_data = _load_pickle_compat(Path(meta_file))
 
     if isinstance(meta_data, dict):
         for key in ("camMat", "intrinsics", "K", "camera_matrix"):
@@ -163,23 +177,30 @@ def load_sam3d_transform(sam3d_dir: Path, cond_idx: int) -> Dict:
         - cam2obj: (4, 4) camera-to-object transformation
     """
     transform_path = sam3d_dir / f"{cond_idx:04d}" / "aligned_transform.json"
-    if not transform_path.exists():
-        raise FileNotFoundError(f"SAM3D transform not found: {transform_path}")
+    # transform_path = sam3d_dir / "../SAM3D" / f"{cond_idx:04d}" / "camera.json"
+    if transform_path == sam3d_dir / f"{cond_idx:04d}" / "aligned_transform.json":
+        if not transform_path.exists():
+            raise FileNotFoundError(f"SAM3D transform not found: {transform_path}")        
+        with open(transform_path, "r") as f:
+            transform_data = json.load(f)
 
-    with open(transform_path, "r") as f:
-        transform_data = json.load(f)
-
-    rotation = np.array(transform_data["rotation"], dtype=np.float32)  # (3, 3)
-    translation = np.array(transform_data["translation"], dtype=np.float32)  # (3,)
-    scale = float(transform_data["scale"])
-    sam3d_to_cond_cam = np.array(transform_data["matrix"], dtype=np.float32)  # (4, 4)
-    cond_cam_to_sam3d = np.linalg.inv(sam3d_to_cond_cam)
+        sam3d_to_cam_scale = float(transform_data["scale"])
+        sam3d_to_cond_cam = np.array(transform_data["matrix"], dtype=np.float32)  # (4, 4)
+        cond_cam_to_sam3d = np.linalg.inv(sam3d_to_cond_cam)
+    elif transform_path == sam3d_dir / "../SAM3D" / f"{cond_idx:04d}" / "camera.json":
+        if not transform_path.exists():
+            raise FileNotFoundError(f"SAM3D transform not found: {transform_path}")
+        with open(transform_path, "r") as f:
+            transform_data = json.load(f)
+            sam3d_to_cond_cam = np.array(transform_data["blw2cvc"], dtype=np.float32)  # (4, 4)
+            cond_cam_to_sam3d = np.linalg.inv(sam3d_to_cond_cam)
+            # get the scale from the rotation part of the camera_to_world matrix
+            sam3d_to_cam_scale = np.linalg.norm(sam3d_to_cond_cam[:3, 0])
+        
 
 
     return {
-        'scale': scale,
-        'rotation': rotation,
-        'translation': translation,
+        'scale': sam3d_to_cam_scale,
         'sam3d_to_cond_cam': sam3d_to_cond_cam,
         "cond_cam_to_sam3d": cond_cam_to_sam3d,
     }

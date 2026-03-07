@@ -13,3 +13,18 @@
 [submodule "third_party/mast3r"]
 	path = third_party/mast3r
 	url = https://github.com/naver/mast3r
+[submodule "third_party/FoundationPose"]
+	path = third_party/FoundationPose
+	url = git@github.com:byran-wang/FoundationPose.git
+[submodule "third_party/zed-sdk"]
+	path = third_party/zed-sdk
+	url = git@github.com:byran-wang/zed-sdk.git
+[submodule "third_party/FoundationStereo"]
+	path = third_party/FoundationStereo
+	url = git@github.com:byran-wang/FoundationStereo.git
+[submodule "third_party/sam3"]
+	path = third_party/sam3
+	url = git@github.com:byran-wang/sam3.git
+[submodule "third_party/hamer"]
+	path = third_party/hamer
+	url = git@github.com:byran-wang/hamer.git

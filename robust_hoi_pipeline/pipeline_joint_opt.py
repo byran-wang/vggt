@@ -10,6 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import nvdiffrast.torch as dr
+from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation as ScipyRotation
 
 
@@ -23,8 +24,93 @@ from utils_simba.render import diff_renderer, projection_matrix_from_intrinsics
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_sam3d_transform
 from robust_hoi_pipeline.geometry_utils import compute_reproj_errors
 import os
-RUN_ON_PC = os.getenv("RUN_ON_PC", "").lower() == "true"
+RUN_ON_SERVER = os.getenv("RUN_ON_SERVER", "").lower() == "true"
 device = "cuda"
+
+# ---------------------------------------------------------------------------
+# FoundationPose lazy-initialization cache
+# ---------------------------------------------------------------------------
+_foundation_pose_cache: Dict = {}
+
+
+def _get_foundation_pose(mesh, debug_dir=None):
+    """Return a cached FoundationPose estimator, creating it on first call.
+
+    The scorer and refiner networks are expensive to load, so we keep a single
+    instance alive across frames.  When the mesh object identity changes the
+    estimator is rebuilt.
+    """
+    import trimesh
+
+    mesh_id = id(mesh)
+    cached = _foundation_pose_cache.get("instance")
+    if cached is not None and _foundation_pose_cache.get("mesh_id") == mesh_id:
+        return cached
+
+    # Add FoundationPose to sys.path so its internal imports resolve.
+    fp_root = str(project_root / "third_party" / "FoundationPose")
+    if fp_root not in sys.path:
+        sys.path.insert(0, fp_root)
+
+    from estimater import FoundationPose
+    from learning.training.predict_score import ScorePredictor
+    from learning.training.predict_pose_refine import PoseRefinePredictor
+
+    scorer = ScorePredictor()
+    refiner = PoseRefinePredictor()
+    glctx = dr.RasterizeCudaContext()
+    dbg = debug_dir or "/tmp/foundation_pose_debug"
+
+    est = FoundationPose(
+        model_pts=mesh.vertices,
+        model_normals=mesh.vertex_normals,
+        mesh=mesh,
+        scorer=scorer,
+        refiner=refiner,
+        glctx=glctx,
+        debug=0,
+        debug_dir=dbg,
+    )
+    _foundation_pose_cache["instance"] = est
+    _foundation_pose_cache["mesh_id"] = mesh_id
+    print(f"[FoundationPose] Initialized estimator (mesh {len(mesh.vertices)} verts)")
+    return est
+
+
+def _run_foundation_pose_track(obj_mesh, rgb, depth, ob_mask, K, current_o2c, debug_dir=None):
+    """Run FoundationPose tracking from *current_o2c* and return a refined 4x4 o2c pose.
+
+    Unlike full registration (240 hypotheses + scoring), tracking starts from
+    the given pose and runs a few refinement iterations, which is faster and
+    more stable when we already have a reasonable initial estimate.
+
+    Returns None if tracking fails or inputs are invalid.
+    """
+    if rgb is None or depth is None or K is None:
+        print("[FoundationPose] Missing inputs, skipping tracking")
+        return None
+
+
+    est = _get_foundation_pose(obj_mesh, debug_dir=debug_dir)
+
+    # Convert current_o2c (original-mesh space) to centered-mesh space.
+    # FoundationPose stores pose_last in centered space:
+    #   pose_returned = pose_centered @ tf_to_center
+    # so pose_centered = pose_returned @ inv(tf_to_center)
+    # inv(tf_to_center) just translates by +model_center.
+    tf_to_center = est.get_tf_to_centered_mesh()          # (4,4) CUDA tensor
+    tf_from_center = torch.eye(4, device='cuda', dtype=torch.float)
+    tf_from_center[:3, 3] = -tf_to_center[:3, 3]          # +model_center
+
+    o2c_t = torch.as_tensor(current_o2c, device='cuda', dtype=torch.float)
+    est.pose_last = (o2c_t @ tf_from_center).reshape(1, 4, 4)
+
+    pose = est.track_one(rgb=rgb, depth=depth, K=K, iteration=5)
+    if pose is None or not np.isfinite(pose).all():
+        raise RuntimeError("[FoundationPose] Tracking returned invalid pose")
+    print(f"[FoundationPose] Tracking succeeded, pose translation: {pose[:3, 3]}")
+    return pose.astype(np.float64)
+
 
 class TeeStream:
     """Duplicate writes to multiple streams."""
@@ -232,7 +318,7 @@ def prepare_joint_opt_inputs(
 
     # Align hand c2o poses with cond_cam_to_obj at condition frame (right-multiplication)
     hand_c2o = preprocessed.get('hand_c2o')
-    hand_o2c = [np.linalg.inv(np.array(m, dtype=np.float64)) if m is not None else None for m in hand_c2o]
+    hand_o2c = np.linalg.inv(np.array(hand_c2o, dtype=np.float64))
     cond_obj_to_cam = np.linalg.inv(cond_cam_to_obj.astype(np.float64))
     if hand_o2c is not None and cond_local_idx < len(hand_o2c) and hand_o2c[cond_local_idx] is not None:
         align_tf = np.linalg.inv(hand_o2c[cond_local_idx].astype(np.float64)) @ cond_obj_to_cam.astype(np.float64)
@@ -240,7 +326,7 @@ def prepare_joint_opt_inputs(
             if hand_o2c[i] is not None:
                 hand_o2c[i] = (hand_o2c[i].astype(np.float64) @ align_tf).astype(np.float32)
         print(f"Aligned hand o2c poses with cond_cam_to_obj at condition frame {cond_idx}")
-    preprocessed['hand_c2o'] = [np.linalg.inv(m) if m is not None else None for m in hand_o2c]
+    preprocessed['hand_c2o'] = np.linalg.inv(hand_o2c)
 
     return (
         frame_indices,
@@ -424,19 +510,70 @@ def save_reproj_errors(image_info: Dict, register_idx: int, image: np.ndarray, r
     print(f"Saved reproj error image to {img_path}")
 
 
+_STATIC_KEYS = {
+    "frame_indices", "cond_idx", "intrinsics",
+}
+_DYNAMIC_KEYS = {
+    "points_3d", "keyframe", "register", "invalid", "c2o",
+    "depth_points_obj", "depth_after_PnP", "depth_after_reset_when_pnp_fail",
+    "depth_after_align_mesh", "depth_after_keyframes_opt",
+    "track_vis_count",
+}
+
+
+def _save_compressed(path: Path, data: dict) -> None:
+    """Save dict as gzip-compressed pickle."""
+    import gzip
+    with gzip.open(path, "wb") as f:
+        pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def _load_compressed(path: Path) -> dict:
+    """Load dict from gzip-compressed pickle."""
+    import gzip
+    with gzip.open(path, "rb") as f:
+        return pickle.load(f)
+
+
 def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir: Path, only_save_register_order=False
 ) -> None:
-    """Save image info for joint optimization outputs."""
-    results_dir = results_dir / f"{register_idx:04d}"
+    """Save image info for joint optimization outputs.
+
+    Static data (tracks, vis_scores, tracks_mask, etc.) is saved once in
+    ``results_dir/shared_info.npy``.  Per-frame dynamic data (c2o, register,
+    keyframe, depth snapshots, etc.) is saved in
+    ``results_dir/{register_idx:04d}/image_info.npy``.
+    """
+    frame_dir = results_dir / f"{register_idx:04d}"
     from robust_hoi_pipeline.frame_management import save_register_order
-    save_register_order(results_dir / "../" , register_idx)
+    save_register_order(results_dir, register_idx)
     if only_save_register_order:
         return
-    
-    results_dir.mkdir(parents=True, exist_ok=True)
-    info_path = results_dir / "image_info.npy"
-    np.save(info_path, image_info)
-    print(f"Saved image info to {results_dir}")
+
+    # Save static data once
+    shared_path = results_dir / "shared_info.pkl.gz"
+    if not shared_path.exists():
+        static_info = {k: v for k, v in image_info.items() if k in _STATIC_KEYS}
+        _save_compressed(shared_path, static_info)
+        print(f"Saved shared static info to {shared_path}")
+
+    # Save only dynamic (per-registration) data
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    info_path = frame_dir / "image_info.pkl.gz"
+    dynamic_info = {k: v for k, v in image_info.items() if k in _DYNAMIC_KEYS}
+
+    # Pre-compute track_vis_count: per-track visibility across keyframes
+    tracks_mask = image_info.get("tracks_mask")
+    kf_flags = np.array(image_info.get("keyframe", [False] * len(image_info.get("frame_indices", []))))
+    if tracks_mask is not None and kf_flags.any():
+        kf_track_mask = np.array(tracks_mask)[kf_flags].astype(bool)
+        dynamic_info["track_vis_count"] = kf_track_mask.sum(axis=0)
+    else:
+        n_pts = len(image_info.get("points_3d", []))
+        dynamic_info["track_vis_count"] = np.zeros(n_pts, dtype=np.int32)
+
+    _save_compressed(info_path, dynamic_info)
+    print(f"Saved image info to {frame_dir}")
 
 
 
@@ -451,15 +588,15 @@ def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir:
 
     # Save reprojection errors for the registered frame
     if image is not None:
-        save_reproj_errors(image_info, register_idx, image, results_dir)
+        save_reproj_errors(image_info, register_idx, image, frame_dir)
     
 
 
 def _build_default_joint_opt_args(output_dir: Path, cond_index: int) -> SimpleNamespace:
     """Create a minimal args namespace for frame management helpers."""
-    only_save_register_order = True
-    if RUN_ON_PC:
-        only_save_register_order = False
+    only_save_register_order = False
+    if RUN_ON_SERVER:
+        only_save_register_order = True
     return SimpleNamespace(
         output_dir=str(output_dir),
         cond_index=cond_index,
@@ -831,6 +968,39 @@ def _smooth_normal_map_masked(normal_map, valid_mask, num_iters=2, kernel_size=3
     return normal_chw[0].permute(1, 2, 0)
 
 
+def _save_depth_points_obj(image_info_work, frame_idx, tag="after_PnP",max_pts=5000):
+    """Back-project masked depth pixels to object space and store in image_info_work."""
+    depth_priors = image_info_work.get("depth_priors")
+    if depth_priors is None or depth_priors[frame_idx] is None:
+        return
+    depth_map = depth_priors[frame_idx]
+
+    intrinsics = image_info_work.get("intrinsics")
+    K = intrinsics[frame_idx] if intrinsics.ndim == 3 else intrinsics
+
+    extrinsic = image_info_work["extrinsics"][frame_idx]
+
+    # Valid depth pixels within object mask
+    vmask = depth_map > 0
+    masks = image_info_work.get("image_masks")
+    if masks is not None and masks[frame_idx] is not None:
+        vmask = vmask & (masks[frame_idx] > 0)
+    ys, xs = np.where(vmask)
+    if len(ys) == 0:
+        return
+
+    if len(ys) > max_pts:
+        idx = np.random.choice(len(ys), max_pts, replace=False)
+        ys, xs = ys[idx], xs[idx]
+
+    pts_cam = _depth_pixels_to_cam_points(depth_map, K, ys, xs)
+    pts_obj = _cam_points_to_object_points(pts_cam, extrinsic.astype(np.float64))
+
+    depth_after_pnp = image_info_work.get(f"depth_{tag}")
+    if depth_after_pnp is not None:
+        depth_after_pnp[frame_idx] = pts_obj.astype(np.float32)
+
+
 def _depth_pixels_to_cam_points(depth_map, K, ys, xs):
     """Back-project selected depth pixels to camera-space points (N, 3)."""
     zs = depth_map[ys, xs].astype(np.float64)
@@ -1147,6 +1317,58 @@ def _compute_reproj_loss(R, trans, trk_pts3d, trk_pts2d, K, sigma=4.0):
     return gmof(err, sigma=sigma).mean()
 
 
+_FINGER_CONTACT_IDX = None
+
+def _get_finger_contact_idx():
+    """Load and cache finger contact vertex indices from contact_zones.pkl."""
+    global _FINGER_CONTACT_IDX
+    if _FINGER_CONTACT_IDX is None:
+        import pickle as pkl
+        pkl_path = Path(__file__).parent.parent / "body_models" / "contact_zones.pkl"
+        with open(pkl_path, "rb") as f:
+            contact_zones = pkl.load(f)["contact_zones"]
+        contact_idx = np.array([item for sublist in contact_zones.values() for item in sublist])
+        _FINGER_CONTACT_IDX = contact_idx[19:]  # all finger tips (exclude palm)
+    return _FINGER_CONTACT_IDX
+
+
+def _compute_contact_loss(hand_verts, obj_verts, device, contact_thresh=100000, debug_dir=None, frame_idx=None, it=None):
+    """Hand-object contact loss: attract nearby finger tip verts to object surface.
+
+    Only uses finger tip vertices (from contact_zones.pkl) for the loss.
+    Uses torch.cdist to find the min distance from each selected hand vertex
+    to the object mesh, then applies smooth_l1_loss on vertices within contact_thresh.
+    """
+    if hand_verts is None:
+        return torch.tensor(0.0, device=device)
+    # Select only finger tip vertices
+    finger_idx = _get_finger_contact_idx()
+    if hand_verts.shape[1] <= finger_idx.max():
+        return torch.tensor(0.0, device=device)
+    finger_verts = hand_verts[0, finger_idx]  # (Nf, 3)
+
+    # Debug: save finger verts as ply
+    if debug_dir is not None and it is not None:
+        from pathlib import Path
+        contact_dir = Path(debug_dir) / "contact_loss"
+        contact_dir.mkdir(parents=True, exist_ok=True)
+        import trimesh
+        pc = trimesh.PointCloud(finger_verts.detach().cpu().numpy())
+        pc.export(str(contact_dir / f"finger_verts_{it}.ply"))
+
+    # finger_verts: (Nf, 3), obj_verts: (1, Nv, 3)
+    dists = torch.cdist(finger_verts.unsqueeze(0), obj_verts)[0]  # (Nf, Nv)
+    min_dists, _ = dists.min(dim=1)  # (Nf,)
+    contact_mask = 0.003 < min_dists
+    if not contact_mask.any():
+        return torch.tensor(0.0, device=device)
+    return F.smooth_l1_loss(
+        min_dists[contact_mask],
+        torch.zeros_like(min_dists[contact_mask]),
+        reduction="mean",
+    )
+
+
 def _prepare_track_reproj_data(image_info_work, frame_idx, K, device):
     """Extract valid 3D track points and their 2D observations for reprojection loss.
 
@@ -1200,7 +1422,7 @@ def _save_depth_debug_stages(debug_dir, frame_idx, d, K, extrinsics, ys, xs, dbg
         _save_colored_points_debug(debug_dir, frame_idx, masked_pts_obj, dbg_image, ys, xs, "depth_after_masked_in_obj")
 
 
-def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2000, num_iters=100, inlier_thresh=0.3, debug_dir=None):
+def _rectify_pose(image_info_work, frame_idx, obj_mesh, max_pts=2000, num_iters=100, inlier_thresh=0.3, debug_dir=None):
     """Align a frame by optimizing pose with rendered-vs-observed depth/normal losses."""
 
 
@@ -1231,18 +1453,17 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
         bbox_pts_obj = _cam_points_to_object_points(bbox_pts_cam, ext0)
         _save_colored_points_debug(debug_dir, frame_idx, bbox_pts_obj, _dbg_image, ys, xs, "depth_after_bbox_in_obj")
 
-    if len(ys) < max_pts:
-        print(
-            f"[align_depth] Frame {frame_idx}: only {len(ys)} points in object bbox, "
-            f"need at least {max_pts}, skipping"
-        )
-        return False
+    has_enough_depth = len(ys) >= max_pts
+    if len(ys) == 0:
+        print(f"[align_depth] Frame {frame_idx}: no depth points in object bbox")
+    elif not has_enough_depth:
+        print(f"[align_depth] Frame {frame_idx}: only {len(ys)} depth points (< {max_pts}), disabling depth loss")
 
     if len(ys) > max_pts:
         sel = np.random.choice(len(ys), max_pts, replace=False)
         ys, xs = ys[sel], xs[sel]
 
-    pts_cam_sel = _depth_pixels_to_cam_points(d, K, ys, xs)
+    pts_cam_sel = _depth_pixels_to_cam_points(d, K, ys, xs) if len(ys) > 0 else None
 
     if not torch.cuda.is_available():
         print(f"[align_depth] Frame {frame_idx}: CUDA unavailable, skipping depth optimization")
@@ -1274,20 +1495,29 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
     obs_depth = torch.tensor(d.astype(np.float32), dtype=torch.float32, device=device)
     obs_mask = _build_observation_mask(H, W, ys, xs, device)
 
+
+    # Check initial contact loss; if hand is too far from object, reset pose to nearby frame
+    contact_status = _check_contact_and_reset(hand_verts_in_cam, obj_verts, image_info_work, frame_idx, device)
+    if contact_status == "skip":
+        return True  # skip optimization but consider frame aligned to avoid blocking future frames
+
+    # Initialize optimization vars from current frame pose in image_info_work.
+    ext0 = image_info_work["extrinsics"][frame_idx].astype(np.float64)
     init_rot = ScipyRotation.from_matrix(ext0[:3, :3]).as_rotvec().astype(np.float32)
     rotvec = torch.tensor(init_rot, dtype=torch.float32, device=device, requires_grad=True)
     trans = torch.tensor(ext0[:3, 3].astype(np.float32), dtype=torch.float32, device=device, requires_grad=True)
-
-    optimizer = torch.optim.Adam([rotvec, trans], lr=2e-3)
+    optimizer = torch.optim.Adam([rotvec, trans], lr=10e-3)
     best = {"loss": float("inf"), "R": ext0[:3, :3].copy(), "t": ext0[:3, 3].copy(), "valid": 0}
 
-    for it in range(num_iters):
-        optimizer.zero_grad()
-        R = rodrigues(rotvec)
-        o2c = torch.eye(4, dtype=torch.float32, device=device)
-        o2c[:3, :3] = R
-        o2c[:3, 3] = trans
+    w_depth = 0.0 if not has_enough_depth else 1.0
+    w_mask = 20.0
+    w_reproj = 0.0
+    w_contact = 1.0
 
+    def _evaluate_pose_loss(curr_R, curr_trans, iter_idx, save_debug=False):
+        o2c = torch.eye(4, dtype=torch.float32, device=device)
+        o2c[:3, :3] = curr_R
+        o2c[:3, 3] = curr_trans
 
         obj_img, depth_r = diff_renderer(
             verts=obj_verts,
@@ -1299,46 +1529,72 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
             glctx=glctx,
         )
 
-        # Render merged foreground mask from object mesh + hand mesh.
         hand_verts_in_obj = None
-
-        # Transform hand vertices from camera space to object space using current pose.
-        # For row vectors: v_obj = (v_cam - t) @ R, where o2c = [R|t].
-        hand_verts_in_obj = ((hand_verts_in_cam[0] - trans[None, :]) @ R).unsqueeze(0)
-        fg_verts = torch.cat([obj_verts, hand_verts_in_obj], dim=1)
-        fg_tri = torch.cat([obj_tri, hand_tri + obj_nv], dim=0)
-        fg_color = torch.cat([torch.ones_like(obj_color), hand_color], dim=1)
-        fg_img, _ = diff_renderer(
-            verts=fg_verts,
-            tri=fg_tri,
-            color=fg_color,
-            projection=projection,
-            ob_in_cvcams=o2c,
-            resolution=np.asarray([H, W]),
-            glctx=glctx,
-        )
-        sil_pred = fg_img[..., 1]  # Green channel as silhouette
-        render_union = sil_pred
-
+        if hand_verts_in_cam is not None and hand_tri is not None and hand_color is not None:
+            # For row vectors: v_obj = (v_cam - t) @ R, where o2c = [R|t].
+            hand_verts_in_obj = ((hand_verts_in_cam[0] - curr_trans[None, :]) @ curr_R).unsqueeze(0)
+            fg_verts = torch.cat([obj_verts, hand_verts_in_obj], dim=1)
+            fg_tri = torch.cat([obj_tri, hand_tri + obj_nv], dim=0)
+            fg_color = torch.cat([torch.ones_like(obj_color), hand_color], dim=1)
+            fg_img, _ = diff_renderer(
+                verts=fg_verts,
+                tri=fg_tri,
+                color=fg_color,
+                projection=projection,
+                ob_in_cvcams=o2c,
+                resolution=np.asarray([H, W]),
+                glctx=glctx,
+            )
+            render_union = fg_img[..., 1]
+        else:
+            render_union = obj_img[..., 1]
 
         depth_r = torch.flip(depth_r[0], dims=[0])
-        _debug_ctx = None
-        if debug_dir is not None and (it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1):
-            _debug_ctx = {"K": K, "R": R, "trans": trans, "debug_dir": debug_dir,
-                          "frame_idx": frame_idx, "it": it + 1}
-        loss_depth, valid_count = _compute_depth_loss(depth_r, obs_depth, obs_mask, K, debug_ctx=_debug_ctx)
+        debug_ctx = None
+        if save_debug:
+            debug_ctx = {
+                "K": K,
+                "R": curr_R,
+                "trans": curr_trans,
+                "debug_dir": debug_dir,
+                "frame_idx": frame_idx,
+                "it": iter_idx,
+            }
+        loss_depth, valid_count = _compute_depth_loss(depth_r, obs_depth, obs_mask, K, debug_ctx=debug_ctx)
         if loss_depth is None:
-            print(f"[align_depth] Frame {frame_idx}: iter {it}, only {valid_count} valid rendered pixels")
-            continue
+            loss_depth = torch.tensor(0.0, device=device)
+            print(
+                f"[align_depth] Frame {frame_idx}: iter {iter_idx}, only {valid_count} valid rendered pixels, "
+                "set depth loss to 0"
+            )
 
         loss_iou = _compute_iou_loss(render_union, obs_hoi_mask)
-        loss_reproj = _compute_reproj_loss(R, trans, trk_pts3d_t, trk_pts2d_t, K_t)
+        loss_reproj = _compute_reproj_loss(curr_R, curr_trans, trk_pts3d_t, trk_pts2d_t, K_t)
+        contact_debug = debug_dir if save_debug else None
+        loss_contact = _compute_contact_loss(
+            hand_verts_in_obj,
+            obj_verts,
+            device,
+            debug_dir=contact_debug,
+            frame_idx=frame_idx,
+            it=iter_idx,
+        )
+        total_loss = w_depth * loss_depth + w_mask * loss_iou + w_contact * loss_contact + w_reproj * loss_reproj
+        return total_loss, {
+            "loss_depth": loss_depth,
+            "loss_iou": loss_iou,
+            "loss_reproj": loss_reproj,
+            "loss_contact": loss_contact,
+            "render_union": render_union,
+            "hand_verts_in_obj": hand_verts_in_obj,
+            "valid_count": valid_count,
+        }
 
-        w_depth = 1.0
-        w_mask = 20.0
-        w_reproj = 0.0
-
-        loss = w_depth * loss_depth + w_mask * loss_iou + w_reproj * loss_reproj
+    for it in range(num_iters):
+        optimizer.zero_grad()
+        R = rodrigues(rotvec)
+        save_debug = debug_dir is not None and (it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1)
+        loss, stats = _evaluate_pose_loss(R, trans, it + 1, save_debug=save_debug)
 
         if torch.isfinite(loss):
             loss.backward()
@@ -1349,43 +1605,99 @@ def _align_frame_with_mesh_depth(image_info_work, frame_idx, obj_mesh, max_pts=2
             best["loss"] = loss_val
             best["R"] = R.detach().cpu().numpy().astype(np.float64)
             best["t"] = trans.detach().cpu().numpy().astype(np.float64)
-            best["valid"] = valid_count
+            best["valid"] = stats["valid_count"]
 
-        if it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1:
+        if save_debug:
             _save_binary_mask_debug(
                 debug_dir=debug_dir,
                 frame_idx=frame_idx,
-                mask=render_union,
+                mask=stats["render_union"],
                 filename_prefix="mask_render_union",
                 it=it + 1,
             )
-            if hand_verts_in_obj is not None:
+            if stats["hand_verts_in_obj"] is not None:
                 _save_mesh_debug(
                     debug_dir=debug_dir,
                     frame_idx=frame_idx,
-                    vertices=hand_verts_in_obj,
+                    vertices=stats["hand_verts_in_obj"],
                     faces=hand_tri,
                     filename_prefix="hand_mesh_obj",
                     it=it + 1,
                 )
             print(
                 f"[align_depth] Frame {frame_idx}: iter {it+1}/{num_iters}, total {loss.item():.3f} "
-                f"loss_d={loss_depth.item():.3f}, "
-                f"loss_iou={loss_iou.item():.3f}, loss_reproj={loss_reproj.item():.3f}, valid={valid_count}"
+                f"loss_contact={stats['loss_contact'].item():.3f}, loss_iou={stats['loss_iou'].item():.3f}, "
+                f"loss_d={stats['loss_depth'].item():.3f}, loss_reproj={stats['loss_reproj'].item():.3f}, "
+                f"valid={stats['valid_count']}"
             )
 
-    if not np.isfinite(best["loss"]) or best["valid"] < 100:
+    # Second-order refinement with LBFGS for a better local optimum.
+    num_lbfgs_iters = max(3, min(10, num_iters // 10))
+    rotvec_2 = rotvec.detach().clone().requires_grad_(True)
+    trans_2 = trans.detach().clone().requires_grad_(True)
+    lbfgs = torch.optim.LBFGS([rotvec_2, trans_2], lr=0.5, max_iter=1, line_search_fn="strong_wolfe")
+    for it2 in range(num_lbfgs_iters):
+        def _closure():
+            lbfgs.zero_grad()
+            curr_R = rodrigues(rotvec_2)
+            curr_loss, _ = _evaluate_pose_loss(curr_R, trans_2, num_iters + it2 + 1, save_debug=False)
+            if torch.isfinite(curr_loss):
+                curr_loss.backward()
+            return curr_loss
+
+        lbfgs.step(_closure)
+        curr_R = rodrigues(rotvec_2)
+        save_debug = debug_dir is not None and (it2 == num_lbfgs_iters - 1)
+        curr_loss, curr_stats = _evaluate_pose_loss(curr_R, trans_2, num_iters + it2 + 1, save_debug=save_debug)
+        loss_val = float(curr_loss.detach().item())
+        if loss_val < best["loss"]:
+            best["loss"] = loss_val
+            best["R"] = curr_R.detach().cpu().numpy().astype(np.float64)
+            best["t"] = trans_2.detach().cpu().numpy().astype(np.float64)
+            best["valid"] = curr_stats["valid_count"]
+
+        if save_debug:
+            _save_binary_mask_debug(
+                debug_dir=debug_dir,
+                frame_idx=frame_idx,
+                mask=curr_stats["render_union"],
+                filename_prefix="mask_render_union_lbfgs",
+                it=it2 + 1,
+            )
+            if curr_stats["hand_verts_in_obj"] is not None:
+                _save_mesh_debug(
+                    debug_dir=debug_dir,
+                    frame_idx=frame_idx,
+                    vertices=curr_stats["hand_verts_in_obj"],
+                    faces=hand_tri,
+                    filename_prefix="hand_mesh_obj_lbfgs",
+                    it=it2 + 1,
+                )
+            print(
+                f"[align_depth] Frame {frame_idx}: LBFGS iter {it2+1}/{num_lbfgs_iters}, "
+                f"total {curr_loss.item():.3f}, loss_contact={curr_stats['loss_contact'].item():.3f}, "
+                f"loss_iou={curr_stats['loss_iou'].item():.3f}, loss_d={curr_stats['loss_depth'].item():.3f}, "
+                f"loss_reproj={curr_stats['loss_reproj'].item():.3f}, valid={curr_stats['valid_count']}"
+            )
+
+    if not np.isfinite(best["loss"]):
         print(f"[align_depth] Frame {frame_idx}: optimization failed (best_valid={best['valid']})")
         return False
 
-    pts_obj_opt = (best["R"].T @ (pts_cam_sel - best["t"]).T).T
-    _save_obj_depth_points_debug(
-        debug_dir=debug_dir,
-        frame_idx=frame_idx,
-        pts_obj=pts_obj_opt,
-        filename_prefix="depth_obj_optimized",
-        color_rgba=(0, 255, 0, 255),
-    )
+    if pts_cam_sel is not None:
+        pts_obj_opt = (best["R"].T @ (pts_cam_sel - best["t"]).T).T
+        _save_obj_depth_points_debug(
+            debug_dir=debug_dir,
+            frame_idx=frame_idx,
+            pts_obj=pts_obj_opt,
+            filename_prefix="depth_obj_optimized",
+            color_rgba=(0, 255, 0, 255),
+        )
+
+        # Store optimized depth points in object space
+        depth_pts_obj = image_info_work.get("depth_points_obj")
+        if depth_pts_obj is not None:
+            depth_pts_obj[frame_idx] = pts_obj_opt.astype(np.float32)
 
     # Store optimized depth points in object space
     depth_pts_obj = image_info_work.get("depth_points_obj")
@@ -1673,65 +1985,247 @@ def _joint_optimize_keyframes(
     print(f"[joint_opt] Done. Refined {int(opt_mask.sum())} poses, "
           f"{int(finite_mask.sum())} 3D points.")
     
-def _reset_pose_to_nearest_registered(image_info_work, frame_idx):
-    """Reset a frame's pose to that of the nearest valid registered frame."""
+def _find_nearest_registered_frame(image_info_work, frame_idx):
+    """Find the nearest valid registered frame index.
+
+    Returns the index into image_info_work arrays, or None if no valid
+    registered frame exists.
+    """
     registered = np.asarray(image_info_work["registered"]).astype(bool)
     invalid = np.asarray(image_info_work["invalid"]).astype(bool)
-    valid_reg = registered & (~invalid)
-    reg_idx = np.where(valid_reg)[0]
-    if reg_idx.size > 0:
-        nearest_idx = reg_idx[np.argmin(np.abs(reg_idx - frame_idx))]
+    reg_idx = np.where(registered & ~invalid)[0]
+    if reg_idx.size == 0:
+        return None
+    return int(reg_idx[np.argmin(np.abs(reg_idx - frame_idx))])
+
+
+def _reset_pose_to_nearest_registered(image_info_work, frame_idx):
+    """Reset a frame's pose to that of the nearest valid registered frame."""
+    nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
+    if nearest_idx is not None:
         image_info_work["extrinsics"][frame_idx] = image_info_work["extrinsics"][nearest_idx].copy()
         print(f"[reproj_recovery] Reset frame {frame_idx} pose to nearest registered frame {nearest_idx}")
 
 
-def _check_pose_sanity(image_info_work, frame_idx, max_rot_deg=10.0, max_trans=0.1):
-    """Check if a frame's pose is within a reasonable range of nearby registered frames.
+def _estimate_pose_from_nearest_registered(image_info_work, frame_idx):
+    """Return nearest registered frame pose as initial estimate (without updating frame pose)."""
+    nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
+    if nearest_idx is None:
+        return None, None
+    return image_info_work["extrinsics"][nearest_idx].astype(np.float64).copy(), nearest_idx
 
-    Compares the rotation angle and translation distance between the current
-    frame and the nearest valid registered frame.
 
-    Args:
-        image_info_work: Working image info dictionary with extrinsics, registered, invalid.
-        frame_idx: Frame index to check.
-        max_rot_deg: Maximum allowed rotation delta in degrees.
-        max_trans: Maximum allowed translation delta (Euclidean distance).
+def _reset_and_track_foundation_pose(image_info_work, frame_idx, obj_mesh, debug_dir=None):
+    """Estimate frame pose via nearest-pose reset + FoundationPose tracking.
+
+    Does not update ``image_info_work["extrinsics"][frame_idx]``.
+    Returns (estimated_o2c_pose, success).
+    """
+    if obj_mesh is None:
+        print("[FoundationPose] Missing mesh, skipping tracking")
+        return None, False
+
+    images = image_info_work.get("images")
+    rgb = images[frame_idx] if images is not None and frame_idx < len(images) else None
+    depth_priors = image_info_work.get("depth_priors")
+    depth = depth_priors[frame_idx] if depth_priors is not None and frame_idx < len(depth_priors) else None
+    intrinsics_arr = image_info_work.get("intrinsics")
+    K = intrinsics_arr[frame_idx] if intrinsics_arr is not None and intrinsics_arr.ndim == 3 else intrinsics_arr
+    K = K.astype(np.float64) if K is not None else None
+    current_o2c, nearest_idx = _estimate_pose_from_nearest_registered(image_info_work, frame_idx)
+    if current_o2c is None:
+        current_o2c = image_info_work["extrinsics"][frame_idx].astype(np.float64)
+        print(f"[FoundationPose] Frame {frame_idx}: no nearest registered frame, using current pose as init")
+    else:
+        print(f"[FoundationPose] Frame {frame_idx}: using nearest registered frame {nearest_idx} pose as init")
+
+    fp_pose = _run_foundation_pose_track(
+        obj_mesh, rgb, depth, None, K, current_o2c,
+        debug_dir=str(debug_dir) if debug_dir is not None else None,
+    )
+    if fp_pose is None:
+        return None, False
+    print(f"[FoundationPose] Frame {frame_idx}: got tracking estimate")
+    return fp_pose, True
+
+
+def _build_depth_points_obj_for_pose(
+    image_info_work,
+    frame_idx,
+    extrinsic_o2c,
+    bbox_min=(-0.8, -0.8, -0.8),
+    bbox_max=(0.8, 0.8, 0.8),
+    max_pts=8000,
+):
+    """Build object-space depth points for a given pose with bbox outlier filtering."""
+    depth_priors = image_info_work.get("depth_priors")
+    if depth_priors is None or frame_idx >= len(depth_priors) or depth_priors[frame_idx] is None:
+        return None
+    depth_map = depth_priors[frame_idx]
+
+    intrinsics = image_info_work.get("intrinsics")
+    if intrinsics is None:
+        return None
+    K = intrinsics[frame_idx] if intrinsics.ndim == 3 else intrinsics
+    if K is None:
+        return None
+
+    vmask = (depth_map > 0) & np.isfinite(depth_map)
+    masks = image_info_work.get("image_masks")
+    if masks is not None and frame_idx < len(masks) and masks[frame_idx] is not None:
+        vmask = vmask & (masks[frame_idx] > 0)
+    ys, xs = np.where(vmask)
+    if len(ys) == 0:
+        return None
+
+    if len(ys) > max_pts:
+        sel = np.random.choice(len(ys), max_pts, replace=False)
+        ys, xs = ys[sel], xs[sel]
+
+    pts_cam = _depth_pixels_to_cam_points(depth_map, K, ys, xs)
+    pts_obj = _cam_points_to_object_points(pts_cam, np.asarray(extrinsic_o2c, dtype=np.float64))
+
+    bmin = np.asarray(bbox_min, dtype=np.float64)
+    bmax = np.asarray(bbox_max, dtype=np.float64)
+    in_bbox = np.all((pts_obj >= bmin) & (pts_obj <= bmax), axis=1)
+    pts_obj = pts_obj[in_bbox]
+    if len(pts_obj) == 0:
+        return None
+    return pts_obj.astype(np.float64)
+
+
+def _mean_nn_distance(src_pts, dst_pts):
+    """Mean nearest-neighbor distance from src points to dst points."""
+    if src_pts is None or dst_pts is None or len(src_pts) == 0 or len(dst_pts) == 0:
+        return np.inf
+    tree = cKDTree(dst_pts)
+    dists, _ = tree.query(src_pts, k=1)
+    if dists is None or len(dists) == 0:
+        return np.inf
+    dists = np.asarray(dists, dtype=np.float64)
+    dists = dists[np.isfinite(dists)]
+    if len(dists) == 0:
+        return np.inf
+    return float(dists.mean())
+
+
+def check_which_estimate_is_better_and_update(
+    image_info_work,
+    frame_idx,
+    pnp_pose,
+    pnp_success,
+    fp_pose,
+    fp_success,
+):
+    """Select and apply the better estimate pose using depth 3D NN distance in object space."""
+    candidates = []
+    if pnp_success and pnp_pose is not None:
+        candidates.append(("pnp", np.asarray(pnp_pose, dtype=np.float64)))
+    if fp_success and fp_pose is not None:
+        candidates.append(("foundation_pose", np.asarray(fp_pose, dtype=np.float64)))
+
+    if not candidates:
+        print(f"[pose_select] Frame {frame_idx}: no valid pose estimate candidates")
+        return None, False
+
+    nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
+    if nearest_idx is None:
+        src, pose = candidates[0]
+        image_info_work["extrinsics"][frame_idx, :3, :3] = pose[:3, :3].astype(np.float32)
+        image_info_work["extrinsics"][frame_idx, :3, 3] = pose[:3, 3].astype(np.float32)
+        print(f"[pose_select] Frame {frame_idx}: no nearby registered frame, choose {src}")
+        return pose, True
+
+    nearby_pose = image_info_work["extrinsics"][nearest_idx].astype(np.float64)
+    nearby_pts_obj = _build_depth_points_obj_for_pose(image_info_work, nearest_idx, nearby_pose)
+    if nearby_pts_obj is None:
+        src, pose = candidates[0]
+        image_info_work["extrinsics"][frame_idx, :3, :3] = pose[:3, :3].astype(np.float32)
+        image_info_work["extrinsics"][frame_idx, :3, 3] = pose[:3, 3].astype(np.float32)
+        print(f"[pose_select] Frame {frame_idx}: nearby depth points unavailable, choose {src}")
+        return pose, True
+
+    best_src = None
+    best_pose = None
+    best_score = np.inf
+    for src, pose in candidates:
+        curr_pts_obj = _build_depth_points_obj_for_pose(image_info_work, frame_idx, pose)
+        score = _mean_nn_distance(curr_pts_obj, nearby_pts_obj)
+        print(f"[pose_select] Frame {frame_idx}: {src} depth NN mean distance = {score:.6f}")
+        if score < best_score:
+            best_score = score
+            best_src = src
+            best_pose = pose
+
+    if best_pose is None:
+        print(f"[pose_select] Frame {frame_idx}: pose scoring failed")
+        return None, False
+
+    image_info_work["extrinsics"][frame_idx, :3, :3] = best_pose[:3, :3].astype(np.float32)
+    image_info_work["extrinsics"][frame_idx, :3, 3] = best_pose[:3, 3].astype(np.float32)
+    print(f"[pose_select] Frame {frame_idx}: selected {best_src} (score={best_score:.6f})")
+    return best_pose, True
+
+
+def _check_contact_and_reset(hand_verts_in_cam, obj_verts, image_info_work, frame_idx, device, thresh_contact=0.06):
+    """Check initial contact loss and reset pose to nearby frame if too large.
 
     Returns:
-        (ok, rot_deg, trans_dist): ok is True if within range; rot_deg and
-        trans_dist are the measured deltas (np.inf when no reference exists).
+        "reset" if pose was reset to a nearby registered frame,
+        "skip" if contact is already good (optimization can be skipped),
+        "ok" if hand_verts_in_cam is None (no hand data, proceed normally).
     """
-    registered = np.asarray(image_info_work["registered"]).astype(bool)
-    invalid = np.asarray(image_info_work["invalid"]).astype(bool)
-    valid_reg = registered & (~invalid)
-    reg_idx = np.where(valid_reg)[0]
-    if reg_idx.size == 0:
-        return True, np.inf, np.inf  # no reference, skip check
+    if hand_verts_in_cam is None:
+        return "ok"
+    with torch.no_grad():
+        # Use current frame pose from image_info_work for contact check.
+        ext0 = image_info_work["extrinsics"][frame_idx].astype(np.float64)
+        R_init = torch.tensor(ext0[:3, :3].astype(np.float32), dtype=torch.float32, device=device)
+        trans = torch.tensor(ext0[:3, 3].astype(np.float32), dtype=torch.float32, device=device)
+        hand_in_obj = ((hand_verts_in_cam[0] - trans[None, :]) @ R_init).unsqueeze(0)
+        contact_loss = _compute_contact_loss(hand_in_obj, obj_verts, device)
+        loss_val = contact_loss.item()
+        
+        if loss_val > thresh_contact:
+            print(f"[align_depth] Frame {frame_idx}: initial contact loss {loss_val:.4f} > {thresh_contact}, resetting pose to nearby frame")
+            nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
+            if nearest_idx is not None:
+                ext_near = image_info_work["extrinsics"][nearest_idx].astype(np.float32)
+                image_info_work["extrinsics"][frame_idx, :3, :3] = ext_near[:3, :3]
+                image_info_work["extrinsics"][frame_idx, :3, 3] = ext_near[:3, 3]
+                print(f"[align_depth] Frame {frame_idx}: reset to nearest registered frame {nearest_idx}")
+                return "reset"
+            print(f"[align_depth] Frame {frame_idx}: no nearby registered frame found, reset skipped")
+            return "ok"
+        else:
+            print(f"[align_depth] Frame {frame_idx}: initial contact loss {loss_val:.4f} within threshold {thresh_contact}, skipping pose reset")
+            return "skip"
 
-    nearest_idx = reg_idx[np.argmin(np.abs(reg_idx - frame_idx))]
+
+def _check_pose_moved(image_info_work, frame_idx, min_rot=2, min_trans=0.005):
+    """Check whether a frame's pose differs from its nearest registered neighbor.
+
+    Returns True if the pose moved sufficiently, False if it barely changed
+    (suggesting PnP collapsed to a near-duplicate).
+    """
+    nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
+    if nearest_idx is None:
+        return True
     T_curr = image_info_work["extrinsics"][frame_idx]
-    T_ref = image_info_work["extrinsics"][nearest_idx]
-
-    R_delta = T_curr[:3, :3] @ T_ref[:3, :3].T
+    T_near = image_info_work["extrinsics"][nearest_idx]
+    R_delta = T_curr[:3, :3] @ T_near[:3, :3].T
     angle = np.rad2deg(np.arccos(np.clip((np.trace(R_delta) - 1) / 2, -1.0, 1.0)))
-    trans_dist = float(np.linalg.norm(T_curr[:3, 3] - T_ref[:3, 3]))
-
-    ok = (angle <= max_rot_deg) and (trans_dist <= max_trans)
-    if not ok:
-        print(f"[pose_sanity] Frame {frame_idx}: FAILED vs frame {nearest_idx} "
-              f"(rot={angle:.1f}deg>{max_rot_deg}, trans={trans_dist:.4f}>{max_trans})")
-    else:
-        print(f"[pose_sanity] Frame {frame_idx}: OK vs frame {nearest_idx} "
-              f"(rot={angle:.1f}deg, trans={trans_dist:.4f})")
-    return ok, angle, trans_dist
+    trans = np.linalg.norm(T_curr[:3, 3] - T_near[:3, 3])
+    if angle < min_rot and trans < min_trans:
+        print(f"[check_pose_moved] Frame {frame_idx} pose barely moved "
+              f"(rot={angle:.2f}°, trans={trans:.4f}), nearest={nearest_idx}")
+        return False
+    return True
 
 
 def _init_pose_from_hand(image_info_work, frame_idx):
-    """Initialize frame pose using the hand-pose delta from a nearby registered frame.
+    """Initialize frame pose using hand pose for frame_idx frame.
 
-    Computes the relative hand motion between frame_idx and the nearest valid
-    registered frame, then applies that delta to the registered frame's object
-    extrinsic:  ext_cur = delta @ ext_ref,  where delta = hand_o2c_cur @ inv(hand_o2c_ref).
 
     Returns True if the pose was successfully initialized, False otherwise
     (caller should fall back to _reset_pose_to_nearest_registered).
@@ -1740,29 +2234,9 @@ def _init_pose_from_hand(image_info_work, frame_idx):
     if hand_c2o is None:
         return False
 
-    # Find nearest valid registered frame
-    registered = np.asarray(image_info_work["registered"]).astype(bool)
-    invalid = np.asarray(image_info_work["invalid"]).astype(bool)
-    valid_reg = registered & (~invalid)
-    reg_idx = np.where(valid_reg)[0]
-    if reg_idx.size == 0:
-        return False
+    hand_o2c = np.linalg.inv(hand_c2o[frame_idx])
+    image_info_work["extrinsics"][frame_idx] = hand_o2c
 
-    nearest_idx = reg_idx[np.argmin(np.abs(reg_idx - frame_idx))]
-
-    # Compute hand o2c for both frames
-    hand_o2c_cur = np.linalg.inv(hand_c2o[frame_idx]).astype(np.float64)
-    hand_o2c_ref = np.linalg.inv(hand_c2o[nearest_idx]).astype(np.float64)
-
-    # Delta: relative hand motion from ref to cur
-    delta = hand_o2c_cur @ np.linalg.inv(hand_o2c_ref)
-
-    # Apply delta to the registered frame's object extrinsic
-    ext_ref = image_info_work["extrinsics"][nearest_idx].astype(np.float64)
-    image_info_work["extrinsics"][frame_idx] = (delta @ ext_ref).astype(np.float32)
-
-    print(f"[init_pose_from_hand] Frame {frame_idx}: initialized from hand delta "
-          f"relative to registered frame {nearest_idx}")
     return True
 
 
@@ -1832,18 +2306,22 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         "registered": np.array(image_info["register"], dtype=bool),
         "invalid": np.array(image_info["invalid"], dtype=bool),
         "depth_points_obj": image_info.get("depth_points_obj", [None] * len(frame_indices)),
+        "depth_after_PnP": image_info.get("depth_after_PnP", [None] * len(frame_indices)),
+        "depth_after_align_mesh": image_info.get("depth_after_align_mesh", [None] * len(frame_indices)),
+        "depth_after_keyframes_opt": image_info.get("depth_after_keyframes_opt", [None] * len(frame_indices)),
+        "depth_after_reset_when_pnp_fail": image_info.get("depth_after_reset_when_pnp_fail", [None] * len(frame_indices)),
     }
 
     num_frames = len(frame_indices)
     latest_neus_mesh = neus_init_mesh
-
-    sam_3d_mesh_file = f"{sam3d_root_dir}/mesh.obj"
-
+    sam_3d_mesh_file = f"{Path(str(sam3d_root_dir).replace('SAM3D_aligned_post_process', 'SAM3D'))}/scene.glb"
     # Load the SAM3D mesh for depth-based alignment
     sam3d_mesh = None
     if sam3d_root_dir is not None and Path(sam_3d_mesh_file).exists():
         import trimesh
         sam3d_mesh = trimesh.load(str(sam_3d_mesh_file), process=False)
+        if isinstance(sam3d_mesh, trimesh.Scene):
+            sam3d_mesh = sam3d_mesh.dump(concatenate=True)
         print(f"Loaded SAM3D mesh: {len(sam3d_mesh.vertices)} vertices")
 
 
@@ -1854,13 +2332,17 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
         print("+" * 50)
         print(f"Next frame to register: {image_info['frame_indices'][next_frame_idx]} (local idx {next_frame_idx})")
+        debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
+        if RUN_ON_SERVER:
+            debug_dir = None
 
-        if check_frame_invalid(
-            image_info_work,
-            next_frame_idx,
-            min_inlier_per_frame=args.min_inlier_per_frame,
-            min_depth_pixels=args.min_depth_pixels,
-        ):
+        # if check_frame_invalid(
+        #     image_info_work,
+        #     next_frame_idx,
+        #     min_inlier_per_frame=args.min_inlier_per_frame,
+        #     min_depth_pixels=args.min_depth_pixels,
+        # ):
+        if 0:
             image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True  
             print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to insufficient inliers/depth pixels")
             invalid_cnt["insufficient_pixel"] += 1
@@ -1868,42 +2350,50 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             print_image_info_stats(image_info_work, invalid_cnt)
             continue
 
-        register_new_frame_by_PnP(image_info_work, next_frame_idx, args)
+        pnp_pose, pnp_success = register_new_frame_by_PnP(
+            image_info_work, next_frame_idx, args, update_pose=False, return_pose=True
+        )
+        fp_pose, fp_success = _reset_and_track_foundation_pose(
+            image_info_work, next_frame_idx, sam3d_mesh, debug_dir=debug_dir
+        )
+        _, estimate_success = check_which_estimate_is_better_and_update(
+            image_info_work,
+            next_frame_idx,
+            pnp_pose=pnp_pose,
+            pnp_success=pnp_success,
+            fp_pose=fp_pose,
+            fp_success=fp_success,
+        )
+        if not estimate_success:
+            print(f"[register_remaining_frames] Pose estimation failed for frame {next_frame_idx}, resetting to nearest registered frame")
+            _reset_pose_to_nearest_registered(image_info_work, next_frame_idx)
+        # Save depth 3D points in object space for this frame
+        _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_PnP")
         mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
-        # _filter_depth_by_object_bbox(image_info_work, next_frame_idx)
+        _filter_depth_by_object_bbox(image_info_work, next_frame_idx)
         
+        reproj_ok, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args)
+        is_moved = _check_pose_moved(image_info_work, next_frame_idx)
+            
 
+<<<<<<< HEAD
         # if not _refine_frame_pose_3d(image_info_work, next_frame_idx, args):
         #     image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True     
         #     print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to 3D-3D correspondences refinement failure")
-        #     invalid_cnt["3d_3d_corr"] += 1
-        #     save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
-        #     print_image_info_stats(image_info_work, invalid_cnt)
-        #     continue
-        
-        repro_ok, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args)
-        # Check if the pose is within a reasonable range compared to nearby registered frames
-        pose_ok, _, _ = _check_pose_sanity(image_info_work, next_frame_idx)
-        sucess = repro_ok and pose_ok
-        if not sucess:
-            print(f"[register_remaining_frames] Frame {next_frame_idx} align depth to mesh")
-            _reset_pose_to_nearest_registered(image_info_work, next_frame_idx)
             # _init_pose_from_hand(image_info_work, next_frame_idx)
+            # mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
+>>>>>>> origin/main
 
             # # Mask tracks without valid (finite) 3D points
             # finite_3d = np.isfinite(image_info_work["points_3d"]).all(axis=-1)
-            # image_info_work["track_mask"][next_frame_idx] = (
             #     np.asarray(image_info_work["track_mask"][next_frame_idx]).astype(bool) & finite_3d
             # ).astype(image_info_work["track_mask"].dtype)
 
             # Align the frame with SAM3D mesh using depth with outlier rejection
-            debug_dir = None
-            if RUN_ON_PC:
-                debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
             # if sam3d_mesh is not None:
             if 1:
                 print(f"[register_remaining_frames] Aligning frame {next_frame_idx} with SAM3D mesh using depth")
-                sucess = _align_frame_with_mesh_depth(image_info_work, next_frame_idx, sam3d_mesh, 
+                sucess = _rectify_pose(image_info_work, next_frame_idx, sam3d_mesh, 
                                              debug_dir=debug_dir
                                              )
                 if not sucess:
@@ -1916,6 +2406,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 else:
                     sucess, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args, skip_check=True)
                     print(f"[register_remaining_frames] After depth-mesh alignment, reprojection error for frame {next_frame_idx}: {mean_error:.2f}")
+                    _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_align_mesh")
 
 
         
@@ -1992,6 +2483,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 for ki in kf_indices_arr:
                     mask_track_for_outliers(image_info_work, ki, args.joint_opt_reproj_thresh,
                                            min_track_number=args.min_track_number)
+                _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_keyframes_opt")
             except Exception as exc:
                 print(f"[register_remaining_frames] joint optimization failed: {exc}")
 
@@ -2001,6 +2493,10 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         image_info["c2o"] = np.linalg.inv(image_info_work["extrinsics"]).astype(np.float32)
         image_info["points_3d"] = image_info_work["points_3d"].astype(np.float32)
         image_info["depth_points_obj"] = image_info_work["depth_points_obj"]
+        image_info["depth_after_PnP"] = image_info_work["depth_after_PnP"]
+        image_info["depth_after_align_mesh"] = image_info_work["depth_after_align_mesh"]
+        image_info["depth_after_keyframes_opt"] = image_info_work["depth_after_keyframes_opt"]
+        image_info["depth_after_reset_when_pnp_fail"] = image_info_work["depth_after_reset_when_pnp_fail"]
         print_image_info_stats(image_info_work, invalid_cnt)
         save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
 
@@ -2074,6 +2570,10 @@ def main(args):
             "c2o": c2o_per_frame.astype(np.float32),
             "intrinsics": _stack_intrinsics(preprocessed_data["intrinsics"]),
             "depth_points_obj": [None] * len(frame_indices),
+            "depth_after_PnP": [None] * len(frame_indices),
+            "depth_after_align_mesh": [None] * len(frame_indices),
+            "depth_after_keyframes_opt": [None] * len(frame_indices),
+            "depth_after_reset_when_pnp_fail": [None] * len(frame_indices),
         }
 
         # 6. Save image info
@@ -2126,7 +2626,7 @@ if __name__ == "__main__":
                         help="Number of NeuS training steps used in pipeline_neus_init.py (for resuming)")
     parser.add_argument("--no_optimize_with_point_to_plane", action="store_true", default=True,
                         help="Disable point-to-plane loss and skip NeuS mesh loading")
-    parser.add_argument("--vis_thresh", type=float, default=0.5,
+    parser.add_argument("--vis_thresh", type=float, default=0.3,
                         help="Visibility score threshold for filtering tracks in the condition frame")
 
     args = parser.parse_args()

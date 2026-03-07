@@ -7,7 +7,7 @@ import random
 import numpy as np
 from PIL import Image
 
-from confs.sequence_config import sequences, vggt_code_dir, home_dir, conda_dir
+from confs.sequence_config import sequences, sequence_name_list, dataset_type, vggt_code_dir, home_dir, conda_dir, dataset_dir
 
 
 class run_wonder_hoi:
@@ -17,7 +17,7 @@ class run_wonder_hoi:
         self.seq_list = args.seq_list
         self.execute_list = args.execute_list
         self.process_list = args.process_list
-        self.dataset_dir = args.dataset_dir
+        self.dataset_dir = dataset_dir
         self.reconstruction_dir = args.reconstruction_dir
         self.rebuild = args.rebuild
         self.vis = args.vis
@@ -40,7 +40,8 @@ class run_wonder_hoi:
             },
             "data_convert": {
                 "ZED_parse_data": self.ZED_parse_data,
-                "convert_depth_to_ply": self.convert_depth_to_ply,
+                "convert_zed_depth_to_ply": self.convert_zed_depth_to_ply,
+                "soft_link_depth": self.soft_link_depth,
                 "get_depth_from_foundation_stereo": self.get_depth_from_foundation_stereo,
                 "hot3d_cp_images": self.hot3d_cp_images,
                 "hot3d_gen_meta": self.hot3d_gen_meta,
@@ -95,6 +96,7 @@ class run_wonder_hoi:
                 "eval_sum_trans": self.eval_sum_trans,
                 "eval_sum_rot": self.eval_sum_rot,
                 "eval_sum": self.eval_sum,
+                "eval_sum_vis": self.eval_sum_vis,
                 "hoi_pipeline_neus_init": self.hoi_pipeline_neus_init,
                 "hoi_pipeline_data_preprocess": self.hoi_pipeline_data_preprocess,
                 "hoi_pipeline_data_preprocess_sam3d_neus": self.hoi_pipeline_data_preprocess_sam3d_neus,
@@ -104,7 +106,7 @@ class run_wonder_hoi:
                 "hoi_pipeline_3D_points_align_with_HY": self.hoi_pipeline_3D_points_align_with_HY,
                 "hoi_pipeline_HY_to_SAM3D": self.hoi_pipeline_HY_to_SAM3D,
                 "hoi_pipeline_joint_opt": self.hoi_pipeline_joint_opt,
-                "hoi_pipeline_hand_vis": self.hoi_pipeline_hand_vis,
+                "hoi_pipeline_joint_opt_eval_vis": self.hoi_pipeline_joint_opt_eval_vis,
                 "hoi_pipeline_reg_remaining": self.hoi_pipeline_reg_remaining,
                 "hoi_pipeline_HY_gen": self.hoi_pipeline_HY_gen,
                 "hoi_pipeline_HY_omni_gen": self.hoi_pipeline_HY_omni_gen,
@@ -119,6 +121,10 @@ class run_wonder_hoi:
                 "fit_hand_pose": self.fit_hand_pose,
                 "fit_hand_all": self.fit_hand_all,
                 "fit_hand_viewer": self.fit_hand_viewer,
+            },
+            "baseline": {
+                "foundation_pose_eval_vis": self.foundation_pose_eval_vis,
+                "gt_eval_vis": self.gt_eval_vis,
             },
         }
 
@@ -317,11 +323,12 @@ class run_wonder_hoi:
             os.system(cmd)
         
         
-        cmd = f"cd {home_dir}/Documents/project/sam3/ && "
+        cmd = f"cd {vggt_code_dir}/third_party/sam3/ && "
         cmd += f"{self.conda_dir}/envs/sam3/bin/python run_HO3D_video.py "
         cmd += f"--video_path {data_dir} "
         cmd += f"--out_path {out_mask_dir} "
         cmd += f"--text_prompt '{text_prompt}' "
+        cmd += f"--check_mask_result 1 "
         # cmd += f"--use_both_text_and_point_prompt "
         print(cmd)
         os.system(cmd)
@@ -353,7 +360,7 @@ class run_wonder_hoi:
             "SiS": "yellow sugar box",         
         }
 
-        prompt_text_str = obj2text_prompt[obj_name]
+        prompt_text_str = obj2text_prompt.get(obj_name, None)
 
         if self.rebuild:
             cmd = f"rm -rf {out_mask_dir}"
@@ -361,7 +368,7 @@ class run_wonder_hoi:
             os.system(cmd)
         
         
-        cmd = f"cd {home_dir}/Documents/project/sam3/ && "
+        cmd = f"cd {vggt_code_dir}/third_party/sam3/ && "
         cmd += f"{self.conda_dir}/envs/sam3/bin/python run_HO3D_video.py "
         cmd += f"--video_path {data_dir} "
         cmd += f"--out_path {out_mask_dir} "
@@ -417,7 +424,7 @@ class run_wonder_hoi:
 
         # hamer inference
 
-        cmd = f"cd {self.code_dir}/generator/hamer && "
+        cmd = f"cd {vggt_code_dir}/third_party/hamer && "
         cmd += f"{self.conda_dir}/envs/hamer/bin/python demo.py "
         cmd += f"--img_folder {data_dir}/rgb "
         cmd += f"--out_folder {out_dir} "
@@ -434,10 +441,8 @@ class run_wonder_hoi:
         self.print_header(f"validate hamer results for {scene_name}")
         data_dir = f"{self.dataset_dir}/{scene_name}/hands"
         out_dir = f"{self.dataset_dir}/{scene_name}/hands"
-        data_dir = f"{self.dataset_dir}/{scene_name}/hands"
-        out_dir = f"{self.dataset_dir}/{scene_name}/hands"
 
-        cmd = ""
+        cmd = f"cd {vggt_code_dir} && "
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python ./interpolate.py "
         cmd += f" --dataset_dir {data_dir} "
         cmd += f" --out_dir {out_dir} "
@@ -518,8 +523,6 @@ class run_wonder_hoi:
         os.system(cmd)
 
     def fit_hand_step(self, scene_name, mode, output_dir, **kwargs):
-        frame_number = self.seq_config['frame_number']
-        frame_interval = self.seq_config["frame_interval"]
 
         # Cap frame_number to actual available mask frames
         import glob as glob_module
@@ -528,7 +531,7 @@ class run_wonder_hoi:
             frame_number = min(frame_number, actual_frames)
 
         cmd_parts = [
-            f"cd /data1/shibo/Documents/project/WonderHOI/generator &&",
+            f"cd {vggt_code_dir}/generator &&",
             f"{self.conda_dir}/envs/vggsfm_tmp/bin/python scripts/align_hands_object.py",
             f"--seq_name {scene_name}",
             f"--mode {mode}",
@@ -537,9 +540,9 @@ class run_wonder_hoi:
             f"--out_dir {output_dir}",
         ]
         if "num_frames" in kwargs:
-            cmd_parts.append(f"--max_frame_num {kwargs['num_frames']}")
-        if "dataset_type" in kwargs:
-            cmd_parts.append(f"--dataset_type {kwargs['dataset_type']}")
+            cmd_parts.append(f"--num_frames {kwargs['num_frames']}")
+
+        cmd_parts.append(f"--dataset_type {dataset_type}")
 
         # Create symlink for WonderHOI data directory
         wonderhoi_data_dir = "/data1/shibo/Documents/project/WonderHOI/generator/data"
@@ -557,8 +560,27 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
+    def _fit_hand_vis(self, scene_name, **kwargs):
+        self.print_header(f"hoi pipeline hand visualization for {scene_name}")
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+        out_dir = f"{vggt_code_dir}/output/{scene_name}"
+        id = f"{self.seq_config['cond_idx']:04d}"
+
+        cmd = f"cd {vggt_code_dir} && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_hand_vis.py "
+        cmd += f"--data_dir {data_dir} "
+        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--interval {self.seq_config['frame_interval']} "
+        cmd += f"--hand_mode trans " #(e.g. 'rot', 'trans', 'intrinsic')"
+        print(cmd)
+        os.system(cmd)
+        return
+
     def _fit_hand(self, scene_name, mode, output_dir, stage_desc, **kwargs):
         self.print_header(f"fit hand to {stage_desc} for {scene_name}")
+        if self.vis:
+            self._fit_hand_vis(scene_name, **kwargs)
+            return        
         self._cleanup_mano_ckpt(output_dir, mode)
         self.fit_hand_step(scene_name, mode, output_dir, **kwargs)
 
@@ -1068,6 +1090,9 @@ class run_wonder_hoi:
         os.system(cmd)
 
     def get_depth_from_foundation_stereo(self,seq_name, **kwargs):
+        if dataset_type != "zed":
+            print("only support zed dataset type")
+            return
         #iterate over all scene_name in dataset_dir
         self.print_header(f"get depth from foundation stereo for {seq_name}")
         if self.rebuild:
@@ -1075,8 +1100,8 @@ class run_wonder_hoi:
             print(cmd)
             os.system(cmd)
 
-        cmd = f"cd {home_dir}/Documents/project/FoundationStereo && " \
-            f"proxychains4 {self.conda_dir}/envs/foundation_stereo/bin/python " \
+        cmd = f"cd {vggt_code_dir}/third_party/FoundationStereo && " \
+            f"{self.conda_dir}/envs/foundation_stereo/bin/python " \
             "scripts/run_video.py " \
             f"--left_dir {self.dataset_dir}/{seq_name}/ir/ " \
             f"--right_dir {self.dataset_dir}/{seq_name}/ir/ " \
@@ -1091,27 +1116,58 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
-    def convert_depth_to_ply(self, scene_name, **kwargs):
+    def convert_zed_depth_to_ply(self, scene_name, **kwargs):
         #iterate over all scene_name in dataset_dir
+        if dataset_type != "zed":
+            print("only support zed dataset type")
+            return
+        
         self.print_header(f"convert depth to ply for {scene_name}")
         if self.rebuild:
-            cmd = f"cd {self.dataset_dir}/{scene_name} && rm -rf ply_fs"
+            cmd = f"cd {self.dataset_dir}/{scene_name} && rm -rf ply_zed"
             print(cmd)
             os.system(cmd)
 
-        cmd = f"cd {home_dir}/Documents/project/MonoGS && " \
-            f"{self.conda_dir}/envs/py38cu116_GS_ICP/bin/python " \
-            f"realsense_get_ply.py --input_dir {self.dataset_dir}/{scene_name}"
+        cmd = f"cd {vggt_code_dir} && " \
+            f"{self.conda_dir}/envs/vggsfm_tmp/bin/python depth_to_ply.py " \
+            f"--input_dir {self.dataset_dir}/{scene_name} " \
+            f"--ply_interval 10 --use_rgb"
+        print(cmd)
+        os.system(cmd)
+
+    def soft_link_depth(self, scene_name, **kwargs):
+        if dataset_type != "zed":
+            print("only support zed dataset type")
+            return
+        
+        self.print_header(f"soft link depth for {scene_name}")
+        scene_dir = f"{self.dataset_dir}/{scene_name}"
+        cmd = f"cd {scene_dir} && rm -rf depth && ln -s depth_fs depth"
         print(cmd)
         os.system(cmd)
 
     def ZED_parse_data(self,scene_name, **kwargs):
         self.print_header(f"ZED parse data for {scene_name}")
+        scene_dir = f"{self.dataset_dir}/{scene_name}"
+        out_dir = f"{scene_dir}/"
 
-        cmd = f"cd {home_dir}/Documents/project/zed-sdk/recording/export/svo/python && " \
-            f"{self.conda_dir}/bin/python svo_export.py --mode 2" \
-            f" --input_svo_file {self.dataset_dir}/{scene_name}/{scene_name}.svo2" \
-            f" --output_path_dir {self.dataset_dir}/{scene_name}/"
+        if self.rebuild:
+            cmd = f"cd {out_dir} && rm -rf depth_zed rgb meta"
+            print(cmd)
+            os.system(cmd)
+
+        downsample = int(kwargs.get("downsample", 3))
+        cmd = f"cd {vggt_code_dir}/third_party/zed-sdk/recording/export/svo/python && "
+        cmd += f"LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6 {self.conda_dir}/bin/python3 svo_export.py "
+        cmd += f"--mode 2 "
+        cmd += f" --input_svo_file {self.dataset_dir}/{scene_name}/{scene_name}.svo2 "
+        cmd += f"--output_path_dir {scene_dir}/ "
+        cmd += f"--interval {downsample} "
+        cmd += f"--resize_width 1.0 "
+        cmd += f"--resize_height 1.0 "
+        cmd += f"--crop_width 960 "
+        cmd += f"--crop_height 720 "
+        print(cmd)
         os.system(cmd)
 
     def ZED_read_data(self):
@@ -1308,7 +1364,7 @@ class run_wonder_hoi:
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python demo_colmap.py "
         cmd += f"--scene_dir {data_dir} "
         cmd += f"--max_query_pts 200 --query_frame_num 0 --vis_thresh 0.40 --max_reproj_error 3 --shared_camera "
-        cmd += f"--output_dir {out_dir} --use_calibrated_intrinsic --max_frame_num 100 --frame_interval 1 --dataset_type ZED"
+        cmd += f"--output_dir {out_dir} --use_calibrated_intrinsic --max_frame_num 100 --frame_interval 1 --dataset_type {dataset_type}"
         print(cmd)
         os.system(cmd)
 
@@ -1340,7 +1396,7 @@ class run_wonder_hoi:
         cmd = f"cd {vggt_code_dir} && "
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi.py "
         cmd += f"--scene_dir {data_dir} "
-        cmd += f"--max_frame_num {frame_number * frame_interval -1} --frame_interval {frame_interval} --dataset_type HO3D "
+        cmd += f"--max_frame_num {frame_number * frame_interval -1} --frame_interval {frame_interval} --dataset_type {dataset_type} "
         cmd += f"--output_dir {out_dir} "
         cmd += f"--cond_index {int(self.seq_config['cond_idx'] / self.seq_config['frame_interval'])} "
         cmd += f"--cond_index_raw {int(self.seq_config['cond_idx'])} "
@@ -1553,9 +1609,6 @@ class run_wonder_hoi:
         cmd += f"--data_dir {data_dir} "
         cmd += f"--out_dir {out_dir} "
         cmd += f"--cond_index {self.seq_config['cond_idx']} "
-        cmd += f"--matching_backend vggsfm "
-        cmd += f"--vggsfm_max_query_pts 1024 "
-        cmd += f"--vggsfm_max_points_num 20480 "
         print(cmd)
         os.system(cmd)
 
@@ -1615,6 +1668,18 @@ class run_wonder_hoi:
             print(cmd)
             os.system(cmd)
             return
+
+        if self.vis:
+            cmd = f"cd {vggt_code_dir} && "
+            cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_joint_opt_vis.py "
+            cmd += f"--data_dir {data_dir} "
+            cmd += f"--output_dir {out_dir} "
+            cmd += f"--cond_index {self.seq_config['cond_idx']} "
+            if dataset_type != "ho3d":
+                cmd += f"--vis_gt 0 "
+            print(cmd)
+            os.system(cmd)
+            return
         
         if self.eval:
             cmd = f"cd {vggt_code_dir} && "
@@ -1641,22 +1706,27 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
-    def hoi_pipeline_hand_vis(self, scene_name, **kwargs):
-        self.print_header(f"hoi pipeline hand visualization for {scene_name}")
+    def hoi_pipeline_joint_opt_eval_vis(self, scene_name, **kwargs):
+        self.print_header(f"hoi pipeline joint optimization eval vis for {scene_name}")
         data_dir = f"{self.dataset_dir}/{scene_name}"
         out_dir = f"{vggt_code_dir}/output/{scene_name}"
-        id = f"{self.seq_config['cond_idx']:04d}"
 
         cmd = f"cd {vggt_code_dir} && "
-        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_hand_vis.py "
-        cmd += f"--data_dir {data_dir} "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_joint_opt_eval_vis_nvdiffrast.py "
+        cmd += f"--result_folder {out_dir}/pipeline_joint_opt/ "
+        cmd += f"--out_dir {out_dir}/pipeline_joint_opt/eval/ "
+        cmd += f"--SAM3D_dir {data_dir}/SAM3D_aligned_post_process "
         cmd += f"--cond_index {self.seq_config['cond_idx']} "
-        cmd += f"--interval {self.seq_config['frame_interval']} "
-        cmd += f"--hand_mode trans " #(e.g. 'rot', 'trans', 'intrinsic')"
-        print(cmd)
-        os.system(cmd)
-        return
+        render_hand = str(kwargs.get("render_hand", "false")).lower() in {"1", "true", "yes", "y"}
+        if render_hand:
+            cmd += f"--render_hand "
+        if self.rebuild:
+            cmd += f"--rebuild "
+        if dataset_type != "ho3d":
+            cmd += f"--vis_gt 0 "
        
+        print(cmd)
+        os.system(cmd)       
 
     def hoi_pipeline_reg_remaining(self, scene_name, **kwargs):
         self.print_header(f"hoi pipeline register remaining for {scene_name}")
@@ -1781,6 +1851,105 @@ class run_wonder_hoi:
     def eval_sum(self, scene_name, **kwargs):
         self._eval_sum(scene_name, "")        
 
+    def eval_sum_vis(self, scene_name, **kwargs):
+        self.print_header(f"eval summary vis for {scene_name}")
+
+        foundation_dir = kwargs.get(
+            "foundation_dir",
+            f"{vggt_code_dir}/output_baseline/{scene_name}/foundation_sam3d",
+        )
+        joint_opt_dir = kwargs.get(
+            "joint_opt_dir",
+            f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/eval",
+        )
+        gt_dir = kwargs.get(
+            "gt_dir",
+            f"{vggt_code_dir}/output_baseline/{scene_name}/gt",
+        )
+        out_dir = kwargs.get(
+            "out_dir",
+            f"{vggt_code_dir}/output/metrics_summary/{scene_name}/",
+        )
+
+        if self.rebuild:
+            cmd = f"rm -rf {out_dir}"
+            print(cmd)
+            os.system(cmd)
+
+        cmd = f"cd {vggt_code_dir} && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/eval_sum_vis.py "
+        cmd += f"--foundation_dir {foundation_dir} "
+        cmd += f"--joint_opt_dir {joint_opt_dir} "
+        cmd += f"--gt_dir {gt_dir} "
+        cmd += f"--out_dir {out_dir} "
+        if "fps" in kwargs:
+            cmd += f"--fps {kwargs['fps']} "
+        if "line_width" in kwargs:
+            cmd += f"--line_width {kwargs['line_width']} "
+        if "line_gray" in kwargs:
+            cmd += f"--line_gray {kwargs['line_gray']} "
+        if self.rebuild:
+            cmd += f"--rebuild "
+
+        print(cmd)
+        os.system(cmd)
+
+    def foundation_pose_eval_vis(self, scene_name, **kwargs):
+        self.print_header(f"foundation pose eval vis for {scene_name}")
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+        cond_idx = int(self.seq_config["cond_idx"])
+
+        # Default pose folder follows third_party/FoundationPose/run.sh output layout.
+        result_folder = f"{vggt_code_dir}/third_party/FoundationPose/output/sam3d/{scene_name}"
+        out_dir = f"{vggt_code_dir}/output_baseline/{scene_name}/foundation_sam3d"
+        sam3d_dir = f"{data_dir}/SAM3D"
+
+        if self.rebuild:
+            cmd = f"rm -rf {out_dir}"
+            print(cmd)
+            os.system(cmd)
+
+        cmd = f"cd {vggt_code_dir} && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python third_party/FoundationPose/eval_vis_nvdiffrast.py "
+        cmd += f"--result_folder {result_folder} "
+        cmd += f"--data_dir {data_dir} "
+        cmd += f"--sam3d_dir {sam3d_dir} "
+        cmd += f"--out_dir {out_dir} "
+        cmd += f"--cond_index {cond_idx} "
+
+        print(cmd)
+        os.system(cmd)
+
+    def gt_eval_vis(self, scene_name, **kwargs):
+        self.print_header(f"gt eval vis for {scene_name}")
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+        out_dir = kwargs.get("out_dir", f"{vggt_code_dir}/output_baseline/{scene_name}/gt/")
+
+        if self.rebuild:
+            cmd = f"rm -rf {out_dir}"
+            print(cmd)
+            os.system(cmd)
+
+        cmd = f"cd {vggt_code_dir} && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/eval_gt_vis.py "
+        cmd += f"--data_dir {data_dir} "
+        cmd += f"--out_dir {out_dir} "
+
+        render_hand = str(kwargs.get("render_hand", "false")).lower() in {"1", "true", "yes", "y"}
+        if render_hand:
+            cmd += f"--render_hand "
+        if "fps" in kwargs:
+            cmd += f"--fps {kwargs['fps']} "
+        if "alpha" in kwargs:
+            cmd += f"--alpha {kwargs['alpha']} "
+        if "max_frames" in kwargs:
+            cmd += f"--max_frames {kwargs['max_frames']} "
+        if self.rebuild:
+            cmd += f"--rebuild "
+
+        print(cmd)
+        os.system(cmd)
+
 def main(args, extras):
     # Convert extras list to dictionary
     extras_dict = {}
@@ -1801,137 +1970,6 @@ def main(args, extras):
     run_wonder_hoi(args, extras_dict).run()
 
 if __name__ == "__main__":
-    all_sequences = [
-        # ###### ZED dataset ##########
-        # "air_gun",
-        # "clamp",
-        # "cooking_shovel",
-        # "cube",
-        # "cup1",
-        # "cup2",
-        # "duck",
-        # "fire_fighting_car",
-        # "glass_cup",
-        # "hammer",
-        # "jep_car",
-        # "lufei",
-        # "mouse",
-        # "pitch",
-        # "plane",
-        # "scisors",
-        # "scisors_1",
-        # "spoon",
-        # "sprayer",
-        # "wrench",
-        # ###### ZED dataset ##########
-        # "air_gun",
-        # "clamp",
-        # "cooking_shovel",
-        # "cube",
-        # "cup1",
-        # "cup2",
-        # "duck",
-        # "fire_fighting_car",
-        # "glass_cup",
-        # "hammer",
-        # "jep_car",
-        # "lufei",
-        # "mouse",
-        # "pitch",
-        # "plane",
-        # "scisors",
-        # "scisors_1",
-        # "spoon",
-        # "sprayer",
-        # "wrench",
-        # "bottle1",
-        # "bottle2",
-        # "drug_box",
-        # "trans_bottle1" 
-        
-        
-
-        ###### hot3d ##########
-        # "P0003_c701bd11",
-
-        ###### ho3d part 1 ##########
-        "ABF12",
-        "ABF14",
-        "GPMF12",
-        "GPMF14",    
-        "MC1",
-        "MC4",
-        "MDF12",
-        "MDF14",
-        "ShSu10",
-        "ShSu14",
-        "SM2",
-        "SM4",
-        "SMu1",
-        "SMu40",
-        "BB12",
-        "BB13", 
-        "GSF12",
-        "GSF13",
-              
-
-        # ###### ho3d full ##########
-        # "ABF10",
-        # "ABF11",
-        # "ABF12",
-        # "ABF13",
-        # "ABF14",
-        # "BB10",
-        # "BB11",
-        # "BB12",
-        # "BB13",
-        # "BB14",     
-        # "GPMF10",
-        # "GPMF11",
-        # "GPMF12",
-        # "GPMF13",
-        # "GPMF14",   
-        # "GSF10",
-        # "GSF11",
-        # "GSF12",
-        # "GSF13",
-        # "GSF14",
-        # "MC1",
-        # "MC2",
-        # "MC4",
-        # "MC5",
-        # "MC6",
-        # "MDF10",
-        # "MDF11",
-        # "MDF12",
-        # "MDF13",
-        # "MDF14",     
-        # "ND2",  
-        # "SB10",
-        # "SB12",
-        # "SB14",
-        # "ShSu10",
-        # "ShSu12",
-        # "ShSu13",
-        # "ShSu14",
-        # "SiBF10",
-        # "SiBF11",
-        # "SiBF12",
-        # "SiBF13",
-        # "SiBF14",
-        # "SiS1",
-        # "SM2",
-        # "SM3",
-        # "SM4",
-        # "SM5",
-        # "SMu1",
-        # "SMu40",
-        # "SMu41",
-        # "SMu42",
-        # "SS1",
-        # "SS2",
-        # "SS3",        
-    ]
 
     parser = argparse.ArgumentParser()
 
@@ -1948,7 +1986,8 @@ if __name__ == "__main__":
                 "data_convert",
                 "obj_process",
                 "hand_pose_preprocess",
-                "hand_pose_postprocess",           
+                "hand_pose_postprocess",
+                "baseline",
                 ], 
         help="Specify the execution option.", 
         nargs='+',  # To accept multiple values in a list
@@ -1959,7 +1998,8 @@ if __name__ == "__main__":
                 "realsense_convert_data", 
                 "ZED_read_data",
                 "ZED_parse_data",
-                "convert_depth_to_ply",
+                "convert_zed_depth_to_ply",
+                "soft_link_depth",
                 "get_depth_from_foundation_stereo",
                 "estimate_hand_pose",
                 "estimate_obj_pose",
@@ -2021,7 +2061,7 @@ if __name__ == "__main__":
                 "hoi_pipeline_HY_to_SAM3D",
                 "hoi_pipeline_HY_omni_gen",
                 "hoi_pipeline_joint_opt",
-                "hoi_pipeline_hand_vis",
+                "hoi_pipeline_joint_opt_eval_vis",
                 "hoi_pipeline_reg_remaining",
                 "hoi_pipeline_HY_gen",
                 "ho3d_eval_intrinsic",
@@ -2030,7 +2070,10 @@ if __name__ == "__main__":
                 "eval_sum_intrinsic",
                 "eval_sum_trans",
                 "eval_sum_rot",
-                "eval_sum"
+                "eval_sum",
+                "eval_sum_vis",
+                "foundation_pose_eval_vis",
+                "gt_eval_vis",
                 ],
         help="Specify the process option.", 
         nargs='+',  # To accept multiple values in a list
@@ -2039,13 +2082,12 @@ if __name__ == "__main__":
     parser.add_argument('--rebuild', action='store_true', help='Rebuild the process')
     parser.add_argument('--vis', action='store_true', help='Visualize the process')
     parser.add_argument('--eval', action='store_true', help='Evaluate the process')
-    parser.add_argument('--dataset_dir', type=str, default=f"{home_dir}/Documents/dataset/BundleSDF/HO3D_v3/train/", help='Dataset directory')
     parser.add_argument('--reconstruction_dir', type=str, default=f"{home_dir}/Documents/project/WonderHOI/code/output_backup/[115][472254d][disable_global_ba]", help='Reconstruction folder')
     parser.add_argument('--conda_type', type=str, default=None, help='Conda environment type: anaconda3 or miniconda3')
 
     args, extras = parser.parse_known_args()
     
     if 'all' in args.seq_list:
-        args.seq_list = all_sequences
+        args.seq_list = sequence_name_list
 
     main(args, extras)

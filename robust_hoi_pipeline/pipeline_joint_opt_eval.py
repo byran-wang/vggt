@@ -2,6 +2,7 @@ import numpy as np
 
 import json
 import os
+import pickle
 import sys
 from pathlib import Path
 
@@ -122,7 +123,7 @@ def parse_args():
     parser.add_argument("--debug", default=False, action="store_true")
     parser.add_argument("--mesh_type", type=str, default="sam3d",
                         help="Type of mesh for evaluation: hy_omni or sam3d")
-    parser.add_argument("--eval_mesh_chamfer", action="store_true", default=False,
+    parser.add_argument("--eval_mesh_chamfer", action="store_true", default=True,
                          help="Whether to evaluate Chamfer/F-score metrics for available meshes")
     parser.add_argument("--vis_gt_pred", action="store_true", default=False,
                          help="Whether to visualize GT and predicted poses with rotated 3D points in rerun")
@@ -223,8 +224,8 @@ def eval_mesh_chamfer(
 
     mesh_specs = [
         ("sam3d", sam3d_mesh),
-        ("joint_opt", joint_opt_mesh),
-        ("hy_omni", hy_omni_mesh),
+        # ("joint_opt", joint_opt_mesh),
+        # ("hy_omni", hy_omni_mesh),
     ]
 
     for prefix, mesh_path in mesh_specs:
@@ -454,10 +455,29 @@ def load_pred_data(results_dir, SAM3D_dir, cond_index):
     """
     register_indices = load_register_indices(results_dir)
     last_register_idx = register_indices[-1]
-    image_info = np.load(
-        results_dir / f"{last_register_idx:04d}" / "image_info.npy",
-        allow_pickle=True,
-    ).item()
+
+    # Load per-frame data (compressed or legacy format)
+    import gzip
+    gz_path = results_dir / f"{last_register_idx:04d}" / "image_info.pkl.gz"
+    npy_path = results_dir / f"{last_register_idx:04d}" / "image_info.npy"
+    if gz_path.exists():
+        with gzip.open(gz_path, "rb") as f:
+            image_info = pickle.load(f)
+    else:
+        image_info = np.load(npy_path, allow_pickle=True).item()
+
+    # Merge shared static data if using split format
+    shared_gz = results_dir / "shared_info.pkl.gz"
+    shared_npy = results_dir / "shared_info.npy"
+    if shared_gz.exists():
+        with gzip.open(shared_gz, "rb") as f:
+            shared = pickle.load(f)
+        shared.update(image_info)
+        image_info = shared
+    elif shared_npy.exists():
+        shared = np.load(shared_npy, allow_pickle=True).item()
+        shared.update(image_info)
+        image_info = shared
 
     sam3d_transform = load_sam3d_transform(SAM3D_dir, cond_index)
     sam3d_to_cond_cam = sam3d_transform['sam3d_to_cond_cam']
