@@ -28,3 +28,6 @@
 [submodule "third_party/hamer"]
 	path = third_party/hamer
 	url = git@github.com:byran-wang/hamer.git
+[submodule "third_party/bundlesdf"]
+	path = third_party/bundlesdf
+	url = git@github.com:byran-wang/bundlesdf.git
