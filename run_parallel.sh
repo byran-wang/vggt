@@ -9,22 +9,16 @@ export CUDA_PATH='/usr/local/cuda-11.8'
 export LD_LIBRARY_PATH="/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH"
 export PYTHONPATH="/data1/shibo/Documents/project/vggt_wenxuan/third_party/utils_simba:$PYTHONPATH"
 
-# declare -A device_sequences=(
-#   [0]="ABF12 BB12"
-#   [1]="ABF14 BB13"
-#   [2]="GPMF12 GPMF14"
-#   [3]="MC1 MDF12"
-#   [4]="MC4 MDF14"
-#   [5]="ShSu10 ShSu14"
-#   [6]="SM2 SM4 GSF12"
-#   [7]="SMu1 SMu40 GSF13"     
-
-# )
-
-# PMC1 效果太差
 declare -A device_sequences=(
-  [0]="TSC1 TSC2"
-  [1]="PMC2"
+  [0]="CUP1 CUP2"
+  [1]="FFC1 FFC2"
+  [2]="MEC1 MEC2"
+  [3]="MED1 MED2"
+  [4]="MOU1 MOU2"
+  [5]="SPA1 SPA2"
+  [6]="TC1 TC2"
+  [7]="WC1 WC2"     
+
 )
 
 current_dir=$(pwd)
