@@ -22,13 +22,11 @@ export LD_LIBRARY_PATH="/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH"
 
 # )
 
-# declare -A device_sequences=(
-#   [0]="CUB1 CUB2 DUC1 DUC2 TC3 TC4 WC3 WC4"
-# )
-
 declare -A device_sequences=(
-  [0]="AG1 FIG1 HAM1 PIN1 SPN1 TAB1 TG1"
+  [0]="CUP3 CUP4 FFC1 MEC1 MED1 MOU1 SPA1"
 )
+
+
 
 current_dir=$(pwd)
 
