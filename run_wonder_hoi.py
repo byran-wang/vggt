@@ -1844,6 +1844,10 @@ class run_wonder_hoi:
             "bundle_sdf_dir",
             f"{vggt_code_dir}/output_baseline/{scene_name}/bundle_sdf",
         )
+        hold_dir = kwargs.get(
+            "hold_dir",
+            f"{vggt_code_dir}/output_baseline/{scene_name}/hold",
+        )
         joint_opt_dir = kwargs.get(
             "joint_opt_dir",
             f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/eval",
@@ -1858,7 +1862,7 @@ class run_wonder_hoi:
         )
 
         if self.rebuild:
-            cmd = f"rm -rf {out_dir}"
+            cmd = f"rm -rf {out_dir} && rm {vggt_code_dir}/output/metrics_summary/eval_sum_{scene_name}.mp4"
             print(cmd)
             os.system(cmd)
 
@@ -1866,6 +1870,7 @@ class run_wonder_hoi:
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/eval_sum_vis.py "
         cmd += f"--foundation_dir {foundation_dir} "
         cmd += f"--bundle_sdf_dir {bundle_sdf_dir} "
+        cmd += f"--hold_dir {hold_dir} "
         cmd += f"--joint_opt_dir {joint_opt_dir} "
         cmd += f"--gt_dir {gt_dir} "
         cmd += f"--out_dir {out_dir} "

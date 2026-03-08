@@ -83,3 +83,4 @@ Host 3090_server1
 - [x] In third_party/hold/code/eval_vis_nvdiffrast.py, not only load the object mesh but also hand mesh to render the normal overlay image.
 - [x] In third_party/hold/code/eval_vis_nvdiffrast.py, seal the hand for each frames and save the object mesh in object space in the first frame.
 - [x] follow third_party/hold/docs/setup.md to run bash ./bash/download_data.sh to download hold preprossed data with export HOLD_USERNAME=swang457@connect.hkust-gz.edu.cn and export HOLD_PASSWORD=Simba67379325
+- [x] in robust_hoi_pipeline/eval_sum_vis.py, add the normal overlay video geneated by third_party/hold/code/eval_vis_nvdiffrast.py to the merged video

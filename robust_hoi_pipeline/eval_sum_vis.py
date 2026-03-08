@@ -86,6 +86,7 @@ def _stream_label(name: str):
     labels = {
         "foundation": "FoundationPose",
         "bundle_sdf": "BundleSDF",
+        "hold": "HOLD",
         "joint_opt": "Ours",
         "gt": "Ground Truth",
     }
@@ -184,6 +185,7 @@ def _load_stream_frame(stream, frame_ref, use_frame_map: bool):
 def main(args):
     foundation_dir = Path(args.foundation_dir)
     bundle_sdf_dir = Path(args.bundle_sdf_dir) if args.bundle_sdf_dir is not None else None
+    hold_dir = Path(args.hold_dir) if args.hold_dir is not None else None
     joint_opt_dir = Path(args.joint_opt_dir)
     gt_dir = Path(args.gt_dir)
     out_dir = Path(args.out_dir)
@@ -197,6 +199,11 @@ def main(args):
         bundle_sdf_frames_dir = _resolve_frame_dir(
             bundle_sdf_dir, ["nvdiffrast_overlay_frames", "overlay_frames"]
         )
+    hold_frames_dir = None
+    if hold_dir is not None:
+        hold_frames_dir = _resolve_frame_dir(
+            hold_dir, ["nvdiffrast_overlay_frames", "overlay_frames"]
+        )
     joint_opt_frames_dir = _resolve_frame_dir(
         joint_opt_dir, ["nvdiffrast_overlay_frames", "overlay_frames"]
     )
@@ -208,6 +215,8 @@ def main(args):
         print(f"WARNING: No overlay frame dir found under {foundation_dir}, skipping.")
     if bundle_sdf_dir is not None and bundle_sdf_frames_dir is None:
         print(f"WARNING: No overlay frame dir found under {bundle_sdf_dir}, skipping.")
+    if hold_dir is not None and hold_frames_dir is None:
+        print(f"WARNING: No overlay frame dir found under {hold_dir}, skipping.")
     if joint_opt_frames_dir is None:
         print(f"WARNING: No overlay frame dir found under {joint_opt_dir}, skipping.")
     if gt_frames_dir is None:
@@ -218,6 +227,8 @@ def main(args):
         streams.append(_load_stream("foundation", foundation_dir, foundation_frames_dir))
     if bundle_sdf_frames_dir is not None:
         streams.append(_load_stream("bundle_sdf", bundle_sdf_dir, bundle_sdf_frames_dir))
+    if hold_frames_dir is not None:
+        streams.append(_load_stream("hold", hold_dir, hold_frames_dir))
     if joint_opt_frames_dir is not None:
         streams.append(_load_stream("joint_opt", joint_opt_dir, joint_opt_frames_dir))
     if gt_frames_dir is not None:
@@ -263,6 +274,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--foundation_dir", type=str, required=True, help="FoundationPose eval vis output directory")
     parser.add_argument("--bundle_sdf_dir", type=str, default=None, help="BundleSDF eval vis output directory")
+    parser.add_argument("--hold_dir", type=str, default=None, help="HOLD eval vis output directory")
     parser.add_argument("--joint_opt_dir", type=str, required=True, help="Joint-opt eval vis output directory")
     parser.add_argument("--gt_dir", type=str, required=True, help="GT eval vis output directory")
     parser.add_argument("--out_dir", type=str, required=True, help="Output directory for merged visualization")
