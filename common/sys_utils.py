@@ -105,7 +105,18 @@ def mkdir_p(exp_path):
 
 def load_pickle(path):
     with open(path, "rb") as f:
-        return pickle.load(f)
+        try:
+            return pickle.load(f)
+        except ModuleNotFoundError as e:
+            if "numpy._core" not in str(e):
+                raise
+            f.seek(0)
+            class _NumpyCompatUnpickler(pickle.Unpickler):
+                def find_class(self, module, name):
+                    if module.startswith("numpy._core"):
+                        module = module.replace("numpy._core", "numpy.core", 1)
+                    return super().find_class(module, name)
+            return _NumpyCompatUnpickler(f).load()
 
 
 def dump_pickle(path, obj):

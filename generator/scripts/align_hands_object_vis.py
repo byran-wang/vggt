@@ -23,6 +23,22 @@ from common.rerun_utils import compute_vertex_normals
 from src.utils.io.gt import load_data as gt_load_data
 
 
+def _load_pickle_compat(path):
+    with open(path, "rb") as f:
+        try:
+            return pickle.load(f)
+        except ModuleNotFoundError as e:
+            if "numpy._core" not in str(e):
+                raise
+            f.seek(0)
+            class _NumpyCompatUnpickler(pickle.Unpickler):
+                def find_class(self, module, name):
+                    if module.startswith("numpy._core"):
+                        module = module.replace("numpy._core", "numpy.core", 1)
+                    return super().find_class(module, name)
+            return _NumpyCompatUnpickler(f).load()
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Visualize aligned hands and object results")
     parser.add_argument("--pred_path", type=str, required=True,
@@ -78,8 +94,7 @@ def load_metadata(seq_name, data_dir, dataset_type, num_frames, min_frame_num, f
         im_ps = im_ps[min_frame_num:num_frames:frame_interval]
         intrinsic_file = sorted(glob(f"{data_dir}/train/{seq_name}/meta/*.pkl"))[0]
 
-    with open(intrinsic_file, "rb") as f:
-        K = np.array(pickle.load(f)["camMat"])
+    K = np.array(_load_pickle_compat(intrinsic_file)["camMat"])
 
     return {"im_paths": im_ps, "K": K}
 

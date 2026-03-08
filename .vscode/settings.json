@@ -3,9 +3,9 @@
     "**/ho3d_v3": true,
     "**/dataset_HO3D": true,
     "**/dataset_ZED": true,
-      "**/output": true,
-      "**/output_server": true,
-      "**/output*": true,    
+      "**/output": false,
+      "**/output_server": false,
+      "**/output*": false,    
   },
   "search.exclude": {
       "**/output": true,

@@ -11,6 +11,22 @@ import pickle
 sys.path = ['../code'] + sys.path
 
 
+def _load_pickle_compat(path):
+    with open(path, "rb") as f:
+        try:
+            return pickle.load(f)
+        except ModuleNotFoundError as e:
+            if "numpy._core" not in str(e):
+                raise
+            f.seek(0)
+            class _NumpyCompatUnpickler(pickle.Unpickler):
+                def find_class(self, module, name):
+                    if module.startswith("numpy._core"):
+                        module = module.replace("numpy._core", "numpy.core", 1)
+                    return super().find_class(module, name)
+            return _NumpyCompatUnpickler(f).load()
+
+
 def object_intrinsic_gen(args):
     seq_name = args.seq_name
     out_name = args.out_name
@@ -18,7 +34,7 @@ def object_intrinsic_gen(args):
 
 
     intrinsic_f = args.intrinsic_f
-    meta = pickle.load(open(intrinsic_f,'rb'))
+    meta = _load_pickle_compat(intrinsic_f)
     K = meta['camMat']
     fmt = '%.12f'
     os.makedirs(f'data/{seq_name}/processed/{out_name}', exist_ok=True)

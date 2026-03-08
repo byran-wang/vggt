@@ -1,4 +1,5 @@
 from glob import glob
+from pathlib import Path
 import torch
 import numpy as np
 from PIL import Image
@@ -15,6 +16,24 @@ from common.xdict import xdict
 import trimesh
 import os
 from tqdm import tqdm
+
+
+class _NumpyCompatUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module.startswith("numpy._core"):
+            module = module.replace("numpy._core", "numpy.core", 1)
+        return super().find_class(module, name)
+
+
+def _load_pickle_compat(path):
+    with open(path, "rb") as f:
+        try:
+            return pickle.load(f)
+        except ModuleNotFoundError as e:
+            if "numpy._core" not in str(e):
+                raise
+            f.seek(0)
+            return _NumpyCompatUnpickler(f).load()
 
 def get_hand_pc(depth_ps, mask_hand_ps, meta, device="cuda"):
     hand_pc = []
@@ -87,6 +106,7 @@ def get_hand_depth(depth_ps, mask_hand_ps, meta, device="cuda"):
     return torch.stack(hand_depth, dim=0)
     
 
+<<<<<<< HEAD
 def read_data_ZED(seq_name, args):
     # load data
     num_frames = args.max_frame_num
@@ -171,12 +191,27 @@ def read_data_ZED(seq_name, args):
 
 
 def read_data_HO3D(seq_name, args):
-    # load data
-    im_ps = sorted(glob(f"./data/train/{seq_name}/rgb/*.jpg"))
-    mask_obj_ps = sorted(glob(f"./data/train/{seq_name}/mask_object/*.png"))
-    mask_hand_ps = sorted(glob(f"./data/train/{seq_name}/mask_hand/*.png"))
-    depth_ps = sorted(glob(f"./data/train/{seq_name}/depth/*.png"))
+=======
 
+def read_data(args):
+    seq_name = args.seq_name
+>>>>>>> origin/main
+    # load data
+    if args['dataset_type'] == "ho3d":
+        data_dir = f"./data/train/{seq_name}"
+    elif args['dataset_type'] == "zed":
+        data_dir = args['out_dir']
+    else:
+        raise NotImplementedError(f"Dataset type {args['dataset_type']} not implemented.")
+
+    im_ps = sorted(
+        glob(f"{data_dir}/rgb/*.jpg")
+        + glob(f"{data_dir}/rgb/*.png")
+    )
+    mask_obj_ps = sorted(glob(f"{data_dir}/mask_object/*.png"))
+    mask_hand_ps = sorted(glob(f"{data_dir}/mask_hand/*.png"))
+    depth_ps = sorted(glob(f"{data_dir}/depth/*.png"))
+    
     assert len(im_ps) == len(mask_hand_ps) == len(mask_obj_ps) == len(depth_ps), "Number of images, hand masks, object masks, and depth maps must be equal."
     num_total_frames = len(im_ps)
 
@@ -185,7 +220,8 @@ def read_data_HO3D(seq_name, args):
     mask_obj_ps = mask_obj_ps[args.min_frame_num:args.max_frame_num:args.frame_interval]
     depth_ps = depth_ps[args.min_frame_num:args.max_frame_num:args.frame_interval]
 
-    intrinsic_file = im_ps[0].replace('.jpg','.pkl').replace('/rgb/','/meta/')
+    im0 = Path(im_ps[0])
+    intrinsic_file = str(im0.parent.parent / "meta" / f"{im0.stem}.pkl")
 
     # Print image file names (not full paths) to quickly verify ordering
     im_file_names = [os.path.basename(p) for p in im_ps]
@@ -194,7 +230,7 @@ def read_data_HO3D(seq_name, args):
 
     meta = {}
 
-    meta['K'] = np.array(pickle.load(open(intrinsic_file,'rb'))['camMat'])
+    meta['K'] = np.array(_load_pickle_compat(intrinsic_file)['camMat'])
     meta['im_paths'] = im_ps
     meta['mask_obj_paths'] = mask_obj_ps
     meta['mask_hand_paths'] = mask_hand_ps
@@ -213,9 +249,9 @@ def read_data_HO3D(seq_name, args):
     
     entities  = {}
 
-    j2d_p = f"./data/train/{seq_name}/hands/j2d.full.npy"
+    j2d_p = f"{data_dir}/hands/j2d.full.npy"
     data = np.load(
-        f"./data/train/{seq_name}/hands/hold_fit.slerp.npy", allow_pickle=True
+        f"{data_dir}/hands/hold_fit.slerp.npy", allow_pickle=True
     ).item()
     # get the hand mask
 
@@ -252,13 +288,7 @@ def read_data_HO3D(seq_name, args):
     mydata['meta'] = meta
     return mydata
 
-def read_data(args):
-    if args.dataset_type == 'zed':
-        return read_data_ZED(args.seq_name, args)
-    elif args.dataset_type == 'ho3d':
-        return read_data_HO3D(args.seq_name, args)
-    else:
-        raise NotImplementedError(f"Dataset type {args.dataset_type} not implemented.")
+
 class FakeDataset(torch.utils.data.Dataset):
     def __init__(self, num_iter):
         self.num_iter = num_iter

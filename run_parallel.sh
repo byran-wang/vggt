@@ -59,11 +59,10 @@ for device in "${!device_sequences[@]}"; do
     --dataset_dir /home/simba-1/Documents/dataset/ZED_wenxuan    
 
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-    --execute_list obj_process \
-    --process_list hoi_pipeline_joint_opt \
-    --seq_list $sequences --rebuild \
-    --conda_type anaconda3 \
-    --dataset_dir /home/simba-1/Documents/dataset/ZED_wenxuan
+      --execute_list obj_process \
+      --process_list eval_sum hoi_pipeline_joint_opt_eval_vis eval_sum_vis \
+      --seq_list $sequences --rebuild
+
 
     # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
     # --execute_list obj_process \

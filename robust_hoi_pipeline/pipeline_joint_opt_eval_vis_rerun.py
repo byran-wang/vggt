@@ -22,6 +22,21 @@ from utils_simba.geometry import transform_points
 device = "cuda:0"
 
 
+def compute_vertex_normals(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
+    """Compute per-vertex normals by averaging adjacent face normals."""
+    v0 = vertices[faces[:, 0]]
+    v1 = vertices[faces[:, 1]]
+    v2 = vertices[faces[:, 2]]
+    face_normals = np.cross(v1 - v0, v2 - v0)
+    vertex_normals = np.zeros_like(vertices)
+    np.add.at(vertex_normals, faces[:, 0], face_normals)
+    np.add.at(vertex_normals, faces[:, 1], face_normals)
+    np.add.at(vertex_normals, faces[:, 2], face_normals)
+    norms = np.linalg.norm(vertex_normals, axis=1, keepdims=True)
+    norms = np.maximum(norms, 1e-8)
+    return vertex_normals / norms
+
+
 def load_mesh_as_trimesh(mesh_path: Path):
     """Load a mesh file and return a single Trimesh (supports scene-based GLB)."""
     loaded = trimesh.load(str(mesh_path), process=False)
@@ -87,6 +102,49 @@ def build_mesh_object_predictions(
         "v3d_right.object": v3d_right_list,
         "faces": {"object": torch.tensor(faces)},
     }
+
+
+def load_object_mesh_from_sam3d(
+    SAM3D_dir: Path,
+    cond_index: int,
+    frame_indices_full: np.ndarray,
+    c2o_full: np.ndarray,
+    scale: float,
+    sam3d_to_cond_cam: np.ndarray,
+):
+    """Load mesh from SAM3D directory and convert canonical vertices to object space."""
+    # Match pipeline_joint_opt_eval.py preference.
+    mesh_candidates = [
+        SAM3D_dir.parent / "SAM3D" / f"{cond_index:04d}" / "scene.glb",
+        SAM3D_dir / f"{cond_index:04d}" / "mesh.obj",
+        SAM3D_dir / f"{cond_index:04d}" / "scene.glb",
+    ]
+    mesh_path = next((p for p in mesh_candidates if p.exists()), None)
+    if mesh_path is None:
+        return None, None, None
+
+    mesh = load_mesh_as_trimesh(mesh_path)
+    if mesh is None:
+        return None, None, None
+
+    frame_list = frame_indices_full.tolist() if isinstance(frame_indices_full, np.ndarray) else list(frame_indices_full)
+    if cond_index not in frame_list:
+        return None, None, None
+
+    verts_obj = mesh.vertices * scale
+    faces = np.asarray(mesh.faces, dtype=np.uint32)
+
+    vertex_colors = None
+    if hasattr(mesh, "visual") and hasattr(mesh.visual, "vertex_colors"):
+        vc = np.asarray(mesh.visual.vertex_colors)
+        if vc.ndim == 2 and vc.shape[0] == len(verts_obj) and vc.shape[1] >= 3:
+            vertex_colors = vc[:, :3].astype(np.uint8)
+    elif hasattr(mesh, "visual") and hasattr(mesh.visual, "to_color") and callable(mesh.visual.to_color):
+        vc = np.asarray(mesh.visual.to_color().vertex_colors)
+        if vc.ndim == 2 and vc.shape[0] == len(verts_obj) and vc.shape[1] >= 3:
+            vertex_colors = vc[:, :3].astype(np.uint8)
+
+    return verts_obj, faces, vertex_colors
 
 
 def find_joint_opt_mesh_from_ckpt(joint_opt_ckpt: Path):
@@ -166,7 +224,7 @@ def visualize_in_rerun(extrinsics, frame_indices, valid_flags, SAM3D_dir, cond_i
 
 
 
-def align_pred_to_gt(valid_extrinsics, gt_o2c, valid_frame_indices,
+def align_pred_to_gt(pred_o2c, gt_o2c, valid_frame_indices,
                      cond_index, register_indices):
     """Align predicted extrinsics to GT object space using a shared anchor frame.
 
@@ -197,16 +255,57 @@ def align_pred_to_gt(valid_extrinsics, gt_o2c, valid_frame_indices,
         if anchor_idx is None:
             raise ValueError(
                 "No registered frame found in valid_frame_indices for alignment")
-    align_tf = np.linalg.inv(valid_extrinsics[anchor_idx]) @ gt_o2c[anchor_idx]
-    return valid_extrinsics @ align_tf
+    # anchor_idx = 0 # hardcode to use the first valid frame as anchor
+    align_tf = np.linalg.inv(pred_o2c[anchor_idx]) @ gt_o2c[anchor_idx]
+    return pred_o2c @ align_tf
 
 
-def visualize_gt_and_pred_in_rerun(data_gt, pred_extrinsics, frame_indices, SAM3D_dir, jpeg_quality=85):
+def compute_frustum_lines(K, H, W, c2o, depth=0.02):
+    """Compute camera frustum line segments in world (object) space.
+
+    Returns a list of (2,3) line segments: 4 edges from origin to corners
+    and 4 edges forming the image-plane rectangle.
+    """
+    K_inv = np.linalg.inv(K[:3, :3])
+    corners_px = np.array([
+        [0, 0, 1],
+        [W, 0, 1],
+        [W, H, 1],
+        [0, H, 1],
+    ], dtype=np.float64)
+    # Unproject to camera space at given depth
+    corners_cam = (K_inv @ corners_px.T).T * depth  # (4, 3)
+    origin_cam = np.zeros(3, dtype=np.float64)
+
+    # Transform to world space
+    R = c2o[:3, :3].astype(np.float64)
+    t = c2o[:3, 3].astype(np.float64)
+    origin_w = t.copy()
+    corners_w = (R @ corners_cam.T).T + t  # (4, 3)
+
+    segments = []
+    # 4 edges from origin to each corner
+    for c in corners_w:
+        segments.append(np.stack([origin_w, c]))
+    # 4 edges of the rectangle
+    for j in range(4):
+        segments.append(np.stack([corners_w[j], corners_w[(j + 1) % 4]]))
+    return segments
+
+
+def visualize_gt_and_pred_in_rerun(
+    data_gt,
+    data_pred,
+    pred_extrinsics,
+    frame_indices,
+    SAM3D_dir,
+    cond_index,
+    frame_indices_full,
+    c2o_full,
+    scale,
+    sam3d_to_cond_cam,
+                                   jpeg_quality=85, world_mode="camera", history_window=50):
     """Visualize GT and predicted poses with meshes in rerun.
-
-    For each frame, transforms the GT canonical mesh vertices by the o2c pose
-    (object-to-camera) and logs them as colored meshes alongside camera
-    intrinsics and images for both GT and predicted poses.
 
     Args:
         data_gt: Ground truth data dict (from gt.load_data) with keys:
@@ -214,6 +313,9 @@ def visualize_gt_and_pred_in_rerun(data_gt, pred_extrinsics, frame_indices, SAM3
         pred_extrinsics: (M, 4, 4) predicted object-to-camera matrices for valid frames
         frame_indices: (M,) frame indices corresponding to pred_extrinsics
         SAM3D_dir: Path to SAM3D_aligned_post_process directory
+        jpeg_quality: JPEG quality for compressed images
+        world_mode: "camera" (camera fixed, object moves) or
+                    "object" (object fixed at identity, cameras move)
     """
     import rerun as rr
     rr.init("pipeline_joint_opt_eval", spawn=True)
@@ -245,72 +347,180 @@ def visualize_gt_and_pred_in_rerun(data_gt, pred_extrinsics, frame_indices, SAM3
     gt_K = data_gt["K"].numpy() if torch.is_tensor(data_gt["K"]) else np.array(data_gt["K"])
     data_preprocess_dir = SAM3D_dir.parent / "pipeline_preprocess"
 
-    # Log mesh geometry once in object space; per-frame pose is applied via Transform3D.
+    pred_verts, pred_faces, pred_colors = load_object_mesh_from_sam3d(SAM3D_dir, cond_index, frame_indices_full, c2o_full, scale, sam3d_to_cond_cam)
+    # TODO: need algin the object mesh from SAM3D to GT canonical space before visualization if they are not aligned.
+
+    # Hand mesh payloads in camera space.
+    pred_hand_verts_cam = data_pred.get("v3d_c.right")
+    pred_hand_faces = data_pred.get("faces.right")
+    gt_hand_verts_cam = data_gt.get("v3d_c.right")
+    gt_hand_faces = data_gt.get("faces.right")
+    if torch.is_tensor(pred_hand_verts_cam):
+        pred_hand_verts_cam = pred_hand_verts_cam.detach().cpu().numpy()
+    if torch.is_tensor(pred_hand_faces):
+        pred_hand_faces = pred_hand_faces.detach().cpu().numpy()
+    if torch.is_tensor(gt_hand_verts_cam):
+        gt_hand_verts_cam = gt_hand_verts_cam.detach().cpu().numpy()
+    if torch.is_tensor(gt_hand_faces):
+        gt_hand_faces = gt_hand_faces.detach().cpu().numpy()
+
+    if pred_hand_verts_cam is not None and pred_hand_faces is not None:
+        from common.body_models import seal_mano_mesh_np
+        pred_hand_verts_cam, pred_hand_faces = seal_mano_mesh_np(
+            pred_hand_verts_cam, np.asarray(pred_hand_faces).astype(np.int64), is_rhand=True
+        )
+        pred_hand_faces = pred_hand_faces.astype(np.int32)
+    if gt_hand_verts_cam is not None and gt_hand_faces is not None:
+        from common.body_models import seal_mano_mesh_np
+        gt_hand_verts_cam, gt_hand_faces = seal_mano_mesh_np(
+            gt_hand_verts_cam, np.asarray(gt_hand_faces).astype(np.int64), is_rhand=True
+        )
+        gt_hand_faces = gt_hand_faces.astype(np.int32)
+
+    def _log_hand_meshes(frame_i: int):
+        if pred_hand_verts_cam is not None and pred_hand_faces is not None and frame_i < len(pred_hand_verts_cam):
+            hv_pred = np.asarray(pred_hand_verts_cam[frame_i], dtype=np.float32)
+            vn_pred = compute_vertex_normals(hv_pred, pred_hand_faces)
+            rr.log(
+                "world/pred_hand",
+                rr.Mesh3D(
+                    vertex_positions=hv_pred,
+                    triangle_indices=pred_hand_faces,
+                    vertex_normals=vn_pred,
+                    mesh_material=rr.Material(albedo_factor=[200, 180, 220]),
+                ),
+                static=False,
+            )
+        if gt_hand_verts_cam is not None and gt_hand_faces is not None and frame_i < len(gt_hand_verts_cam):
+            hv_gt = np.asarray(gt_hand_verts_cam[frame_i], dtype=np.float32)
+            vn_gt = compute_vertex_normals(hv_gt, gt_hand_faces)
+            rr.log(
+                "world/gt_hand",
+                rr.Mesh3D(
+                    vertex_positions=hv_gt,
+                    triangle_indices=gt_hand_faces,
+                    vertex_normals=vn_gt,
+                    mesh_material=rr.Material(albedo_factor=[200, 180, 160]),
+                ),
+                static=False,
+            )
+
+    mesh_kwargs = {}
     if gt_verts_can is not None and gt_faces is not None:
-        pred_mesh_kwargs = {
-            "vertex_positions": gt_verts_can.astype(np.float32),
-            "triangle_indices": gt_faces,
-        }
-        gt_mesh_kwargs = {
+        mesh_kwargs = {
             "vertex_positions": gt_verts_can.astype(np.float32),
             "triangle_indices": gt_faces,
         }
         if gt_vertex_colors is not None:
-            pred_mesh_kwargs["vertex_colors"] = gt_vertex_colors
-            gt_mesh_kwargs["vertex_colors"] = gt_vertex_colors
-        rr.log("world/pred_camera/object/mesh", rr.Mesh3D(**pred_mesh_kwargs), static=True)
-        rr.log("world/gt_camera/object/mesh", rr.Mesh3D(**gt_mesh_kwargs), static=True)
-    for i, fid in enumerate(frame_indices):
-        rr.set_time_sequence("frame", i)
+            mesh_kwargs["vertex_colors"] = gt_vertex_colors
+    if world_mode == "object":
+        # Object-centric: mesh at identity, cameras shown frame by frame
+        # with sliding history window.
+        if mesh_kwargs:
+            rr.log("world/object/mesh", rr.Mesh3D(**mesh_kwargs), static=True)
 
-        preprocess_data = load_preprocessed_frame(data_preprocess_dir, fid)
-        img = preprocess_data.get("image")
-        K_pred = preprocess_data.get("intrinsics")
+        segs_per_frustum = 8
+        max_history_segs = history_window * segs_per_frustum
+        pred_history_segs = []
+        gt_history_segs = []
 
-        # Predicted: update object pose in camera coordinates.
-        pred_o2c = pred_extrinsics[i].astype(np.float32)
-        pred_entity = "world/pred_camera"
-        rr.log(pred_entity, rr.Transform3D(
-            translation=np.zeros_like(pred_o2c[:3, 3]), mat3x3=np.eye(3)))
-        rr.log(
-            f"{pred_entity}/object",
-            rr.Transform3D(translation=pred_o2c[:3, 3], mat3x3=pred_o2c[:3, :3]),
-        )
-        if img is not None and K_pred is not None:
-            H, W = img.shape[:2]
-            rr.log(
-                f"{pred_entity}/camera",
-                rr.Pinhole(
-                    resolution=[W, H],
-                    focal_length=[float(K_pred[0, 0]), float(K_pred[1, 1])],
-                    principal_point=[float(K_pred[0, 2]), float(K_pred[1, 2])],
-                    image_plane_distance=1.0,
-                ),
-            )
-            rr.log(f"{pred_entity}/camera", rr.Image(img).compress(jpeg_quality=jpeg_quality))
+        for i, fid in enumerate(frame_indices):
+            rr.set_time_sequence("frame", i)
 
-        # GT: update object pose in camera coordinates.
-        if i < len(gt_o2c) and bool(gt_is_valid[i]):
-            gt_o2c_i = gt_o2c[i].astype(np.float32)
-            gt_entity = "world/gt_camera"
-            rr.log(gt_entity, rr.Transform3D(
-                translation=np.zeros_like(gt_o2c_i[:3, 3]), mat3x3=np.eye(3)))
-            rr.log(
-                f"{gt_entity}/object",
-                rr.Transform3D(translation=gt_o2c_i[:3, 3], mat3x3=gt_o2c_i[:3, :3]),
-            )
-            if img is not None:
+            preprocess_data = load_preprocessed_frame(data_preprocess_dir, fid)
+            img = preprocess_data.get("image")
+            K_pred = preprocess_data.get("intrinsics")
+
+            pred_c2o = np.linalg.inv(pred_extrinsics[i]).astype(np.float32)
+            if img is not None and K_pred is not None:
+                H, W = img.shape[:2]
+                segs = compute_frustum_lines(K_pred, H, W, pred_c2o, depth=0.1)
+                # Current frame frustum (bright)
+                rr.log("world/pred_camera/frustum",
+                       rr.LineStrips3D(segs, colors=[[0, 120, 255]]))
+                # Sliding history window (dimmed)
+                pred_history_segs.extend(segs)
+                if len(pred_history_segs) > max_history_segs:
+                    pred_history_segs = pred_history_segs[-max_history_segs:]
+                rr.log("world/pred_camera/history",
+                       rr.LineStrips3D(pred_history_segs, colors=[[0, 60, 128]]))
+
+            if i < len(gt_o2c) and bool(gt_is_valid[i]):
+                gt_c2o = np.linalg.inv(gt_o2c[i]).astype(np.float32)
+                if img is not None:
+                    H, W = img.shape[:2]
+                    gt_K_i = gt_K if gt_K.ndim == 2 else gt_K[i]
+                    segs = compute_frustum_lines(gt_K_i, H, W, gt_c2o, depth=0.1)
+                    rr.log("world/gt_camera/frustum",
+                           rr.LineStrips3D(segs, colors=[[0, 200, 0]]))
+                    gt_history_segs.extend(segs)
+                    if len(gt_history_segs) > max_history_segs:
+                        gt_history_segs = gt_history_segs[-max_history_segs:]
+                    rr.log("world/gt_camera/history",
+                           rr.LineStrips3D(gt_history_segs, colors=[[0, 100, 0]]))
+            _log_hand_meshes(i)
+    else:
+        # Camera-centric (default): transform mesh vertices per frame and log transformed meshes.
+        for i, fid in enumerate(frame_indices):
+            rr.set_time_sequence("frame", i)
+
+            preprocess_data = load_preprocessed_frame(data_preprocess_dir, fid)
+            img = preprocess_data.get("image")
+            K_pred = preprocess_data.get("intrinsics")
+
+            pred_o2c = pred_extrinsics[i].astype(np.float32)
+            pred_entity = "world/pred_camera"
+            rr.log(pred_entity, rr.Transform3D(
+                translation=np.zeros_like(pred_o2c[:3, 3]), mat3x3=np.eye(3)))
+            if gt_verts_can is not None and gt_faces is not None:
+                pred_verts_cam = (pred_o2c[:3, :3] @ gt_verts_can.T).T + pred_o2c[:3, 3]
+                pred_mesh_kwargs = {
+                    "vertex_positions": pred_verts_cam.astype(np.float32),
+                    "triangle_indices": gt_faces,
+                }
+                if gt_vertex_colors is not None:
+                    pred_mesh_kwargs["vertex_colors"] = gt_vertex_colors
+                rr.log("world/pred_mesh_cam", rr.Mesh3D(**pred_mesh_kwargs))
+            if img is not None and K_pred is not None:
                 H, W = img.shape[:2]
                 rr.log(
-                    f"{gt_entity}/camera",
+                    f"{pred_entity}/camera",
                     rr.Pinhole(
                         resolution=[W, H],
-                        focal_length=[float(gt_K[0, 0]), float(gt_K[1, 1])],
-                        principal_point=[float(gt_K[0, 2]), float(gt_K[1, 2])],
+                        focal_length=[float(K_pred[0, 0]), float(K_pred[1, 1])],
+                        principal_point=[float(K_pred[0, 2]), float(K_pred[1, 2])],
                         image_plane_distance=1.0,
                     ),
                 )
-                rr.log(f"{gt_entity}/camera", rr.Image(img).compress(jpeg_quality=jpeg_quality))
+                rr.log(f"{pred_entity}/camera", rr.Image(img).compress(jpeg_quality=jpeg_quality))
+
+            if i < len(gt_o2c) and bool(gt_is_valid[i]):
+                gt_o2c_i = gt_o2c[i].astype(np.float32)
+                gt_entity = "world/gt_camera"
+                rr.log(gt_entity, rr.Transform3D(
+                    translation=np.zeros_like(gt_o2c_i[:3, 3]), mat3x3=np.eye(3)))
+                if gt_verts_can is not None and gt_faces is not None:
+                    gt_verts_cam = (gt_o2c_i[:3, :3] @ gt_verts_can.T).T + gt_o2c_i[:3, 3]
+                    gt_mesh_kwargs = {
+                        "vertex_positions": gt_verts_cam.astype(np.float32),
+                        "triangle_indices": gt_faces,
+                    }
+                    if gt_vertex_colors is not None:
+                        gt_mesh_kwargs["vertex_colors"] = gt_vertex_colors
+                    rr.log("world/gt_mesh_cam", rr.Mesh3D(**gt_mesh_kwargs))
+                if img is not None:
+                    H, W = img.shape[:2]
+                    rr.log(
+                        f"{gt_entity}/camera",
+                        rr.Pinhole(
+                            resolution=[W, H],
+                            focal_length=[float(gt_K[0, 0]), float(gt_K[1, 1])],
+                            principal_point=[float(gt_K[0, 2]), float(gt_K[1, 2])],
+                            image_plane_distance=1.0,
+                        ),
+                    )
+                    rr.log(f"{gt_entity}/camera", rr.Image(img).compress(jpeg_quality=jpeg_quality))
+            _log_hand_meshes(i)
 
 
 def filter_invalid_gt_frames(data_gt, data_pred):
@@ -496,6 +706,8 @@ def load_hand_predictions(results_dir, hand_mode, frame_indices, valid_flags, de
         )
 
     hand_jnts_can = hand_out.joints.cpu().numpy()  # (N, 21, 3)
+    hand_verts_can = hand_out.vertices.cpu().numpy()  # (N, V, 3)
+    hand_faces = np.asarray(mano_layer.faces, dtype=np.int32)  # (F, 3)
 
     # Root-aligned canonical joints
     j3d_ra_right = hand_jnts_can - hand_jnts_can[:, 0:1, :]  # (N, 21, 3)
@@ -507,15 +719,19 @@ def load_hand_predictions(results_dir, hand_mode, frame_indices, valid_flags, de
     else:
         h2c_transforms = h2c_transls_np
     hand_jnts_c = transform_points(hand_jnts_can, h2c_transforms)  # (N, 21, 3)
+    hand_verts_c = transform_points(hand_verts_can, h2c_transforms)  # (N, V, 3)
     root_right = hand_jnts_c[:, 0, :]  # (N, 3)
 
     # Select valid frames
     j3d_ra_right = j3d_ra_right[valid_flags]
     root_right = root_right[valid_flags]
+    hand_verts_c = hand_verts_c[valid_flags]
 
     return {
         "j3d_ra.right": torch.from_numpy(j3d_ra_right).float(),
         "root.right": root_right.astype(np.float32),
+        "v3d_c.right": hand_verts_c.astype(np.float32),
+        "faces.right": hand_faces,
     }
 
 
@@ -534,6 +750,8 @@ def main(args):
     if hand_data is not None:
         data_pred["j3d_ra.right"] = hand_data["j3d_ra.right"]
         data_pred["root.right"] = hand_data["root.right"]
+        data_pred["v3d_c.right"] = hand_data["v3d_c.right"]
+        data_pred["faces.right"] = hand_data["faces.right"]
 
     def get_image_fids():
         return data_pred["valid_frame_indices"].tolist()
@@ -544,12 +762,12 @@ def main(args):
     data_gt, data_pred = filter_invalid_gt_frames(data_gt, data_pred)
 
     gt_o2c_all = data_gt["o2c"].numpy() if torch.is_tensor(data_gt["o2c"]) else np.array(data_gt["o2c"])
-    aligned_pred_extrinsics = align_pred_to_gt(
+    aligned_pred_o2c = align_pred_to_gt(
         data_pred["extrinsics"], gt_o2c_all, data_pred["valid_frame_indices"],
         args.cond_index, register_indices,
     )
 
-    data_pred["extrinsics"] = aligned_pred_extrinsics
+    data_pred["extrinsics"] = aligned_pred_o2c
 
     # Compute v3d_right.object (object verts relative to hand root) if hand data available
     if "root.right" in data_pred:
@@ -560,8 +778,8 @@ def main(args):
             if torch.is_tensor(root_right):
                 root_right = root_right.numpy()
             v3d_right_list = []
-            for i in range(len(aligned_pred_extrinsics)):
-                o2c_i = aligned_pred_extrinsics[i]
+            for i in range(len(aligned_pred_o2c)):
+                o2c_i = aligned_pred_o2c[i]
                 v_can_i = v3d_can_np[0] if v3d_can_np.ndim == 3 else v3d_can_np
                 v_cam = (o2c_i[:3, :3] @ v_can_i.T).T + o2c_i[:3, 3]
                 v_right = v_cam - root_right[i]
@@ -569,8 +787,14 @@ def main(args):
             data_pred["v3d_right.object"] = v3d_right_list
 
     visualize_gt_and_pred_in_rerun(
-        data_gt, aligned_pred_extrinsics, data_pred["valid_frame_indices"], SAM3D_dir,
-        jpeg_quality=args.jpeg_quality,
+        data_gt, data_pred, aligned_pred_o2c, data_pred["valid_frame_indices"], SAM3D_dir,
+        cond_index=args.cond_index,
+        frame_indices_full=frame_indices,
+        c2o_full=c2o_pred,
+        scale=scale,
+        sam3d_to_cond_cam=sam3d_to_cond_cam,
+        jpeg_quality=args.jpeg_quality, world_mode=args.world_mode,
+        history_window=args.history_window,
     )
     
 
@@ -590,6 +814,12 @@ def parse_args():
                          help="JPEG quality for compressed image logging to rerun (1-100)")
     parser.add_argument("--hand_mode", type=str, default="trans",
                          help="Hand fit mode for HandDataProvider (e.g. 'rot', 'trans', 'intrinsic')")
+    parser.add_argument("--world_mode", type=str, default="camera",
+                         choices=["camera", "object"],
+                         help="'camera': camera fixed, object moves. "
+                              "'object': object fixed at identity, cameras move.")
+    parser.add_argument("--history_window", type=int, default=50,
+                         help="Number of past camera frustums to show in object mode")
     
     args = parser.parse_args()
     from easydict import EasyDict

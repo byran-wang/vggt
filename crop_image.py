@@ -17,7 +17,18 @@ def parse_args():
 
 def load_meta(meta_path):
     with open(meta_path, 'rb') as f:
-        meta = pickle.load(f)
+        try:
+            meta = pickle.load(f)
+        except ModuleNotFoundError as e:
+            if "numpy._core" not in str(e):
+                raise
+            f.seek(0)
+            class _NumpyCompatUnpickler(pickle.Unpickler):
+                def find_class(self, module, name):
+                    if module.startswith("numpy._core"):
+                        module = module.replace("numpy._core", "numpy.core", 1)
+                    return super().find_class(module, name)
+            meta = _NumpyCompatUnpickler(f).load()
     return meta
 
 if __name__ == "__main__":

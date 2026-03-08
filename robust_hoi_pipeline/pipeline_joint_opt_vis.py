@@ -856,7 +856,7 @@ if __name__ == "__main__":
                         help="Maximum number of frames to visualize (-1 for all)")
     parser.add_argument("--vis_type", type=str, default="all", choices=["all", "registered_valid", "keyframes"],
                         help="Type of frames to visualize")
-    parser.add_argument("--vis_gt", action="store_true", default=False,
+    parser.add_argument("--vis_gt", type=int, default=1,
                         help="Visualize ground truth mesh and camera poses")
     parser.add_argument("--min_track_number", type=int, default=4,
                         help="Minimum track visibility count for green coloring")

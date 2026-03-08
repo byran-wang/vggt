@@ -1422,7 +1422,7 @@ def _save_depth_debug_stages(debug_dir, frame_idx, d, K, extrinsics, ys, xs, dbg
         _save_colored_points_debug(debug_dir, frame_idx, masked_pts_obj, dbg_image, ys, xs, "depth_after_masked_in_obj")
 
 
-def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, num_iters=100, inlier_thresh=0.3, debug_dir=None):
+def _rectify_pose(image_info_work, frame_idx, obj_mesh, max_pts=2000, num_iters=100, inlier_thresh=0.3, debug_dir=None):
     """Align a frame by optimizing pose with rendered-vs-observed depth/normal losses."""
 
 
@@ -1507,15 +1507,17 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
     rotvec = torch.tensor(init_rot, dtype=torch.float32, device=device, requires_grad=True)
     trans = torch.tensor(ext0[:3, 3].astype(np.float32), dtype=torch.float32, device=device, requires_grad=True)
     optimizer = torch.optim.Adam([rotvec, trans], lr=10e-3)
-    best = {"loss": float("inf"), "R": ext0[:3, :3].copy(), "t": ext0[:3, 3].copy(), "valid": 0}            
+    best = {"loss": float("inf"), "R": ext0[:3, :3].copy(), "t": ext0[:3, 3].copy(), "valid": 0}
 
-    for it in range(num_iters):
-        optimizer.zero_grad()
-        R = rodrigues(rotvec)
+    w_depth = 0.0 if not has_enough_depth else 1.0
+    w_mask = 20.0
+    w_reproj = 0.0
+    w_contact = 1.0
+
+    def _evaluate_pose_loss(curr_R, curr_trans, iter_idx, save_debug=False):
         o2c = torch.eye(4, dtype=torch.float32, device=device)
-        o2c[:3, :3] = R
-        o2c[:3, 3] = trans
-
+        o2c[:3, :3] = curr_R
+        o2c[:3, 3] = curr_trans
 
         obj_img, depth_r = diff_renderer(
             verts=obj_verts,
@@ -1527,51 +1529,72 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
             glctx=glctx,
         )
 
-        # Render merged foreground mask from object mesh + hand mesh.
         hand_verts_in_obj = None
-
-        # Transform hand vertices from camera space to object space using current pose.
-        # For row vectors: v_obj = (v_cam - t) @ R, where o2c = [R|t].
-        hand_verts_in_obj = ((hand_verts_in_cam[0] - trans[None, :]) @ R).unsqueeze(0)
-        fg_verts = torch.cat([obj_verts, hand_verts_in_obj], dim=1)
-        fg_tri = torch.cat([obj_tri, hand_tri + obj_nv], dim=0)
-        fg_color = torch.cat([torch.ones_like(obj_color), hand_color], dim=1)
-        fg_img, _ = diff_renderer(
-            verts=fg_verts,
-            tri=fg_tri,
-            color=fg_color,
-            projection=projection,
-            ob_in_cvcams=o2c,
-            resolution=np.asarray([H, W]),
-            glctx=glctx,
-        )
-        sil_pred = fg_img[..., 1]  # Green channel as silhouette
-        render_union = sil_pred
-
+        if hand_verts_in_cam is not None and hand_tri is not None and hand_color is not None:
+            # For row vectors: v_obj = (v_cam - t) @ R, where o2c = [R|t].
+            hand_verts_in_obj = ((hand_verts_in_cam[0] - curr_trans[None, :]) @ curr_R).unsqueeze(0)
+            fg_verts = torch.cat([obj_verts, hand_verts_in_obj], dim=1)
+            fg_tri = torch.cat([obj_tri, hand_tri + obj_nv], dim=0)
+            fg_color = torch.cat([torch.ones_like(obj_color), hand_color], dim=1)
+            fg_img, _ = diff_renderer(
+                verts=fg_verts,
+                tri=fg_tri,
+                color=fg_color,
+                projection=projection,
+                ob_in_cvcams=o2c,
+                resolution=np.asarray([H, W]),
+                glctx=glctx,
+            )
+            render_union = fg_img[..., 1]
+        else:
+            render_union = obj_img[..., 1]
 
         depth_r = torch.flip(depth_r[0], dims=[0])
-        _debug_ctx = None
-        if debug_dir is not None and (it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1):
-            _debug_ctx = {"K": K, "R": R, "trans": trans, "debug_dir": debug_dir,
-                          "frame_idx": frame_idx, "it": it + 1}
-        loss_depth, valid_count = _compute_depth_loss(depth_r, obs_depth, obs_mask, K, debug_ctx=_debug_ctx)
+        debug_ctx = None
+        if save_debug:
+            debug_ctx = {
+                "K": K,
+                "R": curr_R,
+                "trans": curr_trans,
+                "debug_dir": debug_dir,
+                "frame_idx": frame_idx,
+                "it": iter_idx,
+            }
+        loss_depth, valid_count = _compute_depth_loss(depth_r, obs_depth, obs_mask, K, debug_ctx=debug_ctx)
         if loss_depth is None:
             loss_depth = torch.tensor(0.0, device=device)
-            print(f"[align_depth] Frame {frame_idx}: iter {it}, only {valid_count} valid rendered pixels, and set depth loss to 0")
+            print(
+                f"[align_depth] Frame {frame_idx}: iter {iter_idx}, only {valid_count} valid rendered pixels, "
+                "set depth loss to 0"
+            )
 
         loss_iou = _compute_iou_loss(render_union, obs_hoi_mask)
-        loss_reproj = _compute_reproj_loss(R, trans, trk_pts3d_t, trk_pts2d_t, K_t)
+        loss_reproj = _compute_reproj_loss(curr_R, curr_trans, trk_pts3d_t, trk_pts2d_t, K_t)
+        contact_debug = debug_dir if save_debug else None
+        loss_contact = _compute_contact_loss(
+            hand_verts_in_obj,
+            obj_verts,
+            device,
+            debug_dir=contact_debug,
+            frame_idx=frame_idx,
+            it=iter_idx,
+        )
+        total_loss = w_depth * loss_depth + w_mask * loss_iou + w_contact * loss_contact + w_reproj * loss_reproj
+        return total_loss, {
+            "loss_depth": loss_depth,
+            "loss_iou": loss_iou,
+            "loss_reproj": loss_reproj,
+            "loss_contact": loss_contact,
+            "render_union": render_union,
+            "hand_verts_in_obj": hand_verts_in_obj,
+            "valid_count": valid_count,
+        }
 
-        # Hand-object contact loss: attract nearby hand verts to object surface
-        _contact_debug = debug_dir if (debug_dir is not None and (it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1)) else None
-        loss_contact = _compute_contact_loss(hand_verts_in_obj, obj_verts, device, debug_dir=_contact_debug, frame_idx=frame_idx, it=it + 1)
-
-        w_depth = 0.0 if not has_enough_depth else 1.0
-        w_mask = 20.0
-        w_reproj = 0.0
-        w_contact = 1.0
-
-        loss = w_depth * loss_depth + w_mask * loss_iou  + w_contact * loss_contact #w_reproj * loss_reproj
+    for it in range(num_iters):
+        optimizer.zero_grad()
+        R = rodrigues(rotvec)
+        save_debug = debug_dir is not None and (it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1)
+        loss, stats = _evaluate_pose_loss(R, trans, it + 1, save_debug=save_debug)
 
         if torch.isfinite(loss):
             loss.backward()
@@ -1582,29 +1605,79 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
             best["loss"] = loss_val
             best["R"] = R.detach().cpu().numpy().astype(np.float64)
             best["t"] = trans.detach().cpu().numpy().astype(np.float64)
-            best["valid"] = valid_count
+            best["valid"] = stats["valid_count"]
 
-        if it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1:
+        if save_debug:
             _save_binary_mask_debug(
                 debug_dir=debug_dir,
                 frame_idx=frame_idx,
-                mask=render_union,
+                mask=stats["render_union"],
                 filename_prefix="mask_render_union",
                 it=it + 1,
             )
-            if hand_verts_in_obj is not None:
+            if stats["hand_verts_in_obj"] is not None:
                 _save_mesh_debug(
                     debug_dir=debug_dir,
                     frame_idx=frame_idx,
-                    vertices=hand_verts_in_obj,
+                    vertices=stats["hand_verts_in_obj"],
                     faces=hand_tri,
                     filename_prefix="hand_mesh_obj",
                     it=it + 1,
                 )
             print(
                 f"[align_depth] Frame {frame_idx}: iter {it+1}/{num_iters}, total {loss.item():.3f} "
-                f"loss_contact={loss_contact.item():.3f}, loss_iou={loss_iou.item():.3f}, "
-                f"loss_d={loss_depth.item():.3f}, loss_reproj={loss_reproj.item():.3f}, valid={valid_count}"
+                f"loss_contact={stats['loss_contact'].item():.3f}, loss_iou={stats['loss_iou'].item():.3f}, "
+                f"loss_d={stats['loss_depth'].item():.3f}, loss_reproj={stats['loss_reproj'].item():.3f}, "
+                f"valid={stats['valid_count']}"
+            )
+
+    # Second-order refinement with LBFGS for a better local optimum.
+    num_lbfgs_iters = max(3, min(10, num_iters // 10))
+    rotvec_2 = rotvec.detach().clone().requires_grad_(True)
+    trans_2 = trans.detach().clone().requires_grad_(True)
+    lbfgs = torch.optim.LBFGS([rotvec_2, trans_2], lr=0.5, max_iter=1, line_search_fn="strong_wolfe")
+    for it2 in range(num_lbfgs_iters):
+        def _closure():
+            lbfgs.zero_grad()
+            curr_R = rodrigues(rotvec_2)
+            curr_loss, _ = _evaluate_pose_loss(curr_R, trans_2, num_iters + it2 + 1, save_debug=False)
+            if torch.isfinite(curr_loss):
+                curr_loss.backward()
+            return curr_loss
+
+        lbfgs.step(_closure)
+        curr_R = rodrigues(rotvec_2)
+        save_debug = debug_dir is not None and (it2 == num_lbfgs_iters - 1)
+        curr_loss, curr_stats = _evaluate_pose_loss(curr_R, trans_2, num_iters + it2 + 1, save_debug=save_debug)
+        loss_val = float(curr_loss.detach().item())
+        if loss_val < best["loss"]:
+            best["loss"] = loss_val
+            best["R"] = curr_R.detach().cpu().numpy().astype(np.float64)
+            best["t"] = trans_2.detach().cpu().numpy().astype(np.float64)
+            best["valid"] = curr_stats["valid_count"]
+
+        if save_debug:
+            _save_binary_mask_debug(
+                debug_dir=debug_dir,
+                frame_idx=frame_idx,
+                mask=curr_stats["render_union"],
+                filename_prefix="mask_render_union_lbfgs",
+                it=it2 + 1,
+            )
+            if curr_stats["hand_verts_in_obj"] is not None:
+                _save_mesh_debug(
+                    debug_dir=debug_dir,
+                    frame_idx=frame_idx,
+                    vertices=curr_stats["hand_verts_in_obj"],
+                    faces=hand_tri,
+                    filename_prefix="hand_mesh_obj_lbfgs",
+                    it=it2 + 1,
+                )
+            print(
+                f"[align_depth] Frame {frame_idx}: LBFGS iter {it2+1}/{num_lbfgs_iters}, "
+                f"total {curr_loss.item():.3f}, loss_contact={curr_stats['loss_contact'].item():.3f}, "
+                f"loss_iou={curr_stats['loss_iou'].item():.3f}, loss_d={curr_stats['loss_depth'].item():.3f}, "
+                f"loss_reproj={curr_stats['loss_reproj'].item():.3f}, valid={curr_stats['valid_count']}"
             )
 
     if not np.isfinite(best["loss"]):
@@ -2089,7 +2162,7 @@ def check_which_estimate_is_better_and_update(
     return best_pose, True
 
 
-def _check_contact_and_reset(hand_verts_in_cam, obj_verts, image_info_work, frame_idx, device, thresh_contact=0.04):
+def _check_contact_and_reset(hand_verts_in_cam, obj_verts, image_info_work, frame_idx, device, thresh_contact=0.06):
     """Check initial contact loss and reset pose to nearby frame if too large.
 
     Returns:
@@ -2315,7 +2388,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             # if sam3d_mesh is not None:
             if 1:
                 print(f"[register_remaining_frames] Aligning frame {next_frame_idx} with SAM3D mesh using depth")
-                sucess = _align_frame_with_sam3d(image_info_work, next_frame_idx, sam3d_mesh, 
+                sucess = _rectify_pose(image_info_work, next_frame_idx, sam3d_mesh, 
                                              debug_dir=debug_dir
                                              )
                 if not sucess:
@@ -2389,25 +2462,25 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
 
 
-        # # Joint optimize keyframe poses + 3D points against NeuS mesh
-        # can_joint_opt = (latest_neus_mesh is not None or args.no_optimize_with_point_to_plane)
-        # if can_joint_opt and image_info_work["keyframe"].sum() >= args.min_track_number:
-        #     try:
-        #         mesh_path = None if args.no_optimize_with_point_to_plane else latest_neus_mesh
-        #         _joint_optimize_keyframes(
-        #             image_info_work, mesh_path, cond_local_idx,
-        #             min_track_number=args.min_track_number,
-        #         )
-        #         # Print reprojection error after joint optimization for the newly registered frame
-        #         kf_indices_arr = np.where(image_info_work["keyframe"].astype(bool))[0]
-        #         print_frame_reproj_error(image_info_work, next_frame_idx, tag="joint_opt")
-        #         # Mask tracks with reprojection error > joint_opt_reproj_thresh
-        #         for ki in kf_indices_arr:
-        #             mask_track_for_outliers(image_info_work, ki, args.joint_opt_reproj_thresh,
-        #                                    min_track_number=args.min_track_number)
-        #         _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_keyframes_opt")
-        #     except Exception as exc:
-        #         print(f"[register_remaining_frames] joint optimization failed: {exc}")
+        # Joint optimize keyframe poses + 3D points against NeuS mesh
+        can_joint_opt = (latest_neus_mesh is not None or args.no_optimize_with_point_to_plane)
+        if can_joint_opt and image_info_work["keyframe"].sum() >= args.min_track_number:
+            try:
+                mesh_path = None if args.no_optimize_with_point_to_plane else latest_neus_mesh
+                _joint_optimize_keyframes(
+                    image_info_work, mesh_path, cond_local_idx,
+                    min_track_number=args.min_track_number,
+                )
+                # Print reprojection error after joint optimization for the newly registered frame
+                kf_indices_arr = np.where(image_info_work["keyframe"].astype(bool))[0]
+                print_frame_reproj_error(image_info_work, next_frame_idx, tag="joint_opt")
+                # Mask tracks with reprojection error > joint_opt_reproj_thresh
+                for ki in kf_indices_arr:
+                    mask_track_for_outliers(image_info_work, ki, args.joint_opt_reproj_thresh,
+                                           min_track_number=args.min_track_number)
+                _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_keyframes_opt")
+            except Exception as exc:
+                print(f"[register_remaining_frames] joint optimization failed: {exc}")
 
         image_info["register"] = image_info_work["registered"].tolist()
         image_info["invalid"] = image_info_work["invalid"].tolist()

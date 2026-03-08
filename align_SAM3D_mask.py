@@ -41,6 +41,13 @@ except Exception:
 
 LIGHT_RED = [200, 180, 220, 255]
 
+
+class _NumpyCompatUnpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module.startswith("numpy._core"):
+            module = module.replace("numpy._core", "numpy.core", 1)
+        return super().find_class(module, name)
+
 def load_image(path):
     image = Image.open(path)
     image = np.array(image)
@@ -62,7 +69,13 @@ def load_mask(path):
 def load_intrinsics(meta_file):
     """Load camera intrinsics from meta pickle file."""
     with open(meta_file, "rb") as f:
-        meta_data = pickle.load(f)
+        try:
+            meta_data = pickle.load(f)
+        except ModuleNotFoundError as e:
+            if "numpy._core" not in str(e):
+                raise
+            f.seek(0)
+            meta_data = _NumpyCompatUnpickler(f).load()
     return np.array(meta_data["camMat"], dtype=np.float32)
 
 def load_mesh_from_glb(glb_path: str) -> trimesh.Trimesh:

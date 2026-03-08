@@ -20,11 +20,26 @@ if _THIRD_PARTY_UTILS_SIMBA not in sys.path:
 from utils_simba.depth import get_depth, load_filtered_depth
 
 
+def _load_pickle_compat(path):
+    with open(path, "rb") as f:
+        try:
+            return pickle.load(f)
+        except ModuleNotFoundError as e:
+            if "numpy._core" not in str(e):
+                raise
+            f.seek(0)
+            class _NumpyCompatUnpickler(pickle.Unpickler):
+                def find_class(self, module, name):
+                    if module.startswith("numpy._core"):
+                        module = module.replace("numpy._core", "numpy.core", 1)
+                    return super().find_class(module, name)
+            return _NumpyCompatUnpickler(f).load()
+
+
 
 def load_intrinsics(intrinsics_path):
     try:
-        with open(intrinsics_path, 'rb') as f:
-            intrinsics = np.array(pickle.load(f)['camMat'])
+        intrinsics = np.array(_load_pickle_compat(intrinsics_path)['camMat'])
         return intrinsics
     except FileNotFoundError as e:
         yaml_path = Path(intrinsics_path).with_name("intrinsics.yaml")
