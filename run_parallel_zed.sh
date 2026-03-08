@@ -8,8 +8,8 @@ export CUDA_PATH='/usr/local/cuda-11.8'
 export LD_LIBRARY_PATH="/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH"
 
 declare -A device_sequences=(
-  [0]="CUB1 CUB2 DUC1 DUC2"
-  [1]="TC3 TC4 WC3 WC4"
+  [0]="CUP2 CUP3"
+  [1]="CUP4"
 )
 
 current_dir=$(pwd)
