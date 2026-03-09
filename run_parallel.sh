@@ -27,7 +27,7 @@ export LD_LIBRARY_PATH="/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH"
 # )
 
 declare -A device_sequences=(
-  [0]="CUP2 CUP3 CUP4"
+  [0]=""
 )
 
 current_dir=$(pwd)
@@ -38,23 +38,29 @@ for device in "${!device_sequences[@]}"; do
   sequences=${device_sequences[$device]}
   
   (
-    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-    # --execute_list data_convert \
-    # --process_list ZED_parse_data  \
-    # --seq_list $sequences \
-    # --rebuild --downsample 3
+    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    --execute_list data_convert \
+    --process_list ZED_parse_data  \
+    --seq_list $sequences \
+    --rebuild --downsample 3
 
-    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-    # --execute_list data_convert \
-    # --process_list convert_zed_depth_to_ply  \
-    # --seq_list $sequences \
-    # --rebuild 
+    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    --execute_list data_convert \
+    --process_list convert_zed_depth_to_ply  \
+    --seq_list $sequences \
+    --rebuild 
 
-    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-    # --execute_list data_convert \
-    # --process_list ho3d_get_obj_mask ho3d_get_hand_mask  \
-    # --seq_list $sequences \
-    # --rebuild 
+    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    --execute_list data_convert \
+    --process_list ho3d_get_obj_mask ho3d_get_hand_mask  \
+    --seq_list $sequences \
+    --rebuild 
+
+    CUDA_VISIBLE_DEVICES=$device  python run_wonder_hoi.py \
+     --execute_list data_convert \
+     --process_list get_depth_from_foundation_stereo soft_link_depth \
+     --seq_list $sequences \
+     --rebuild 
   ) &
 done
 
