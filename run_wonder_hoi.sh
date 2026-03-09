@@ -20,7 +20,7 @@ seq_list="MC1"
 # collect ZED raw data
 python run_wonder_hoi.py --execute_list data_read --process_list ZED_read_data  --seq_list $seq_list --rebuild 
 # pase left image, right image, intrinsic and zed depth from raw data with downsample 3
-python run_wonder_hoi.py --execute_list data_read --process_list ZED_parse_data  --seq_list $seq_list --rebuild --downsample 3
+python run_wonder_hoi.py --execute_list data_convert --process_list ZED_parse_data  --seq_list $seq_list --rebuild --downsample 3
 # Remember to check the depth *.ply files in ply_zed by Meshlab after convert_zed_depth_to_ply.
 python run_wonder_hoi.py --execute_list data_convert --process_list convert_zed_depth_to_ply --seq_list $seq_list --rebuild # only for zed dataset
 # get the hand and object mask by sam3
@@ -55,7 +55,7 @@ python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_
 # python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_joint_opt_eval_vis --seq_list $seq_list --rebuild --render_hand true
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_neus_init --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum --seq_list $seq_list
-python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum_vis --seq_list $seq_list
+python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum_vis --seq_list $seq_list --rebuild
 
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_HY_gen --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_align_SAM3D_with_HY --seq_list $seq_list --rebuild
@@ -70,8 +70,10 @@ python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_eval_int
 python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum_intrinsic eval_sum_trans eval_sum_rot --seq_list $seq_list
 
 ######################################## baseline #########################################
-python run_wonder_hoi.py --execute_list baseline --process_list foundation_pose_eval_vis --seq_list $seq_list
-python run_wonder_hoi.py --execute_list baseline --process_list gt_eval_vis --seq_list $seq_list
+python run_wonder_hoi.py --execute_list baseline --process_list foundation_pose_eval_vis --seq_list $seq_list --rebuild
+python run_wonder_hoi.py --execute_list baseline --process_list bundle_sdf_eval_vis --seq_list $seq_list --rebuild
+python run_wonder_hoi.py --execute_list baseline --process_list hold_eval_vis --seq_list $seq_list --rebuild
+python run_wonder_hoi.py --execute_list baseline --process_list gt_eval_vis --seq_list $seq_list --rebuild
 
 ######################################## data transfer #########################################
 cd /home/simba/Documents/dataset/BundleSDF && rsync -azvp --no-o --no-g -e "ssh -p 2026" HO3D_v3 root@180.184.148.133:/mnt/afs/shibo/Documents/dataset/BundleSDF/

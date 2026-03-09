@@ -24,18 +24,18 @@ Host 3090_server1
 ### YYYY-MM-DD
 
 #### Top Priorities
-- [ ] Priority 1
-- [ ] Priority 2
-- [ ] Priority 3
+- Priority 1
+- Priority 2
+- Priority 3
 
 #### Tasks
-- [ ] Task A
-- [ ] Task B
-- [ ] Task C
+- Task A
+- Task B
+- Task C
 
 #### Follow-ups / Blockers
-- [ ] Follow-up 1
-- [ ] Blocker 1
+- Follow-up 1
+- Blocker 1
 
 #### Notes
 - Wins:
@@ -52,6 +52,7 @@ Host 3090_server1
 - [x] rsync zed dataset /home/simba/Documents/dataset/ZED_wenxuan/ to 3090_server1://data1/shibo/Documents/dataset
 - [x] rsync `third_party/FoundationStereo/pretrained_models/model_best_bp2.pth` to 3090_server1:/data1/shibo/Documents/project/vggt_wenxuan_new/third_party/FoundationStereo/pretrained_models
 - [x] in robust_hoi_pipeline/pipeline_joint_opt.py/_rectify_pose(), optimize the pose with second-order gradient refinement
+- [x] in third_party/bundlesdf/eval_vis_nvdiffrast.py, for each sequence read the mesh file textured_mesh.obj in output directory, camera pose from output/ob_in_cam, rgb image, intrinsic from the data directory then rendering a normal image by nvdiffrast_render and overlay the normal to the image as in third_party/FoundationPose/eval_vis_nvdiffrast.py. And add a vis_git to filter the invalid frames as in third_party/FoundationPose/eval_vis_nvdiffrast.py. third_party/FoundationPose/eval_vis_nvdiffrast.py, third_party/bundlesdf/eval_vis_nvdiffrast.py and robust_hoi_pipeline/pipeline_joint_opt_eval_vis_nvdiffrast.py should use the same code framework and abstract the same function to utils_simba/eval_vis.py. The only difference between these three files is the data reader.
 
 #### Tasks
 - [x] list model/checkpoint files under /home/simba/Documents/project/vggt/third_party
@@ -66,3 +67,20 @@ Host 3090_server1
 #### Notes
 - Wins: all planned rsync and verification items completed, including model checkpoint sync to `vggt_wenxuan_new`.
 - Plan for tomorrow: run/validate the next pipeline stage on `3090_server1` with the synced assets.
+
+### 2026-03-06
+
+#### Top Priorities
+- [x] for each seqence in /home/simba/Documents/project/vggt/third_party/bundlesdf/output, rsync the mesh_cleaned.obj and ob_in_cam to /home/simba/Documents/project/vggt/third_party/bundlesdf/output_ho3d
+- [x] in robust_hoi_pipeline/eval_sum_vis.py, add the normal overlay video geneated by third_party/bundlesdf/eval_vis_nvdiffrast.py to the merged video
+- [x] for each seqence in /home/simba/Documents/project/vggt/third_party/bundlesdf/output, rsync the textured_mesh.obj to /home/simba/Documents/project/vggt/third_party/bundlesdf/output_ho3d
+- [x] in robust_hoi_pipeline/eval_sum_vis.py, add the method name to the merged video
+- [x] in robust_hoi_pipeline/eval_sum_vis.py, add args.vis_method_name to determin whether to visulize the method_name. Visulize the method name by default.
+- [x] rsync 3090_server1:/data1/shibo/Documents/project/hold/code/logs to third_party/hold/output_ho3d.
+- [x] create a new file third_party/hold/eval_vis_nvdiffrast.py. In third_party/hold/eval_vis_nvdiffrast.py for each sequence read object mesh file and camera pose from output_ho3d, rgb image, intrinsic from the data directory then rendering a normal image by nvdiffrast_render and overlay the normal to the image as in third_party/FoundationPose/eval_vis_nvdiffrast.py. And add a vis_git to filter the invalid frames as in third_party/FoundationPose/eval_vis_nvdiffrast.py. third_party/hold/eval_vis_nvdiffrast.py shold call the commmon function from utils_simba/eval_vis.py.
+- [x] In third_party/hold/code/eval_vis_nvdiffrast.py for each sequence read object mesh file and camera pose from `logs_ho3d`, rgb image and intrinsic from `data_ho3d`, render normal overlays with nvdiffrast via `utils_simba/eval_vis.py`, and resolve sequence-to-checkpoint mapping from `third_party/hold/docs/data_doc.md` so it can be called from `run_wonder_hoi.py` / `run_wonder_hoi.sh`.
+- [x] In third_party/hold/code/eval_vis_nvdiffrast.py, the correpondences between render_index and frame_idx in the generated frame_map.json is defined in `data_ho3d/build/corres.txt`.
+- [x] In third_party/hold/code/eval_vis_nvdiffrast.py, not only load the object mesh but also hand mesh to render the normal overlay image.
+- [x] In third_party/hold/code/eval_vis_nvdiffrast.py, seal the hand for each frames and save the object mesh in object space in the first frame.
+- [x] follow third_party/hold/docs/setup.md to run bash ./bash/download_data.sh to download hold preprossed data with export HOLD_USERNAME=swang457@connect.hkust-gz.edu.cn and export HOLD_PASSWORD=Simba67379325
+- [x] in robust_hoi_pipeline/eval_sum_vis.py, add the normal overlay video geneated by third_party/hold/code/eval_vis_nvdiffrast.py to the merged video

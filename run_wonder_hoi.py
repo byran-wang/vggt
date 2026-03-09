@@ -124,6 +124,8 @@ class run_wonder_hoi:
             },
             "baseline": {
                 "foundation_pose_eval_vis": self.foundation_pose_eval_vis,
+                "bundle_sdf_eval_vis": self.bundle_sdf_eval_vis,
+                "hold_eval_vis": self.hold_eval_vis,
                 "gt_eval_vis": self.gt_eval_vis,
             },
         }
@@ -1839,6 +1841,14 @@ class run_wonder_hoi:
             "foundation_dir",
             f"{vggt_code_dir}/output_baseline/{scene_name}/foundation_sam3d",
         )
+        bundle_sdf_dir = kwargs.get(
+            "bundle_sdf_dir",
+            f"{vggt_code_dir}/output_baseline/{scene_name}/bundle_sdf",
+        )
+        hold_dir = kwargs.get(
+            "hold_dir",
+            f"{vggt_code_dir}/output_baseline/{scene_name}/hold",
+        )
         joint_opt_dir = kwargs.get(
             "joint_opt_dir",
             f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/eval",
@@ -1853,13 +1863,15 @@ class run_wonder_hoi:
         )
 
         if self.rebuild:
-            cmd = f"rm -rf {out_dir}"
+            cmd = f"rm -rf {out_dir} && rm {vggt_code_dir}/output/metrics_summary/eval_sum_{scene_name}.mp4"
             print(cmd)
             os.system(cmd)
 
         cmd = f"cd {vggt_code_dir} && "
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/eval_sum_vis.py "
         cmd += f"--foundation_dir {foundation_dir} "
+        cmd += f"--bundle_sdf_dir {bundle_sdf_dir} "
+        cmd += f"--hold_dir {hold_dir} "
         cmd += f"--joint_opt_dir {joint_opt_dir} "
         cmd += f"--gt_dir {gt_dir} "
         cmd += f"--out_dir {out_dir} "
@@ -1869,6 +1881,9 @@ class run_wonder_hoi:
             cmd += f"--line_width {kwargs['line_width']} "
         if "line_gray" in kwargs:
             cmd += f"--line_gray {kwargs['line_gray']} "
+        if "vis_method_name" in kwargs:
+            vis_method_name = str(kwargs["vis_method_name"]).lower() in {"1", "true", "yes", "y"}
+            cmd += "--vis_method_name " if vis_method_name else "--no_vis_method_name "
         if self.rebuild:
             cmd += f"--rebuild "
 
@@ -1897,6 +1912,65 @@ class run_wonder_hoi:
         cmd += f"--sam3d_dir {sam3d_dir} "
         cmd += f"--out_dir {out_dir} "
         cmd += f"--cond_index {cond_idx} "
+        if dataset_type != "ho3d":
+            cmd += f"--vis_gt 0 "        
+
+        print(cmd)
+        os.system(cmd)
+
+    def bundle_sdf_eval_vis(self, scene_name, **kwargs):
+        self.print_header(f"bundle sdf eval vis for {scene_name}")
+
+        output_root = kwargs.get("output_root", f"{vggt_code_dir}/third_party/bundlesdf/output_ho3d")
+        data_root = kwargs.get("data_root", self.dataset_dir)
+        vis_root = kwargs.get("vis_root", f"{vggt_code_dir}/output_baseline/{scene_name}/bundle_sdf/")
+        alpha = kwargs.get("alpha", 0.8)
+        fps = kwargs.get("fps", 6)
+
+        if self.rebuild:
+            cmd = f"rm -rf {vis_root}"
+            print(cmd)
+            os.system(cmd)
+
+        cmd = f"cd {vggt_code_dir} && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python third_party/bundlesdf/eval_vis_nvdiffrast.py "
+        cmd += f"--seq_list {scene_name} "
+        cmd += f"--output_root {output_root} "
+        cmd += f"--data_root {data_root} "
+        cmd += f"--vis_root {vis_root} "
+        cmd += f"--fps {fps} "
+        cmd += f"--alpha {alpha} "
+        if dataset_type != "ho3d":
+            cmd += f"--vis_gt 0 "
+
+        print(cmd)
+        os.system(cmd)
+
+    def hold_eval_vis(self, scene_name, **kwargs):
+        self.print_header(f"hold eval vis for {scene_name}")
+
+        output_root = kwargs.get("output_root", f"{vggt_code_dir}/third_party/hold/code/logs_ho3d")
+        data_root = kwargs.get("data_root", f"{vggt_code_dir}/third_party/hold/code/data_ho3d")
+        vis_root = kwargs.get("vis_root", f"{vggt_code_dir}/output_baseline/{scene_name}/hold/")
+        alpha = kwargs.get("alpha", 0.8)
+        fps = kwargs.get("fps", 6)
+
+        if self.rebuild:
+            cmd = f"rm -rf {vis_root}"
+            print(cmd)
+            os.system(cmd)
+
+        cmd = f"cd {vggt_code_dir} && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python third_party/hold/code/eval_vis_nvdiffrast.py "
+        cmd += f"--seq_list {scene_name} "
+        cmd += f"--output_root {output_root} "
+        cmd += f"--data_root {data_root} "
+        cmd += f"--vis_root {vis_root} "
+        cmd += f"--fps {fps} "
+        cmd += f"--alpha {alpha} "
+        cmd += f"--vis_gt 0 "
+        # if dataset_type != "ho3d":
+        #     cmd += f"--vis_gt 0 "
 
         print(cmd)
         os.system(cmd)
@@ -2054,6 +2128,8 @@ if __name__ == "__main__":
                 "eval_sum",
                 "eval_sum_vis",
                 "foundation_pose_eval_vis",
+                "bundle_sdf_eval_vis",
+                "hold_eval_vis",
                 "gt_eval_vis",
                 ],
         help="Specify the process option.", 

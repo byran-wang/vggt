@@ -9,9 +9,7 @@ else:
     home_dir = os.path.expanduser("~")
     conda_dir = f"{home_dir}/anaconda3"
 
-vggt_code_dir = f"{home_dir.rstrip('/')}/Documents/project/vggt_wenxuan"
-if RUN_ON_SERVER:
-    vggt_code_dir = f"{home_dir.rstrip('/')}/Documents/project/vggt_wenxuan"
+vggt_code_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 if dataset == "zed":
     dataset_dir = f"{home_dir}/Documents/dataset/ZED_wenxuan_cups/"

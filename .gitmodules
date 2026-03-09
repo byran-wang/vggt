@@ -10,9 +10,6 @@
 [submodule "third_party/KinectFusion"]
 	path = third_party/KinectFusion
 	url = git@github.com:byran-wang/KinectFusion.git
-[submodule "third_party/mast3r"]
-	path = third_party/mast3r
-	url = https://github.com/naver/mast3r
 [submodule "third_party/FoundationPose"]
 	path = third_party/FoundationPose
 	url = git@github.com:byran-wang/FoundationPose.git
@@ -28,3 +25,9 @@
 [submodule "third_party/hamer"]
 	path = third_party/hamer
 	url = git@github.com:byran-wang/hamer.git
+[submodule "third_party/bundlesdf"]
+	path = third_party/bundlesdf
+	url = git@github.com:byran-wang/bundlesdf.git
+[submodule "third_party/hold"]
+	path = third_party/hold
+	url = git@github.com:byran-wang/hold.git
