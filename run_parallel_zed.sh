@@ -22,11 +22,6 @@ for device in "${!device_sequences[@]}"; do
   (
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
       --execute_list data_convert \
-      --process_list get_depth_from_foundation_stereo soft_link_depth \
-      --seq_list $sequences --rebuild
-
-    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-      --execute_list data_convert \
       --process_list ho3d_estimate_hand_pose ho3d_interpolate_hamer \
       --seq_list $sequences --rebuild 
 

@@ -20,7 +20,7 @@ seq_list="MC1"
 # collect ZED raw data
 python run_wonder_hoi.py --execute_list data_read --process_list ZED_read_data  --seq_list $seq_list --rebuild 
 # pase left image, right image, intrinsic and zed depth from raw data with downsample 3
-python run_wonder_hoi.py --execute_list data_read --process_list ZED_parse_data  --seq_list $seq_list --rebuild --downsample 3
+python run_wonder_hoi.py --execute_list data_convert --process_list ZED_parse_data  --seq_list $seq_list --rebuild --downsample 3
 # Remember to check the depth *.ply files in ply_zed by Meshlab after convert_zed_depth_to_ply.
 python run_wonder_hoi.py --execute_list data_convert --process_list convert_zed_depth_to_ply --seq_list $seq_list --rebuild # only for zed dataset
 # get the hand and object mask by sam3
