@@ -357,7 +357,8 @@ class run_wonder_hoi:
             "SS": "yellow sugar box",
             "ShSu": "yellow sugar box",
             "SiBF": "yellow banana",
-            "SiS": "yellow sugar box",         
+            "SiS": "yellow sugar box",  
+            "CUP": "tea cup",       
         }
 
         prompt_text_str = obj2text_prompt.get(obj_name, None)

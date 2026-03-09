@@ -2,6 +2,7 @@
 
 # Declare an associative array mapping CUDA devices to their respective sequence lists
 export RUN_ON_SERVER=false
+export DATASET=zed
 export RUN_ON_PC=true 
 # nerf acc need to export the cuda path
 export PATH="/usr/local/cuda-11.8:/usr/local/cuda-11.8/bin/:$PATH"
@@ -26,7 +27,7 @@ export LD_LIBRARY_PATH="/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH"
 # )
 
 declare -A device_sequences=(
-  [0]="CUB2"
+  [0]="CUP2 CUP3 CUP4"
 )
 
 current_dir=$(pwd)
@@ -38,39 +39,22 @@ for device in "${!device_sequences[@]}"; do
   
   (
     # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-    # --execute_list hand_pose_postprocess \
-    # --process_list fit_hand_intrinsic fit_hand_trans fit_hand_rot \
-    # --seq_list $sequences --rebuild \
-    # --conda_type anaconda3 \
-    # --dataset_dir /home/simba-1/Documents/dataset/ZED_wenxuan
+    # --execute_list data_convert \
+    # --process_list ZED_parse_data  \
+    # --seq_list $sequences \
+    # --rebuild --downsample 3
 
     # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-    # --execute_list obj_process \
-    # --process_list hoi_pipeline_data_preprocess hoi_pipeline_get_corres \
-    # --seq_list $sequences --rebuild \
-    # --conda_type anaconda3 \
-    # --dataset_dir /home/simba-1/Documents/dataset/ZED_wenxuan
-
-    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-    --execute_list obj_process \
-    --process_list hoi_pipeline_get_corres \
-    --seq_list $sequences --rebuild \
-    --conda_type anaconda3 \
-    --dataset_dir /home/simba-1/Documents/dataset/ZED_wenxuan    
-
-    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-      --execute_list obj_process \
-      --process_list eval_sum hoi_pipeline_joint_opt_eval_vis eval_sum_vis \
-      --seq_list $sequences --rebuild
-
+    # --execute_list data_convert \
+    # --process_list convert_zed_depth_to_ply  \
+    # --seq_list $sequences \
+    # --rebuild 
 
     # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-    # --execute_list obj_process \
-    # --process_list hoi_pipeline_joint_opt \
-    # --seq_list $sequences --vis \
-    # --conda_type anaconda3 \
-    # --dataset_dir /home/simba-1/Documents/dataset/ZED_wenxuan
-
+    # --execute_list data_convert \
+    # --process_list ho3d_get_obj_mask ho3d_get_hand_mask  \
+    # --seq_list $sequences \
+    # --rebuild 
   ) &
 done
 
