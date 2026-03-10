@@ -2,14 +2,20 @@
 
 # Declare an associative array mapping CUDA devices to their respective sequence lists
 export RUN_ON_SERVER=true
+export DATASET=zed
 # nerf acc need to export the cuda path
 export PATH="/usr/local/cuda-11.8:/usr/local/cuda-11.8/bin/:$PATH"
 export CUDA_PATH='/usr/local/cuda-11.8'
 export LD_LIBRARY_PATH="/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH"
 
 declare -A device_sequences=(
-  [0]="CUP2 CUP3"
-  [1]="CUP4"
+  [0]="AG1"
+  [1]="FIG1"
+  [2]="HAM1"
+  [3]="PIN1"
+  [4]="SPN1"
+  [5]="TAB1"
+  [6]="TG1"
 )
 
 current_dir=$(pwd)
@@ -20,20 +26,25 @@ for device in "${!device_sequences[@]}"; do
   sequences=${device_sequences[$device]}
   
   (
-    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-      --execute_list data_convert \
-      --process_list get_depth_from_foundation_stereo soft_link_depth \
-      --seq_list $sequences --rebuild
+    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    #   --execute_list data_convert \
+    #   --process_list get_depth_from_foundation_stereo soft_link_depth \
+    #   --seq_list $sequences --rebuild
 
-    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-      --execute_list data_convert \
-      --process_list ho3d_estimate_hand_pose ho3d_interpolate_hamer \
-      --seq_list $sequences --rebuild 
+    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    #   --execute_list data_convert \
+    #   --process_list ho3d_estimate_hand_pose ho3d_interpolate_hamer \
+    #   --seq_list $sequences --rebuild 
+
+    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    #   --execute_list hand_pose_postprocess \
+    #   --process_list fit_hand_intrinsic fit_hand_trans fit_hand_rot \
+    #   --seq_list $sequences --rebuild    
 
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
       --execute_list hand_pose_postprocess \
-      --process_list fit_hand_intrinsic fit_hand_trans fit_hand_rot \
-      --seq_list $sequences --rebuild            
+      --process_list fit_hand_trans fit_hand_rot \
+      --seq_list $sequences --rebuild          
 
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
       --execute_list obj_process \
@@ -52,11 +63,11 @@ for device in "${!device_sequences[@]}"; do
       --seq_list $sequences --rebuild 
 
     
-    echo "Running fit_hand on CUDA device $device with sequences: $sequences"
-    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-      --execute_list obj_process \
-      --process_list hoi_pipeline_joint_opt_eval_vis eval_sum_vis \
-      --seq_list $sequences --rebuild
+    # echo "Running fit_hand on CUDA device $device with sequences: $sequences"
+    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    #   --execute_list obj_process \
+    #   --process_list hoi_pipeline_joint_opt_eval_vis eval_sum_vis \
+    #   --seq_list $sequences --rebuild
 
 
 

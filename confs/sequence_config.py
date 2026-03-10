@@ -11,10 +11,10 @@ else:
 
 vggt_code_dir = f"{home_dir.rstrip('/')}/Documents/project/vggt"
 if RUN_ON_SERVER:
-    vggt_code_dir = f"{home_dir.rstrip('/')}/Documents/project/vggt_in_the_wild"
+    vggt_code_dir = f"{home_dir.rstrip('/')}/Documents/project/vggt_wenxuan"
 
 if dataset == "zed":
-    dataset_dir = f"{home_dir}/Documents/dataset/ZED_wenxuan_cups/"
+    dataset_dir = f"{home_dir}/Documents/dataset/ZED_wenxuan/"
     dataset_type = "zed"
     from confs.sequence_config_zed import sequences, sequence_name_list
 
