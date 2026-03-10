@@ -409,7 +409,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--distance",
         type=float,
-        default=1.0,
+        default=1.2,
         help="Camera distance from origin",
     )
     parser.add_argument(
