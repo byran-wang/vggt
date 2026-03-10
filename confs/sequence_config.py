@@ -12,7 +12,7 @@ else:
 vggt_code_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 if dataset == "zed":
-    dataset_dir = f"{home_dir}/Documents/dataset/ZED_wenxuan_cups/"
+    dataset_dir = f"{home_dir}/Documents/dataset/ZED_wenxuan/"
     dataset_type = "zed"
     from confs.sequence_config_zed import sequences, sequence_name_list
 

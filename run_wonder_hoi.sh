@@ -72,7 +72,6 @@ python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum_intr
 ######################################## baseline #########################################
 python run_wonder_hoi.py --execute_list baseline --process_list foundation_pose_eval_vis --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list baseline --process_list bundle_sdf_eval_vis --seq_list $seq_list --rebuild
-python run_wonder_hoi.py --execute_list baseline --process_list hold_eval_vis --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list baseline --process_list gt_eval_vis --seq_list $seq_list --rebuild
 
 ######################################## data transfer #########################################
