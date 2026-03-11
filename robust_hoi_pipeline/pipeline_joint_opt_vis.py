@@ -203,6 +203,44 @@ def log_static_trimesh_mesh(
     # )    
 
 
+def find_latest_mesh_file(mesh_dir: Path) -> Optional[Path]:
+    """Return the newest OBJ mesh under mesh_dir."""
+    if not mesh_dir.exists():
+        return None
+
+    mesh_files = sorted(mesh_dir.rglob("*.obj"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return mesh_files[0] if mesh_files else None
+
+
+def visualize_hy_omni_points(
+    hy_omni_path: Path,
+    scale: float,
+    align_transform: Optional[np.ndarray] = None,
+) -> None:
+    """Load and visualize the HY omni mesh as points in rerun."""
+    if not hy_omni_path.exists():
+        print(f"HY omni mesh not found at {hy_omni_path}, skipping")
+        return
+
+    hy_omni_mesh = trimesh.load(str(hy_omni_path), process=False)
+    hy_verts = np.array(hy_omni_mesh.vertices, dtype=np.float32) * scale
+
+    if align_transform is not None:
+        verts_homo = np.hstack([hy_verts, np.ones((len(hy_verts), 1), dtype=np.float32)])
+        hy_verts = (align_transform @ verts_homo.T).T[:, :3].astype(np.float32)
+
+    rr.log(
+        "world/hy_omni/points",
+        rr.Points3D(
+            hy_verts,
+            colors=np.broadcast_to(np.array([0, 0, 255], dtype=np.uint8), hy_verts.shape),
+            radii=0.0003,
+        ),
+        static=True,
+    )
+    print(f"Visualized HY omni mesh: {len(hy_verts)} vertices")
+
+
 def compute_pred_to_gt_alignment(
     data_gt,
     gt_o2c: Optional[np.ndarray],
@@ -791,41 +829,32 @@ def main(args):
             default_color=0.7,
         )
 
+    neus_mesh_dir = neus_dir / "neus_training" /  "joint_opt" / "save"
+    neus_mesh_path = find_latest_mesh_file(neus_mesh_dir)
+    if neus_mesh_path is None:
+        print(f"NeuS mesh not found under {neus_mesh_dir}, skipping")
+    else:
+        print(f"Loading NeuS mesh from {neus_mesh_path}")
+        neus_mesh = trimesh.load(str(neus_mesh_path), force="mesh", process=False)
+        if isinstance(neus_mesh, trimesh.Trimesh):
+            log_static_trimesh_mesh(
+                entity_path="world/neus/mesh",
+                mesh=neus_mesh,
+                scale=scale,
+                align_transform=align_pred_to_gt,
+                default_color=0.3,
+            )
+        else:
+            print(f"Warning: failed to load NeuS mesh geometry from {neus_mesh_path}, skipping")
+    
 
     # Load HY omni mesh (in SAM3D space) from pipeline_HY_to_SAM3D
     hy_omni_path = out_dir / "pipeline_HY_to_SAM3D" / "HY_omni_in_sam3d.obj"
-    if hy_omni_path.exists():
-        hy_omni_mesh = trimesh.load(str(hy_omni_path), process=False)
-        hy_verts = np.array(hy_omni_mesh.vertices, dtype=np.float32) * scale
-        hy_faces = np.array(hy_omni_mesh.faces, dtype=np.uint32)
-
-        if align_pred_to_gt is not None:
-            verts_homo = np.hstack([hy_verts, np.ones((len(hy_verts), 1), dtype=np.float32)])
-            hy_verts = (align_pred_to_gt @ verts_homo.T).T[:, :3].astype(np.float32)
-
-        if hy_omni_mesh.visual is not None and hasattr(hy_omni_mesh.visual, 'vertex_colors'):
-            hy_colors = np.array(hy_omni_mesh.visual.vertex_colors)[:, :3] / 255.0
-        else:
-            hy_colors = np.ones((len(hy_verts), 3)) * 0.5  # Dark gray
-
-        # rr.log(
-        #     "world/hy_omni/mesh",
-        #     rr.Mesh3D(
-        #         vertex_positions=hy_verts,
-        #         triangle_indices=hy_faces,
-        #         vertex_colors=hy_colors,
-        #     ),
-        #     static=True,
-        # )
-
-        rr.log(
-            "world/hy_omni/points",
-            rr.Points3D(hy_verts, colors=np.broadcast_to(np.array([0, 0, 255], dtype=np.uint8), hy_verts.shape), radii=0.0003),
-            static=True,
-        )
-        print(f"Visualized HY omni mesh: {len(hy_verts)} vertices")
-    else:
-        print(f"HY omni mesh not found at {hy_omni_path}, skipping")
+    visualize_hy_omni_points(
+        hy_omni_path=hy_omni_path,
+        scale=scale,
+        align_transform=align_pred_to_gt,
+    )
 
     # Visualize only keyframes
     print("Visualizing keyframes...")
