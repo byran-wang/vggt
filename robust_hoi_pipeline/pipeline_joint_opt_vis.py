@@ -166,6 +166,101 @@ def load_sam3d_mesh(sam3d_dir: Path, cond_idx: int) -> Optional[trimesh.Trimesh]
     return None
 
 
+def log_static_trimesh_mesh(
+    entity_path: str,
+    mesh: trimesh.Trimesh,
+    scale: float,
+    align_transform: Optional[np.ndarray] = None,
+    default_color: float = 0.7,
+) -> None:
+    """Log a trimesh mesh to rerun with optional scaling and alignment."""
+    vertices = np.array(mesh.vertices, dtype=np.float32) * scale
+    faces = np.array(mesh.faces, dtype=np.uint32)
+
+    if align_transform is not None:
+        verts_homo = np.hstack([vertices, np.ones((len(vertices), 1), dtype=np.float32)])
+        vertices = (align_transform @ verts_homo.T).T[:, :3].astype(np.float32)
+
+    if mesh.visual is not None and hasattr(mesh.visual, "vertex_colors"):
+        vertex_colors = np.array(mesh.visual.vertex_colors)[:, :3] / 255.0
+    else:
+        vertex_colors = np.ones((len(vertices), 3), dtype=np.float32) * default_color
+
+    rr.log(
+        entity_path,
+        rr.Mesh3D(
+            vertex_positions=vertices,
+            triangle_indices=faces,
+            vertex_colors=vertex_colors,
+        ),
+        static=True,
+    )
+
+    # rr.log(
+    #     "world/sam3d/points",
+    #     rr.Points3D(vertices, colors=np.broadcast_to(np.array([255, 255, 0], dtype=np.uint8), vertices.shape), radii=0.0003),
+    #     static=True,
+    # )    
+
+
+def compute_pred_to_gt_alignment(
+    data_gt,
+    gt_o2c: Optional[np.ndarray],
+    gt_is_valid: Optional[np.ndarray],
+    results_dir: Path,
+    frame_indices: List[int],
+    cond_idx: int,
+    scale: float,
+) -> Optional[np.ndarray]:
+    """Compute pred-to-GT alignment using the condition frame or the next valid GT frame."""
+    if data_gt is None or gt_o2c is None or gt_is_valid is None or len(gt_o2c) == 0:
+        return None
+
+    image_info = load_image_info(results_dir / f"{frame_indices[-1]:04d}")
+    if image_info is None:
+        print("Warning: failed to load image_info for alignment; skip pred-to-GT alignment.")
+        return None
+
+    pred_frame_indices = image_info.get("frame_indices", [])
+    if len(pred_frame_indices) == 0:
+        print("Warning: image_info has empty frame_indices; skip pred-to-GT alignment.")
+        return None
+
+    # Try condition frame first; if its GT is invalid, walk register order to find a valid GT frame.
+    try:
+        start_idx = frame_indices.index(cond_idx)
+    except ValueError:
+        start_idx = 0
+        print(f"Warning: cond_idx {cond_idx} not found in register_order, fallback search from start.")
+
+    search_order = list(range(start_idx, len(frame_indices))) + list(range(0, start_idx))
+    gt_cond_idx = None
+    ref_frame_idx = None
+    for idx in search_order:
+        if idx >= len(gt_o2c) or idx >= len(gt_is_valid):
+            continue
+        if not bool(gt_is_valid[idx]):
+            continue
+        fid = frame_indices[idx]
+        if fid not in pred_frame_indices:
+            continue
+        gt_cond_idx = idx
+        ref_frame_idx = fid
+        break
+
+    if gt_cond_idx is None:
+        print("Warning: no valid GT frame found in register_order for alignment; skip pred-to-GT alignment.")
+        return None
+
+    if ref_frame_idx != cond_idx:
+        print(f"Info: cond_idx {cond_idx} GT invalid/unavailable, fallback to frame {ref_frame_idx} for alignment.")
+
+    cond_local = pred_frame_indices.index(ref_frame_idx)
+    first_c2o = np.array(image_info["c2o"])
+    first_c2o[:, :3, 3] *= scale
+    return np.linalg.inv(gt_o2c[gt_cond_idx]) @ np.linalg.inv(first_c2o[cond_local])
+
+
 
 
 def visualize_gt_frame(
@@ -576,6 +671,47 @@ def visualize_frame(
     #     rr.log(f"{frame_entity}/keyframe", rr.TextLog(f"KEYFRAME {frame_idx}"))
 
 
+def load_gt_visualization_data(out_dir: Path, frame_indices: list):
+    """Load GT object and hand data for visualization.
+
+    Returns (data_gt, gt_o2c, gt_is_valid, gt_hand_verts_cam, gt_hand_faces).
+    All arrays are numpy. Returns Nones if loading fails.
+    """
+    import vggt.utils.gt as gt
+
+    seq_name = out_dir.name
+
+    def get_image_fids():
+        return frame_indices
+
+    print("Loading GT data...")
+    data_gt = gt.load_data(seq_name, get_image_fids)
+
+    gt_o2c = data_gt["o2c"].numpy()
+    gt_is_valid = data_gt["is_valid"].numpy()
+    print(f"Loaded GT data: {len(gt_o2c)} frames")
+
+    gt_mesh_path = data_gt["mesh_name.object"]
+    log_mesh("world/gt_mesh", gt_mesh_path, static=True)
+
+    gt_hand_verts_cam = data_gt["v3d_c.right"] if "v3d_c.right" in data_gt else None
+    gt_hand_faces = data_gt["faces.right"] if "faces.right" in data_gt else None
+    if gt_hand_verts_cam is not None and not isinstance(gt_hand_verts_cam, np.ndarray):
+        gt_hand_verts_cam = gt_hand_verts_cam.numpy()
+    if gt_hand_faces is not None and not isinstance(gt_hand_faces, np.ndarray):
+        gt_hand_faces = gt_hand_faces.numpy()
+
+    if gt_hand_verts_cam is not None and gt_hand_faces is not None:
+        from common.body_models import seal_mano_mesh_np
+        gt_hand_verts_cam, gt_hand_faces = seal_mano_mesh_np(
+            gt_hand_verts_cam, gt_hand_faces.astype(np.int64), is_rhand=True
+        )
+        gt_hand_faces = gt_hand_faces.astype(np.int32)
+        print(f"Loaded GT hand mesh (sealed): {gt_hand_verts_cam.shape[1]} vertices, {len(gt_hand_faces)} faces")
+
+    return data_gt, gt_o2c, gt_is_valid, gt_hand_verts_cam, gt_hand_faces
+
+
 def main(args):
     data_dir = Path(args.data_dir)
     out_dir = Path(args.output_dir)
@@ -585,6 +721,7 @@ def main(args):
     data_preprocess_dir = data_dir / "pipeline_preprocess"
     tracks_dir = data_dir / "pipeline_corres"
     results_dir = out_dir / "pipeline_joint_opt"
+    neus_dir = out_dir / "pipeline_neus_init"
 
     # Parse per-frame log blocks from log.txt
     frame_logs = parse_frame_logs(results_dir / "log.txt")
@@ -621,110 +758,39 @@ def main(args):
 
     # Load GT data if requested
     data_gt = None
+    gt_o2c = None
+    gt_is_valid = None
+    gt_hand_verts_cam = None
+    gt_hand_faces = None
     if args.vis_gt:
-        print("Loading GT data...")
-        import vggt.utils.gt as gt
-        seq_name = out_dir.name
-        def get_image_fids():
-            return frame_indices
-        data_gt = gt.load_data(seq_name, get_image_fids)
-        # Convert to numpy for visualization
-        gt_o2c = data_gt["o2c"].numpy()
-        
-        gt_is_valid = data_gt["is_valid"].numpy()
-        print(f"Loaded GT data: {len(gt_o2c)} frames")
-        gt_mesh_path = data_gt["mesh_name.object"]
-        log_mesh("world/gt_mesh", gt_mesh_path, static=True)
-
-        # Extract GT hand mesh data (camera-space vertices per frame + faces)
-        gt_hand_verts_cam = data_gt["v3d_c.right"] if "v3d_c.right" in data_gt else None
-        gt_hand_faces = data_gt["faces.right"] if "faces.right" in data_gt else None
-        if isinstance(gt_hand_verts_cam, np.ndarray) is False and gt_hand_verts_cam is not None:
-            gt_hand_verts_cam = gt_hand_verts_cam.numpy()
-        if isinstance(gt_hand_faces, np.ndarray) is False and gt_hand_faces is not None:
-            gt_hand_faces = gt_hand_faces.numpy()
-        # Seal the MANO mesh (close wrist opening)
-        if gt_hand_verts_cam is not None and gt_hand_faces is not None:
-            from common.body_models import seal_mano_mesh_np
-            gt_hand_verts_cam, gt_hand_faces = seal_mano_mesh_np(gt_hand_verts_cam, gt_hand_faces.astype(np.int64), is_rhand=True)
-            gt_hand_faces = gt_hand_faces.astype(np.int32)
-            print(f"Loaded GT hand mesh (sealed): {gt_hand_verts_cam.shape[1]} vertices, {len(gt_hand_faces)} faces")
+        data_gt, gt_o2c, gt_is_valid, gt_hand_verts_cam, gt_hand_faces = load_gt_visualization_data(
+            out_dir,
+            frame_indices,
+        )
 
 
     # Compute alignment transform from pred object space to GT object space
     # using the condition frame as the reference
 
-    align_pred_to_gt = None
-    if data_gt is not None and len(gt_o2c) > 0:
-        image_info = load_image_info(results_dir / f"{frame_indices[-1]:04d}")
-        if image_info is None:
-            print("Warning: failed to load image_info for alignment; skip pred-to-GT alignment.")
-        else:
-            pred_frame_indices = image_info.get("frame_indices", [])
-            if len(pred_frame_indices) == 0:
-                print("Warning: image_info has empty frame_indices; skip pred-to-GT alignment.")
-            else:
-                # Try condition frame first; if its GT is invalid, walk register order to find a valid GT frame.
-                try:
-                    start_idx = frame_indices.index(cond_idx)
-                except ValueError:
-                    start_idx = 0
-                    print(f"Warning: cond_idx {cond_idx} not found in register_order, fallback search from start.")
-
-                search_order = list(range(start_idx, len(frame_indices))) + list(range(0, start_idx))
-                gt_cond_idx = None
-                ref_frame_idx = None
-                for idx in search_order:
-                    if idx >= len(gt_o2c) or idx >= len(gt_is_valid):
-                        continue
-                    if not bool(gt_is_valid[idx]):
-                        continue
-                    fid = frame_indices[idx]
-                    if fid not in pred_frame_indices:
-                        continue
-                    gt_cond_idx = idx
-                    ref_frame_idx = fid
-                    break
-
-                if gt_cond_idx is None:
-                    print("Warning: no valid GT frame found in register_order for alignment; skip pred-to-GT alignment.")
-                else:
-                    if ref_frame_idx != cond_idx:
-                        print(f"Info: cond_idx {cond_idx} GT invalid/unavailable, fallback to frame {ref_frame_idx} for alignment.")
-                    cond_local = pred_frame_indices.index(ref_frame_idx)
-                    first_c2o = np.array(image_info["c2o"])
-                    first_c2o[:, :3, 3] *= scale
-                    align_pred_to_gt = np.linalg.inv(gt_o2c[gt_cond_idx]) @ np.linalg.inv(first_c2o[cond_local])
+    align_pred_to_gt = compute_pred_to_gt_alignment(
+        data_gt=data_gt,
+        gt_o2c=gt_o2c,
+        gt_is_valid=gt_is_valid,
+        results_dir=results_dir,
+        frame_indices=frame_indices,
+        cond_idx=cond_idx,
+        scale=scale,
+    )
 
     if SAM3D_mesh is not None:
-        vertices = np.array(SAM3D_mesh.vertices, dtype=np.float32) * scale
-        faces = np.array(SAM3D_mesh.faces, dtype=np.uint32)
-
-        # Align SAM3D mesh to GT space if alignment is available
-        if align_pred_to_gt is not None:
-            verts_homo = np.hstack([vertices, np.ones((len(vertices), 1), dtype=np.float32)])
-            vertices = (align_pred_to_gt @ verts_homo.T).T[:, :3].astype(np.float32)
-
-        # Get vertex colors if available
-        if SAM3D_mesh.visual is not None and hasattr(SAM3D_mesh.visual, 'vertex_colors'):
-            vertex_colors = np.array(SAM3D_mesh.visual.vertex_colors)[:, :3] / 255.0
-        else:
-            vertex_colors = np.ones((len(vertices), 3)) * 0.7  # Gray
-
-        rr.log(
-            "world/sam3d/mesh",
-            rr.Mesh3D(
-                vertex_positions=vertices,
-                triangle_indices=faces,
-                vertex_colors=vertex_colors,
-            ),
-            static=True,
+        log_static_trimesh_mesh(
+            entity_path="world/sam3d/mesh",
+            mesh=SAM3D_mesh,
+            scale=scale,
+            align_transform=align_pred_to_gt,
+            default_color=0.7,
         )
-        # rr.log(
-        #     "world/sam3d/points",
-        #     rr.Points3D(vertices, colors=np.broadcast_to(np.array([255, 255, 0], dtype=np.uint8), vertices.shape), radii=0.0003),
-        #     static=True,
-        # )
+
 
     # Load HY omni mesh (in SAM3D space) from pipeline_HY_to_SAM3D
     hy_omni_path = out_dir / "pipeline_HY_to_SAM3D" / "HY_omni_in_sam3d.obj"
