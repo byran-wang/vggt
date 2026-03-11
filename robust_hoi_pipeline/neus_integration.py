@@ -204,7 +204,7 @@ def run_neus_training(
     import pytorch_lightning as pl            # noqa: E402
     from pytorch_lightning import Trainer     # noqa: E402
     from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor  # noqa: E402
-    from pytorch_lightning.loggers import CSVLogger  # noqa: E402
+    from pytorch_lightning.loggers import CSVLogger, TensorBoardLogger  # noqa: E402
     from utils.callbacks import CustomProgressBar    # noqa: E402
     from utils.misc import load_config               # noqa: E402
 
@@ -280,7 +280,10 @@ def run_neus_training(
         LearningRateMonitor(logging_interval="step"),
         CustomProgressBar(refresh_rate=1),
     ]
-    loggers = [CSVLogger(config.exp_dir, name=config.trial_name, version="csv_logs")]
+    loggers = [
+        CSVLogger(config.exp_dir, name=config.trial_name, version="csv_logs"),
+        TensorBoardLogger(config.exp_dir, name=config.trial_name, version="tb_logs"),
+    ]
 
     trainer = Trainer(
         devices=1,
