@@ -125,7 +125,6 @@ class run_wonder_hoi:
             "baseline": {
                 "foundation_pose_eval_vis": self.foundation_pose_eval_vis,
                 "bundle_sdf_eval_vis": self.bundle_sdf_eval_vis,
-                "hold_eval_vis": self.hold_eval_vis,
                 "gt_eval_vis": self.gt_eval_vis,
             },
         }
@@ -359,7 +358,15 @@ class run_wonder_hoi:
             "SS": "yellow sugar box",
             "ShSu": "yellow sugar box",
             "SiBF": "yellow banana",
-            "SiS": "yellow sugar box",         
+            "SiS": "yellow sugar box",  
+            "CUP": "tea cup",   
+            "AG": "air gun",
+            "FIG": "mini figurine",
+            "HAM": "hammer",
+            "PIN": "pincher",
+            "SPN": "spanner",
+            "TAB": "tablespoon",
+            "TG": "toy gun",
         }
 
         prompt_text_str = obj2text_prompt.get(obj_name, None)
@@ -667,7 +674,7 @@ class run_wonder_hoi:
     def obj_3D_gen(self, scene_name, **kwargs):
         self.print_header(f"Generate object 3D model from Hunyuan for {scene_name}")
         id = f"{self.seq_config['cond_idx']:04d}"
-        out_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{id}/"
+        out_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{id}"
                    
         if self.rebuild:
             cmd = f"rm -rf {out_dir}/*"
@@ -707,7 +714,7 @@ class run_wonder_hoi:
     def ho3d_obj_3D_gen(self, scene_name, **kwargs):
         self.print_header(f"Generate object 3D model from Hunyuan for {scene_name}")
         id = f"{self.seq_config['cond_idx']:04d}"
-        out_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{id}/"
+        out_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{id}"
                    
         if self.rebuild:
             cmd = f"rm -rf {out_dir}/*"
@@ -750,7 +757,7 @@ class run_wonder_hoi:
         depth_path = f"{self.dataset_dir}/{scene_name}/depth/{id}.png"
         mask_path = f"{self.dataset_dir}/{scene_name}/mask_object/{id}.png"
         meta_path = f"{self.dataset_dir}/{scene_name}/meta/{id}.pkl"
-        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D/{id}/"
+        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D/{id}"
                    
         if self.rebuild:
             cmd = f"rm -rf {out_dir}/*"
@@ -777,7 +784,7 @@ class run_wonder_hoi:
     def ho3d_obj_SAM3D_post_opt_GS(self, scene_name, **kwargs):
         self.print_header(f"Post-optimize SAM3D Gaussian Splatting for {scene_name}")
         id = f"{self.seq_config['cond_idx']:04d}"
-        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D/{id}/"
+        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D/{id}"
 
         cmd = f"cd {home_dir}/Documents/project/sam-3d-objects && "
         cmd += f"LIDRA_SKIP_INIT=1 {self.conda_dir}/envs/sam3d-objects/bin/python post_opt_GS.py "
@@ -794,7 +801,7 @@ class run_wonder_hoi:
         meta_path = f"{self.dataset_dir}/{scene_name}/meta/{id}.pkl"
 
 
-        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_optimized/{id}/"
+        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_optimized/{id}"
                    
         if self.rebuild:
             cmd = f"rm -rf {out_dir}/*"
@@ -834,7 +841,7 @@ class run_wonder_hoi:
         meta_path = f"{self.dataset_dir}/{scene_name}/meta/{id}.pkl"
 
 
-        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_mask/{id}/"
+        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_mask/{id}"
                    
         if self.rebuild:
             cmd = f"rm -rf {out_dir}/*"
@@ -858,7 +865,7 @@ class run_wonder_hoi:
     def ho3d_align_SAM3D_pts(self, scene_name, **kwargs):
         self.print_header(f"Align SAM3D model using 3D points for {scene_name}")
         id = f"{self.seq_config['cond_idx']:04d}"
-        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/{id}/"
+        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/{id}"
                    
         if self.rebuild:
             cmd = f"rm -rf {out_dir}/*"
@@ -882,8 +889,8 @@ class run_wonder_hoi:
     def ho3d_SAM3D_post_process(self, scene_name, **kwargs):
         self.print_header(f"Copy SAM3D results for {scene_name}")
         id = f"{self.seq_config['cond_idx']:04d}"
-        src_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/{id}/"
-        dst_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_post_process/{id}/"
+        src_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/{id}"
+        dst_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_post_process/{id}"
 
         if self.vis:
             cmd = f"cd {home_dir}/Documents/project/vggt && "
@@ -908,8 +915,8 @@ class run_wonder_hoi:
     def align_mesh_image(self, scene_name, **kwargs):
         self.print_header(f"align mesh and image for {scene_name}")
         id = f"{self.seq_config['cond_idx']:04d}"
-        data_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{id}/"
-        out_dir = f"{self.dataset_dir}/{scene_name}/align_mesh_image/{id}/"
+        data_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{id}"
+        out_dir = f"{self.dataset_dir}/{scene_name}/align_mesh_image/{id}"
 
         if self.vis:
             cmd = f"cd {home_dir}/Documents/project/Hunyuan3D-2.1/ && "
@@ -965,7 +972,7 @@ class run_wonder_hoi:
     def align_corres(self, scene_name, **kwargs):
         self.print_header(f"align corres for {scene_name}")
         id = f"{self.seq_config['cond_idx']:04d}"
-        cond_data_dir = f"{self.dataset_dir}/{scene_name}/align_mesh_image/{id}/"
+        cond_data_dir = f"{self.dataset_dir}/{scene_name}/align_mesh_image/{id}"
         query_data_dir = f"{self.dataset_dir}/{scene_name}/pts_observed/"
         out_dir = f"{self.dataset_dir}/{scene_name}/features/"
 
@@ -1142,7 +1149,7 @@ class run_wonder_hoi:
 
         downsample = int(kwargs.get("downsample", 3))
         cmd = f"cd {vggt_code_dir}/third_party/zed-sdk/recording/export/svo/python && "
-        cmd += f"LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6 {self.conda_dir}/bin/python3 svo_export.py "
+        cmd += f"LD_PRELOAD={self.conda_dir}/envs/zed_wenxuan/lib/libstdc++.so.6 {self.conda_dir}/envs/zed_wenxuan/bin/python svo_export.py "
         cmd += f"--mode 2 "
         cmd += f" --input_svo_file {self.dataset_dir}/{scene_name}/{scene_name}.svo2 "
         cmd += f"--output_path_dir {scene_dir}/ "
@@ -1920,7 +1927,7 @@ class run_wonder_hoi:
     def bundle_sdf_eval_vis(self, scene_name, **kwargs):
         self.print_header(f"bundle sdf eval vis for {scene_name}")
 
-        output_root = kwargs.get("output_root", f"{vggt_code_dir}/third_party/bundlesdf/output_ho3d")
+        output_root = kwargs.get("output_root", f"{vggt_code_dir}/third_party/bundlesdf/output")
         data_root = kwargs.get("data_root", self.dataset_dir)
         vis_root = kwargs.get("vis_root", f"{vggt_code_dir}/output_baseline/{scene_name}/bundle_sdf/")
         alpha = kwargs.get("alpha", 0.8)
@@ -1941,35 +1948,6 @@ class run_wonder_hoi:
         cmd += f"--alpha {alpha} "
         if dataset_type != "ho3d":
             cmd += f"--vis_gt 0 "
-
-        print(cmd)
-        os.system(cmd)
-
-    def hold_eval_vis(self, scene_name, **kwargs):
-        self.print_header(f"hold eval vis for {scene_name}")
-
-        output_root = kwargs.get("output_root", f"{vggt_code_dir}/third_party/hold/code/logs_ho3d")
-        data_root = kwargs.get("data_root", f"{vggt_code_dir}/third_party/hold/code/data_ho3d")
-        vis_root = kwargs.get("vis_root", f"{vggt_code_dir}/output_baseline/{scene_name}/hold/")
-        alpha = kwargs.get("alpha", 0.8)
-        fps = kwargs.get("fps", 6)
-
-        if self.rebuild:
-            cmd = f"rm -rf {vis_root}"
-            print(cmd)
-            os.system(cmd)
-
-        cmd = f"cd {vggt_code_dir} && "
-        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python third_party/hold/code/eval_vis_nvdiffrast.py "
-        cmd += f"--seq_list {scene_name} "
-        cmd += f"--output_root {output_root} "
-        cmd += f"--data_root {data_root} "
-        cmd += f"--vis_root {vis_root} "
-        cmd += f"--fps {fps} "
-        cmd += f"--alpha {alpha} "
-        cmd += f"--vis_gt 0 "
-        # if dataset_type != "ho3d":
-        #     cmd += f"--vis_gt 0 "
 
         print(cmd)
         os.system(cmd)
@@ -2128,7 +2106,6 @@ if __name__ == "__main__":
                 "eval_sum_vis",
                 "foundation_pose_eval_vis",
                 "bundle_sdf_eval_vis",
-                "hold_eval_vis",
                 "gt_eval_vis",
                 ],
         help="Specify the process option.", 

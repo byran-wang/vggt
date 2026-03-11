@@ -7,7 +7,7 @@ if RUN_ON_SERVER:
     conda_dir = "/home/shibo/.conda/"
 else:
     home_dir = os.path.expanduser("~")
-    conda_dir = f"{home_dir}/miniconda3"
+    conda_dir = f"{home_dir}/anaconda3"
 
 vggt_code_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -20,6 +20,12 @@ elif dataset == "ho3d":
     dataset_dir = f"{home_dir}/Documents/dataset/BundleSDF/HO3D_v3/train/"
     dataset_type = "ho3d"
     from confs.sequence_config_ho3d import sequences, sequence_name_list
+
+elif dataset == "hoi4d":
+    dataset_dir = f"{home_dir}/Documents/dataset/HOI4D_processed/train/"
+    dataset_type = "hoi4d"
+    from confs.sequence_config_hoi4d import sequences, sequence_name_list
+
 else:
-    raise ValueError(f"Please 'export DATASET=zed or ho3d' at first")           
+    raise ValueError(f"Please 'export DATASET=zed or ho3d or hoi4d' at first")           
 

@@ -14,6 +14,7 @@ import torch
 def _setup_paths() -> Path:
     project_root = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(project_root))
+    sys.path.insert(0, str(project_root / "robust_hoi_pipeline"))
     sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
     return project_root
 
@@ -21,7 +22,7 @@ def _setup_paths() -> Path:
 PROJECT_ROOT = _setup_paths()
 
 from vggt.dependency.track_predict import predict_tracks
-from robust_hoi_pipeline.pipeline_utils import (
+from pipeline_utils import (
     compute_vggsfm_foreground_mask,
     compute_vggsfm_depth_mask,
 )

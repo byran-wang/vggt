@@ -95,7 +95,9 @@ def loss_fn_h_j2d(preds, targets, conf, valid_frames=None):
     if valid_frames is None:
         is_valid = (~torch.isnan(targets_j2d[:, 0, 0]))
     else:
-        is_valid = (~torch.isnan(targets_j2d[:, 0, 0])) & valid_frames      
+        is_valid = (~torch.isnan(targets_j2d[:, 0, 0])) & valid_frames    
+          
+    # breakpoint()      
     loss_2d = (
         gmof(preds["right.j2d"][is_valid] - targets_j2d[is_valid, :, :2], sigma=conf.j2d_sigma).sum(dim=-1)
     )
@@ -136,7 +138,7 @@ def loss_fn_h_mask_hand(preds_hand_mask, targets, conf, valid_frames=None, step=
     loss = torch.stack(losses).mean() * conf.mask_hand
     return loss
 
-def loss_fn_h_depth(preds, targets, conf, valid_frames=None, step=None, frame_batch_size = 1500):
+def loss_fn_h_depth(preds, targets, conf, valid_frames=None, step=None, frame_batch_size = 200):
     v3d_cam = preds["right.v3d_cam"][valid_frames]
     targets_depth = targets["right.depth.gt"][valid_frames].to(preds["right.v3d_cam"].device)
     f3d = preds["right.f3d"]
