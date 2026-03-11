@@ -93,15 +93,15 @@ system:
   name: neus-system
   vis_scene_rerun: false  # Disable rerun visualization during pipeline
   loss:
-    lambda_rgb_mse: 10.
-    lambda_rgb_l1: 0.
-    lambda_mask: 0.
-    lambda_eikonal: 1.0
-    lambda_curvature: 0.
-    lambda_sparsity: 0.0
-    lambda_distortion: 0.
-    lambda_opaque: 0.
-    sparsity_scale: 1.
+    lambda_rgb_mse: 10.        # MSE between rendered and GT RGB
+    lambda_rgb_l1: 0.          # L1 between rendered and GT RGB
+    lambda_mask: 0.           # BCE(opacity, gt_mask) — supervise opacity with GT foreground mask
+    lambda_eikonal: 2.0        # (|∇sdf| - 1)^2 — enforce unit-norm SDF gradient (valid distance field)
+    lambda_curvature: 0.       # |∇²sdf| — penalize high-curvature surfaces (smoothing)
+    lambda_sparsity: 0.0       # exp(-sparsity_scale * |sdf|) — push SDF away from near-zero fog
+    lambda_distortion: 0.      # MipNeRF360 distortion loss — concentrate density, reduce floaters
+    lambda_opaque: 0.         # BCE(opacity, opacity) = entropy — push opacity toward 0 or 1
+    sparsity_scale: 1.         # Controls sharpness of sparsity penalty (larger = tighter near-surface)
   optimizer:
     name: AdamW
     args:
