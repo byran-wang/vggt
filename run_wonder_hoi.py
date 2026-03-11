@@ -1691,19 +1691,24 @@ class run_wonder_hoi:
     def hoi_pipeline_joint_opt_eval_vis(self, scene_name, **kwargs):
         self.print_header(f"hoi pipeline joint optimization eval vis for {scene_name}")
         data_dir = f"{self.dataset_dir}/{scene_name}"
-        out_dir = f"{vggt_code_dir}/output/{scene_name}"
+        result_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/"
+        out_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/eval_vis/"
+
+        if self.rebuild:
+            cmd = f"rm -rf {out_dir}"
+            print(cmd)
+            os.system(cmd)            
 
         cmd = f"cd {vggt_code_dir} && "
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_joint_opt_eval_vis_nvdiffrast.py "
-        cmd += f"--result_folder {out_dir}/pipeline_joint_opt/ "
-        cmd += f"--out_dir {out_dir}/pipeline_joint_opt/eval/ "
+        cmd += f"--result_folder {result_dir} "
+        cmd += f"--out_dir {out_dir} "
         cmd += f"--SAM3D_dir {data_dir}/SAM3D_aligned_post_process "
         cmd += f"--cond_index {self.seq_config['cond_idx']} "
         render_hand = str(kwargs.get("render_hand", "false")).lower() in {"1", "true", "yes", "y"}
         if render_hand:
             cmd += f"--render_hand "
-        if self.rebuild:
-            cmd += f"--rebuild "
+
         if dataset_type != "ho3d":
             cmd += f"--vis_gt 0 "
        
@@ -1850,7 +1855,7 @@ class run_wonder_hoi:
         )
         joint_opt_dir = kwargs.get(
             "joint_opt_dir",
-            f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/eval",
+            f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/eval_vis",
         )
         gt_dir = kwargs.get(
             "gt_dir",

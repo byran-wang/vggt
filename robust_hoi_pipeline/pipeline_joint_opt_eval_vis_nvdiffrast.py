@@ -289,7 +289,6 @@ def main(args):
         out_dir=output_dir,
         alpha=float(args.alpha),
         fps=args.fps,
-        rebuild=args.rebuild,
         default_mesh_tensors=default_mesh_tensors,
         desc="Rendering frames with nvdiffrast",
     )
@@ -311,7 +310,6 @@ def parse_args():
     parser.add_argument("--render_hand", dest="render_hand", action="store_true", help="Render sealed right-hand mesh together with the object mesh")
     parser.add_argument("--no_render_hand", dest="render_hand", action="store_false", help="Render only the object mesh")
     parser.set_defaults(render_hand=True)
-    parser.add_argument("--rebuild", action="store_true", help="Clear previous visualization outputs")
     return parser.parse_args()
 
 
