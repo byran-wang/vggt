@@ -36,16 +36,19 @@ _foundation_pose_cache: Dict = {}
 def _get_foundation_pose(mesh, debug_dir=None):
     """Return a cached FoundationPose estimator, creating it on first call.
 
-    The scorer and refiner networks are expensive to load, so we keep a single
-    instance alive across frames.  When the mesh object identity changes the
-    estimator is rebuilt.
+    The scorer, refiner, and glctx are expensive to load, so they are shared
+    across all meshes.  Per-mesh estimators are cached by object identity so
+    that switching between SAM3D and NeuS meshes each frame does not trigger
+    a full rebuild.
     """
     import trimesh
 
     mesh_id = id(mesh)
-    cached = _foundation_pose_cache.get("instance")
-    if cached is not None and _foundation_pose_cache.get("mesh_id") == mesh_id:
-        return cached
+
+    # Return cached estimator if the mesh hasn't changed
+    per_mesh = _foundation_pose_cache.get("per_mesh", {})
+    if mesh_id in per_mesh:
+        return per_mesh[mesh_id]
 
     # Add FoundationPose to sys.path so its internal imports resolve.
     fp_root = str(project_root / "third_party" / "FoundationPose")
@@ -56,23 +59,26 @@ def _get_foundation_pose(mesh, debug_dir=None):
     from learning.training.predict_score import ScorePredictor
     from learning.training.predict_pose_refine import PoseRefinePredictor
 
-    scorer = ScorePredictor()
-    refiner = PoseRefinePredictor()
-    glctx = dr.RasterizeCudaContext()
+    # Shared resources — only created once
+    if "scorer" not in _foundation_pose_cache:
+        _foundation_pose_cache["scorer"] = ScorePredictor()
+        _foundation_pose_cache["refiner"] = PoseRefinePredictor()
+        _foundation_pose_cache["glctx"] = dr.RasterizeCudaContext()
+
     dbg = debug_dir or "/tmp/foundation_pose_debug"
 
     est = FoundationPose(
         model_pts=mesh.vertices,
         model_normals=mesh.vertex_normals,
         mesh=mesh,
-        scorer=scorer,
-        refiner=refiner,
-        glctx=glctx,
+        scorer=_foundation_pose_cache["scorer"],
+        refiner=_foundation_pose_cache["refiner"],
+        glctx=_foundation_pose_cache["glctx"],
         debug=0,
         debug_dir=dbg,
     )
-    _foundation_pose_cache["instance"] = est
-    _foundation_pose_cache["mesh_id"] = mesh_id
+    per_mesh[mesh_id] = est
+    _foundation_pose_cache["per_mesh"] = per_mesh
     print(f"[FoundationPose] Initialized estimator (mesh {len(mesh.vertices)} verts)")
     return est
 
@@ -2039,13 +2045,17 @@ def check_which_estimate_is_better_and_update(
     pnp_success,
     fp_pose,
     fp_success,
+    fp_pose_neus=None,
+    fp_success_neus=False,
 ):
     """Select and apply the better estimate pose using depth 3D NN distance in object space."""
     candidates = []
     if pnp_success and pnp_pose is not None:
         candidates.append(("pnp", np.asarray(pnp_pose, dtype=np.float64)))
     if fp_success and fp_pose is not None:
-        candidates.append(("foundation_pose", np.asarray(fp_pose, dtype=np.float64)))
+        candidates.append(("foundation_pose_sam3d", np.asarray(fp_pose, dtype=np.float64)))
+    if fp_success_neus and fp_pose_neus is not None:
+        candidates.append(("foundation_pose_neus", np.asarray(fp_pose_neus, dtype=np.float64)))
 
     if not candidates:
         print(f"[pose_select] Frame {frame_idx}: no valid pose estimate candidates")
@@ -2176,7 +2186,7 @@ def print_image_info_stats(image_info, invalid_cnt):
 
 def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, cond_idx: int,
                                neus_ckpt=None, neus_total_steps=0, sam3d_root_dir=None,
-                               neus_init_mesh=None, optimize_3D_prior=False):
+                               neus_mesh_path=None, optimize_3D_prior=False):
 
     from robust_hoi_pipeline.frame_management import (
         find_next_frame,
@@ -2251,6 +2261,16 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             sam3d_mesh = sam3d_mesh.dump(concatenate=True)
         print(f"Loaded SAM3D mesh: {len(sam3d_mesh.vertices)} vertices")
 
+    # Load the NeuS mesh (if available) for FoundationPose tracking
+    neus_mesh_trimesh = None
+    # Load the NeuS mesh (if available) for FoundationPose tracking
+    neus_mesh_trimesh = None
+    if neus_mesh_path is not None and Path(neus_mesh_path).exists():
+        import trimesh
+        neus_mesh_trimesh = trimesh.load(str(neus_mesh_path), process=False)
+        if isinstance(neus_mesh_trimesh, trimesh.Scene):
+            neus_mesh_trimesh = neus_mesh_trimesh.dump(concatenate=True)
+        print(f"Loaded NeuS mesh: {len(neus_mesh_trimesh.vertices)} vertices")
 
     while image_info_work["registered"].sum() + image_info_work["invalid"].sum() < num_frames:
         next_frame_idx = find_next_frame(image_info_work)
@@ -2280,16 +2300,21 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         pnp_pose, pnp_success = register_new_frame_by_PnP(
             image_info_work, next_frame_idx, args, update_pose=False, return_pose=True
         )
-        fp_pose, fp_success = _reset_and_track_foundation_pose(
+        fp_pose_sam3d, fp_success_sam3d = _reset_and_track_foundation_pose(
             image_info_work, next_frame_idx, sam3d_mesh, debug_dir=debug_dir
+        )
+        fp_pose_neus, fp_success_neus = _reset_and_track_foundation_pose(
+            image_info_work, next_frame_idx, neus_mesh_trimesh, debug_dir=debug_dir
         )
         _, estimate_success = check_which_estimate_is_better_and_update(
             image_info_work,
             next_frame_idx,
             pnp_pose=pnp_pose,
             pnp_success=pnp_success,
-            fp_pose=fp_pose,
-            fp_success=fp_success,
+            fp_pose=fp_pose_sam3d,
+            fp_success=fp_success_sam3d,
+            fp_pose_neus=fp_pose_neus,
+            fp_success_neus=fp_success_neus,
         )
         if not estimate_success:
             print(f"[register_remaining_frames] Pose estimation failed for frame {next_frame_idx}, resetting to nearest registered frame")
@@ -2410,7 +2435,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 )
 
                 reset_neus_cache()
-                neus_ckpt, neus_init_mesh = run_neus_training(
+                neus_ckpt, neus_mesh_path = run_neus_training(
                     neus_data_dir,
                     config_path="configs/neus-pipeline.yaml",
                     max_steps=neus_total_steps,
@@ -2420,6 +2445,15 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                     robust_hoi_weight=1.0,
                     sam3d_weight=0.0,
                 )
+                if neus_mesh_path is not None and Path(neus_mesh_path).exists():
+                    import trimesh
+                    # Evict old NeuS estimator from cache before replacing the mesh
+                    old_id = id(neus_mesh_trimesh)
+                    _foundation_pose_cache.get("per_mesh", {}).pop(old_id, None)
+                    neus_mesh_trimesh = trimesh.load(str(neus_mesh_path), process=False)
+                    if isinstance(neus_mesh_trimesh, trimesh.Scene):
+                        neus_mesh_trimesh = neus_mesh_trimesh.dump(concatenate=True)
+                    print(f"Reloaded NeuS mesh: {len(neus_mesh_trimesh.vertices)} vertices")
 
         image_info["register"] = image_info_work["registered"].tolist()
         image_info["invalid"] = image_info_work["invalid"].tolist()
@@ -2532,7 +2566,7 @@ def main(args):
         register_remaining_frames(
             image_info, preprocessed_data, out_dir, cond_idx,
             neus_ckpt=neus_ckpt, neus_total_steps=neus_total_steps,
-            sam3d_root_dir=sam3d_root_dir, neus_init_mesh=neus_init_mesh,
+            sam3d_root_dir=sam3d_root_dir, neus_mesh_path=neus_init_mesh,
             optimize_3D_prior=args.optimize_3D_prior,
         )
     finally:
