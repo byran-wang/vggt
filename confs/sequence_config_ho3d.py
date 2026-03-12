@@ -85,7 +85,11 @@ sequences = {
     "ShSu10":
         {
         "cond_idx": 518,
-        },  
+        },
+    "ShSu12":
+        {
+        "cond_idx": 303,
+        },          
     "ShSu14":
         {
         "cond_idx": 870,

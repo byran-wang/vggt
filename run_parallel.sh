@@ -11,7 +11,7 @@ declare -A device_sequences=(
   [2]="ABF12 GPMF12 GPMF14"
   [3]="ABF14 MC1 MDF12"
   [4]="MC4 MDF14 BB12"
-  [5]="ShSu10 ShSu14 BB13"
+  [5]="ShSu10 ShSu12 BB13"
   [6]="SM2 SM4 GSF12"
   [7]="SMu1 SMu40 GSF13"     
 
