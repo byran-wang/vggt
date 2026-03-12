@@ -110,12 +110,7 @@ def get_hand_depth(depth_ps, mask_hand_ps, meta, device="cuda"):
 def read_data(args):
     seq_name = args.seq_name
     # load data
-    if args['dataset_type'] == "ho3d":
-        data_dir = f"./data/train/{seq_name}"
-    elif args['dataset_type'] == "zed":
-        data_dir = args['out_dir']
-    else:
-        raise NotImplementedError(f"Dataset type {args['dataset_type']} not implemented.")
+    data_dir = args['out_dir']
 
     im_ps = sorted(
         glob(f"{data_dir}/rgb/*.jpg")
@@ -124,7 +119,7 @@ def read_data(args):
     mask_obj_ps = sorted(glob(f"{data_dir}/mask_object/*.png"))
     mask_hand_ps = sorted(glob(f"{data_dir}/mask_hand/*.png"))
     depth_ps = sorted(glob(f"{data_dir}/depth/*.png"))
-    
+    # breakpoint()
     assert len(im_ps) == len(mask_hand_ps) == len(mask_obj_ps) == len(depth_ps), "Number of images, hand masks, object masks, and depth maps must be equal."
     num_total_frames = len(im_ps)
 

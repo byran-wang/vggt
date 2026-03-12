@@ -367,6 +367,15 @@ class run_wonder_hoi:
             "SPN": "spanner",
             "TAB": "tablespoon",
             "TG": "toy gun",
+            "FFC": "toy car",
+            "MEC": "measuring cup",
+            "MED": "paper box",
+            "MOU": "computer mouse",
+            "SPA": "spatula",
+            "GT": "gummed tape",
+            "KNI": "knife",
+            "SCI": "scissors",
+            "SHP": "shampoo",
         }
 
         prompt_text_str = obj2text_prompt.get(obj_name, None)

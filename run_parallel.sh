@@ -23,8 +23,12 @@ export LD_LIBRARY_PATH="/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH"
 # )
 
 declare -A device_sequences=(
-  [0]="CUP3 CUP4 FFC1 MEC1 MED1 MOU1 SPA1"
+  [0]="CUP3 FFC1"
 )
+
+# declare -A device_sequences=(
+#   [0]="GT1 KNI1 SCI1 SHP1"
+# )
 
 
 
@@ -59,6 +63,7 @@ for device in "${!device_sequences[@]}"; do
     #  --process_list get_depth_from_foundation_stereo soft_link_depth \
     #  --seq_list $sequences \
     #  --rebuild 
+
   ) &
 done
 

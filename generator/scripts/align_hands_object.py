@@ -155,7 +155,7 @@ def parse_args():
     parser.add_argument("--min_frame_num", type=int, default=0, help="Minimum number of frames to process")
     parser.add_argument("--max_frame_num", type=int, default=50, help="Maximum number of frames to process")
     parser.add_argument("--frame_interval", type=int, default=1, help="Frame interval for processing")
-    parser.add_argument("--dataset_type", type=str, choices=["zed", "ho3d"])
+    parser.add_argument("--dataset_type", type=str, choices=["zed", "ho3d", "hoi4d"])
     args = parser.parse_args()
     args = edict(vars(args))
     # dirs = os.listdir((args.object_dir + "/save"))
