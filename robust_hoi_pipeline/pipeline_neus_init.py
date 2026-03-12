@@ -121,11 +121,6 @@ def main(args):
 
     preprocessed_data = load_preprocessed_data(data_preprocess_dir, frame_indices)
 
-    print("Loading SAM3D transformation...")
-    sam3d_transform = load_sam3d_transform(SAM3D_dir, cond_idx)
-    cond_cam_to_obj = np.eye(4, dtype=np.float32)
-    cond_cam_to_obj[:3, :3] = sam3d_transform['scale'] * sam3d_transform['cond_cam_to_sam3d'][:3, :3]
-    cond_cam_to_obj[:3, 3] = sam3d_transform['cond_cam_to_sam3d'][:3, 3]
 
     # Use keyframe extrinsics/intrinsics from latest joint-opt image_info.
     if "c2o" not in image_info:
@@ -151,7 +146,6 @@ def main(args):
     from robust_hoi_pipeline.neus_integration import prepare_neus_data, run_neus_training, save_neus_mesh
 
     prepare_neus_data(
-        keyframe_indices=keyframe_local_indices.tolist(),
         images=images_keyframes,
         masks=masks_keyframes,
         depths=depths_keyframes,
@@ -194,7 +188,7 @@ if __name__ == "__main__":
                         help="Weight for robust HOI loss")
     parser.add_argument("--sam3d_weight", type=float, default=0.5,
                         help="Weight for SAM3D loss")
-    parser.add_argument("--max_registered_frames", type=int, default=-1,
+    parser.add_argument("--max_registered_frames", type=int, default=81,
                         help="If > -1, only use the first N valid registered frames when preparing NeuS data")
 
     args = parser.parse_args()

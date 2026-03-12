@@ -620,6 +620,7 @@ def _build_default_joint_opt_args(output_dir: Path, cond_index: int) -> SimpleNa
         pnp_reproj_thresh=4.0,
         joint_opt_reproj_thresh=4.0,
         optimize_3D_prior=False,
+        neus_init_steps=3000,
         only_save_register_order=only_save_register_order,
     )
 
@@ -2187,11 +2188,16 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         save_keyframe_indices,
     )
     from robust_hoi_pipeline.optimization import register_new_frame_by_PnP
-    from robust_hoi_pipeline.neus_integration import prepare_neus_data, run_neus_training, save_neus_mesh
+    from robust_hoi_pipeline.neus_integration import (
+        prepare_neus_data,
+        reset_neus_cache,
+        run_neus_training,
+        save_neus_mesh,
+    )
 
     args = _build_default_joint_opt_args(output_dir, cond_idx)
     args.optimize_3D_prior = optimize_3D_prior
-    neus_data_dir = output_dir / "pipeline_joint_opt" / "neus_data"
+    
 
     frame_indices = image_info["frame_indices"]
     cond_local_idx = frame_indices.index(cond_idx)
@@ -2351,44 +2357,12 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                     image_info_work = process_key_frame(image_info_work, next_frame_idx, args)
                 except Exception as exc:
                     print(f"[register_remaining_frames] process_key_frame failed: {exc}")
-
-                # Resume NeuS optimization with new keyframe
-                # if neus_ckpt is not None:
-                if 0:
-                    try:
-                        kf_mask = image_info_work["keyframe"].astype(bool)
-                        kf_local_indices = np.where(kf_mask)[0]
-                        prepare_neus_data(
-                            keyframe_indices=kf_local_indices.tolist(),
-                            images=[preprocessed_data["images"][i] for i in kf_local_indices],
-                            masks=[preprocessed_data["masks_obj"][i] for i in kf_local_indices],
-                            depths=[preprocessed_data["depths"][i] for i in kf_local_indices],
-                            extrinsics_o2c=image_info_work["extrinsics"][kf_local_indices],
-                            intrinsics=image_info_work["intrinsics"][kf_local_indices],
-                            neus_data_dir=neus_data_dir,
-                            masks_hand=[preprocessed_data["masks_hand"][i] for i in kf_local_indices] if "masks_hand" in preprocessed_data else None,
-                        )
-                        neus_total_steps += 300
-                        neus_ckpt, neus_mesh = run_neus_training(
-                            neus_data_dir,
-                            config_path="configs/neus-pipeline.yaml",
-                            max_steps=neus_total_steps,
-                            checkpoint_path=neus_ckpt,
-                            output_dir=output_dir / "pipeline_joint_opt" / "neus_training",
-                            sam3d_root_dir=sam3d_root_dir,
-                            robust_hoi_weight=1.0,
-                            sam3d_weight=0.03,
-                        )
-                        frame_id = image_info['frame_indices'][next_frame_idx]
-                        save_neus_mesh(neus_mesh, output_dir / "pipeline_joint_opt" / f"{frame_id:04d}")
-                    except Exception as exc:
-                        print(f"[register_remaining_frames] NeuS resume failed: {exc}")
         else:
             print(f"Frame {image_info['frame_indices'][next_frame_idx]} not marked as keyframe due to high reprojection error ({mean_error:.2f} > {key_frame_min_reproj_thresh})")     
 
-
+        key_frame_num =  image_info_work["keyframe"].sum()
         # Joint optimize keyframe poses + 3D points
-        if image_info_work["keyframe"].sum() >= args.min_track_number:
+        if key_frame_num >= args.min_track_number:
             try:
                 mesh_path = None # disable point-2-plane optimization
                 _joint_optimize_keyframes(
@@ -2405,6 +2379,47 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_keyframes_opt")
             except Exception as exc:
                 print(f"[register_remaining_frames] joint optimization failed: {exc}")
+
+        if image_info_work['keyframe'][next_frame_idx] and (key_frame_num >= 40) and (key_frame_num % 10 == 0) and args.optimize_3D_prior:
+            neus_data_dir = output_dir / "pipeline_joint_opt" / "neus_data" / f"{next_frame_idx:04d}"
+            neus_training_dir = output_dir / "pipeline_joint_opt" / "neus_training" / f"{next_frame_idx:04d}"
+            keyframe_local_indices = np.flatnonzero(image_info_work["keyframe"].astype(bool))
+            # Exclude next_frame_idx — not fully optimized yet and may contain outliers.
+            keyframe_local_indices = keyframe_local_indices[keyframe_local_indices != next_frame_idx]
+            if keyframe_local_indices.size > 0:
+                # neus_total_steps = args.neus_init_steps
+                neus_total_steps = 3000 # hardcoded
+                o2c_keyframes = image_info_work["extrinsics"][keyframe_local_indices].astype(np.float32)
+                K_keyframes = intrinsics[keyframe_local_indices].astype(np.float32)
+                images_keyframes = [preprocessed_data["images"][i] for i in keyframe_local_indices]
+                masks_keyframes = [preprocessed_data["masks_obj"][i] for i in keyframe_local_indices]
+                masks_hand_keyframes = (
+                    [preprocessed_data["masks_hand"][i] for i in keyframe_local_indices]
+                    if "masks_hand" in preprocessed_data else None
+                )
+                depths_keyframes = [preprocessed_data["depths"][i] for i in keyframe_local_indices]
+
+                prepare_neus_data(
+                    images=images_keyframes,
+                    masks=masks_keyframes,
+                    depths=depths_keyframes,
+                    extrinsics_o2c=o2c_keyframes,
+                    intrinsics=K_keyframes,
+                    neus_data_dir=neus_data_dir,
+                    masks_hand=masks_hand_keyframes,
+                )
+
+                reset_neus_cache()
+                neus_ckpt, neus_init_mesh = run_neus_training(
+                    neus_data_dir,
+                    config_path="configs/neus-pipeline.yaml",
+                    max_steps=neus_total_steps,
+                    checkpoint_path=None,
+                    output_dir=neus_training_dir,
+                    sam3d_root_dir=sam3d_root_dir,
+                    robust_hoi_weight=1.0,
+                    sam3d_weight=0.0,
+                )
 
         image_info["register"] = image_info_work["registered"].tolist()
         image_info["invalid"] = image_info_work["invalid"].tolist()
@@ -2505,13 +2520,11 @@ def main(args):
         neus_total_steps = args.neus_init_steps
         sam3d_root_dir = SAM3D_dir / f"{cond_idx:04d}"
         if args.optimize_3D_prior:
-            from robust_hoi_pipeline.neus_integration import _find_latest_checkpoint, _find_latest_mesh
-            neus_training_dir = sam3d_root_dir / "neus" / "neus_training" / "joint_opt"
-            neus_ckpt = _find_latest_checkpoint(neus_training_dir / "ckpt")
-            neus_init_mesh = _find_latest_mesh(neus_training_dir / "save")
+            from robust_hoi_pipeline.neus_integration import load_latest_neus_artifacts
 
-            if neus_ckpt is None:
-                raise FileNotFoundError(f"No NeuS checkpoint found in {neus_training_dir}. Please run hoi_pipeline_data_preprocess_sam3d_neus.py first to generate the checkpoint.")
+            neus_ckpt, neus_init_mesh, ckpt_global_step = load_latest_neus_artifacts(sam3d_root_dir)
+            if ckpt_global_step is not None:
+                neus_total_steps = ckpt_global_step
         else:
             print("[INFO] 3D prior optimization disabled. Skipping NeuS mesh/checkpoint loading.")
 
@@ -2539,7 +2552,7 @@ if __name__ == "__main__":
                         help="Output directory for results")
     parser.add_argument("--cond_index", type=int, default=0,
                         help="Condition frame index (keyframe with known SAM3D pose)")
-    parser.add_argument("--neus_init_steps", type=int, default=10000,
+    parser.add_argument("--neus_init_steps", type=int, default=3000,
                         help="Number of NeuS training steps used in pipeline_neus_init.py (for resuming)")
     parser.add_argument("--optimize_3D_prior", action="store_true", default=False,
                         help="Disable point-to-plane loss and skip NeuS mesh loading")

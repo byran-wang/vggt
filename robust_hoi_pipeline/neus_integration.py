@@ -6,6 +6,7 @@ caching, and save the resulting mesh after each keyframe.
 
 import os
 import pickle
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -30,6 +31,11 @@ def _ensure_neus_imports() -> None:
         sys.path.insert(0, neus_root)
 
 
+def reset_neus_cache() -> None:
+    """Drop the cached in-process NeuS system and resume checkpoint."""
+    _neus_cache.clear()
+
+
 # Depth encoding scale (matches utils_simba.depth)
 _DEPTH_SCALE = 0.00012498664727900177
 
@@ -51,7 +57,6 @@ def _save_depth_png(depth: np.ndarray, path: str) -> None:
 
 
 def prepare_neus_data(
-    keyframe_indices: List[int],
     images: List[np.ndarray],
     masks: List[np.ndarray],
     depths: List[np.ndarray],
@@ -70,7 +75,6 @@ def prepare_neus_data(
         0000/results.pkl  (contains intrinsics, extrinsics, keyframe flags)
 
     Args:
-        keyframe_indices: Local indices of keyframes (0-based within the keyframe list).
         images: List of (H, W, 3) uint8 RGB images for each keyframe.
         masks: List of (H, W) uint8 object masks for each keyframe.
         depths: List of (H, W) float32 depth maps for each keyframe.
@@ -227,7 +231,7 @@ def run_neus_training(
         cli_args = [
             f"dataset.root_dir={neus_data_dir}",
             f"trainer.max_steps={max_steps}",
-            f"export.export_vertex_color=true",
+            f"export.export_vertex_color=false",
             f"checkpoint.every_n_train_steps={max_steps}",
             f"dataset.robust_hoi_weight={robust_hoi_weight}",
             f"dataset.sam3d_weight={sam3d_weight}",
@@ -334,6 +338,58 @@ def _find_latest_mesh(output_dir: Path) -> Optional[str]:
     if not mesh_files:
         return None
     return str(max(mesh_files, key=lambda p: p.stat().st_mtime))
+
+
+def _get_checkpoint_global_step(checkpoint_path: Optional[str]) -> Optional[int]:
+    """Read the training step from a PyTorch Lightning checkpoint."""
+    if checkpoint_path is None:
+        return None
+
+    ckpt_path = Path(checkpoint_path)
+    if not ckpt_path.exists():
+        return None
+
+    try:
+        import torch
+
+        checkpoint = torch.load(str(ckpt_path), map_location="cpu")
+        global_step = checkpoint.get("global_step")
+        if global_step is not None:
+            return int(global_step)
+    except Exception:
+        pass
+
+    match = re.search(r"step=(\d+)", ckpt_path.name)
+    if match is not None:
+        return int(match.group(1))
+    return None
+
+
+def load_latest_neus_artifacts(sam3d_root_dir: Path) -> Tuple[str, Optional[str], Optional[int]]:
+    """Load the latest NeuS checkpoint, exported mesh, and checkpoint step.
+
+    Args:
+        sam3d_root_dir: Root directory for one SAM3D sample, e.g. ``.../0001``.
+
+    Returns:
+        A tuple of ``(checkpoint_path, mesh_path, checkpoint_global_step)``.
+
+    Raises:
+        FileNotFoundError: If no NeuS checkpoint is found under the expected
+            ``neus/neus_training/joint_opt`` directory.
+    """
+    neus_training_dir = Path(sam3d_root_dir) / "neus" / "neus_training" / "joint_opt"
+    neus_ckpt = _find_latest_checkpoint(neus_training_dir / "ckpt")
+    neus_init_mesh = _find_latest_mesh(neus_training_dir / "save")
+
+    if neus_ckpt is None:
+        raise FileNotFoundError(
+            f"No NeuS checkpoint found in {neus_training_dir}. "
+            "Please run hoi_pipeline_data_preprocess_sam3d_neus.py first to generate the checkpoint."
+        )
+
+    ckpt_global_step = _get_checkpoint_global_step(neus_ckpt)
+    return neus_ckpt, neus_init_mesh, ckpt_global_step
 
 
 def save_neus_mesh(mesh_path: Optional[str], target_dir: Path) -> None:

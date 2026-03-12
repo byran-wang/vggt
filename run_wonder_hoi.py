@@ -1693,7 +1693,7 @@ class run_wonder_hoi:
         cmd += f"--data_dir {data_dir} "
         cmd += f"--output_dir {out_dir} "
         cmd += f"--cond_index {self.seq_config['cond_idx']} "
-        cmd += f"--optimize_3D_prior "
+        # cmd += f"--optimize_3D_prior "
         print(cmd)
         os.system(cmd)
 
