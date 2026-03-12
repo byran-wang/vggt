@@ -4,13 +4,13 @@ Preprocess HOI4D sequences for BundleSDF.
 Input  → HOI4D_ori/{ZY}/{H}/{C}/{N}/{S}/{s}/{T}/
 Output → {output_dir}/
   train/{seq_name}/
-    rgb/*.jpg         decoded RGB frames (pre-prepared or symlinked)
+    rgb/*.jpg         decoded RGB frames (copied)
     depth/*.png       16-bit uint16 depth in mm
     meta/*.pkl        per-frame: camMat(3×3), objTrans(3,)/None, objRot(3,)/None
     mask_hand
   masks_XMem/
     {seq_name}/*.png         binary 0/255 object masks
-  models/{obj_key}/textured_simple.obj   symlink to CAD model
+  models/{obj_key}/textured_simple.obj   copied from CAD source
 
 This layout is HO3D_v3-compatible.  Ho3dReader / run_ho3d.py work through
 the Hoi4dReader subclass in run_hoi4d/data_reader.py.
@@ -123,10 +123,7 @@ def _ensure_frames_in_output(hoi4d_ori_dir, seq_rel_path, seq_name, out_dir, kin
         dst_f = os.path.join(dst_dir, new_name)
         if os.path.exists(dst_f):
             continue
-        try:
-            os.symlink(src_f, dst_f)
-        except OSError:
-            shutil.copy2(src_f, dst_f)
+        shutil.copy2(src_f, dst_f)
     return len(_list_files(dst_dir, frame_glob))
 
 
@@ -386,10 +383,10 @@ def preprocess_sequence(seq_rel_path, hoi4d_ori_dir, cad_dir, output_dir):
         if obj_mask is not None:
             cv2.imwrite(obj_out,  obj_mask)
             cv2.imwrite(hand_out, hand_mask)
-            # symlink 5-digit masks_XMem → 4-digit mask_object/
+            # copy masks_XMem → mask_object/ with 4-digit naming
             link = os.path.join(mask_obj_dst, f'{fid}.png')
             if not os.path.exists(link):
-                os.symlink(obj_out, link)
+                shutil.copy2(obj_out, link)
 
     # 6. CAD model
     cat_name  = CAT_TO_CADNAME.get(cat, cat)
@@ -401,7 +398,7 @@ def preprocess_sequence(seq_rel_path, hoi4d_ori_dir, cad_dir, output_dir):
     model_dst = os.path.join(output_dir, 'models', obj_key, 'textured_simple.obj')
     os.makedirs(os.path.dirname(model_dst), exist_ok=True)
     if cad_src and not os.path.exists(model_dst):
-        os.symlink(cad_src, model_dst)
+        shutil.copy2(cad_src, model_dst)
     elif not cad_src:
         print(f'    [WARN] CAD model not found for {cat}/{n_id}')
 
