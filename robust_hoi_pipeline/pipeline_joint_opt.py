@@ -2343,7 +2343,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
             # Align the frame with SAM3D mesh using depth with outlier rejection
             # if sam3d_mesh is not None:
-            if 1:
+            if 0:
                 print(f"[register_remaining_frames] Aligning frame {next_frame_idx} with SAM3D mesh using depth")
                 sucess = _align_frame_with_sam3d(image_info_work, next_frame_idx, sam3d_mesh, 
                                              debug_dir=debug_dir
