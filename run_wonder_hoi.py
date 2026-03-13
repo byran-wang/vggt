@@ -106,6 +106,7 @@ class run_wonder_hoi:
                 "hoi_pipeline_3D_points_align_with_HY": self.hoi_pipeline_3D_points_align_with_HY,
                 "hoi_pipeline_HY_to_SAM3D": self.hoi_pipeline_HY_to_SAM3D,
                 "hoi_pipeline_joint_opt": self.hoi_pipeline_joint_opt,
+                "hoi_pipeline_joint_opt_global": self.hoi_pipeline_joint_opt_global,
                 "hoi_pipeline_joint_opt_eval_vis": self.hoi_pipeline_joint_opt_eval_vis,
                 "hoi_pipeline_reg_remaining": self.hoi_pipeline_reg_remaining,
                 "hoi_pipeline_HY_gen": self.hoi_pipeline_HY_gen,
@@ -1643,6 +1644,33 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
+    def hoi_pipeline_neus_global(self, scene_name, **kwargs):
+        self.print_header(f"hoi pipeline neus global for {scene_name}")
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+        result_dir = f"{vggt_code_dir}/output/{scene_name}/"
+        out_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_neus_global"
+
+        if self.rebuild:
+            cmd = f"rm -rf {out_dir}"
+            print(cmd)
+            os.system(cmd)
+        
+        CONDA_PREFIX = f"{self.conda_dir}/envs/vggsfm_tmp"
+        cmd = f'''cd {vggt_code_dir} && export PATH={CONDA_PREFIX}/bin:$PATH && export CC={CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-gcc &&  export CXX={CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-g++ && '''
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_neus_init.py "
+        cmd += f"--data_dir {data_dir} "
+        cmd += f"--output_dir {out_dir} "
+        cmd += f"--result_dir {result_dir}/ "
+        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--max_steps 10000 "
+        cmd += f"--robust_hoi_weight 1.0 " # set to 0.0 to disable robust hoi in neus initialization
+        cmd += f"--sam3d_weight 0.0 " # only run sam3d neus initialization without robust hoi
+        if "max_registered_frames" in kwargs:
+            cmd += f"--max_registered_frames {int(kwargs['max_registered_frames'])} "
+        print(cmd)
+        os.system(cmd)
+
+
     def hoi_pipeline_joint_opt(self, scene_name, **kwargs):
         self.print_header(f"hoi pipeline joint optimization for {scene_name}")
         data_dir = f"{self.dataset_dir}/{scene_name}"
@@ -2129,6 +2157,7 @@ if __name__ == "__main__":
                 "hoi_pipeline_HY_to_SAM3D",
                 "hoi_pipeline_HY_omni_gen",
                 "hoi_pipeline_joint_opt",
+                "hoi_pipeline_joint_opt_global",
                 "hoi_pipeline_joint_opt_eval_vis",
                 "hoi_pipeline_reg_remaining",
                 "hoi_pipeline_HY_gen",

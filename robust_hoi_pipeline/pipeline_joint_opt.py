@@ -1722,7 +1722,10 @@ def _joint_optimize_keyframes(
     fin_t = torch.tensor(finite_mask, device=device)
     # Only use 3D points visible in >= min_track_number keyframes for reprojection
     vis_count = tmask.sum(dim=0)  # (M,) how many keyframes each track is visible in
-    valid = tmask & fin_t.unsqueeze(0) & (vis_count >= min_track_number).unsqueeze(0)
+    if min_track_number is not None:
+        valid = tmask & fin_t.unsqueeze(0) & (vis_count >= min_track_number).unsqueeze(0)
+    else:
+        valid = tmask & fin_t.unsqueeze(0)
     opt_t = torch.tensor(opt_mask, device=device)
 
     # --- subsample depth point clouds (camera space) per keyframe ---
