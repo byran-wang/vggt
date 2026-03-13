@@ -1,4 +1,6 @@
+import gzip
 import json
+import pickle
 import numpy as np
 import trimesh
 from pathlib import Path
@@ -21,18 +23,24 @@ def main(args):
     joint_opt_dir = out_dir / "pipeline_joint_opt"
     register_indices = load_register_indices(joint_opt_dir)
     last_register_idx = register_indices[-1]
-    image_info_path = joint_opt_dir / f"{last_register_idx:04d}" / "image_info.npy"
-    image_info = np.load(image_info_path, allow_pickle=True).item()
+    frame_dir = joint_opt_dir / f"{last_register_idx:04d}"
+    image_info_path = frame_dir / "image_info.pkl.gz"
+    with gzip.open(image_info_path, "rb") as f:
+        image_info = pickle.load(f)
+    shared_path = joint_opt_dir / "shared_info.pkl.gz"
+    if shared_path.exists():
+        with gzip.open(shared_path, "rb") as f:
+            shared = pickle.load(f)
+        shared.update(image_info)
+        image_info = shared
     print(f"Loaded image_info from {image_info_path}")
 
     points_3d = np.array(image_info["points_3d"], dtype=np.float32)  # (M, 3)
-    tracks_mask = np.array(image_info["tracks_mask"], dtype=bool)    # (S, M)
-    keyframe_flags = np.array(image_info["keyframe"], dtype=bool)    # (S,)
+    track_vis_count = np.array(image_info["track_vis_count"], dtype=np.int32)  # (M,)
 
     # Get valid 3D points with track number >= min_track_num
     finite_mask = np.isfinite(points_3d).all(axis=-1)  # (M,)
-    track_vis_in_kf = tracks_mask[keyframe_flags].sum(axis=0)  # (M,)
-    valid_mask = finite_mask & (track_vis_in_kf >= args.min_track_num)
+    valid_mask = finite_mask & (track_vis_count >= args.min_track_num)
     valid_points = points_3d[valid_mask]
     print(f"Valid 3D points: {valid_mask.sum()} / {len(points_3d)} "
           f"(min_track_num={args.min_track_num})")
