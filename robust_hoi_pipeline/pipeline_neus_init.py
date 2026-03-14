@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import torch
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -98,13 +99,51 @@ def _select_registered_frame_subset(image_info, joint_opt_dir: Path, max_registe
     return frame_indices, selected_local_indices, keyframe_local_indices
 
 
+def _load_gt_o2c(data_dir: Path, frame_indices):
+    """Load GT object-to-camera extrinsics from ho3d_v3 processed data.
+
+    Args:
+        data_dir: HO3D sequence directory (e.g., ho3d_v3/train/MC1).
+        frame_indices: List of frame indices to extract.
+
+    Returns:
+        gt_o2c: (N, 4, 4) float32 GT object-to-camera matrices.
+        is_valid: (N,) bool validity flags per frame.
+    """
+    seq_name = data_dir.name
+    # Look for processed .pt relative to ho3d_v3 root
+    # data_dir is e.g. .../ho3d_v3/train/MC1, so ho3d_root = data_dir.parent.parent
+    ho3d_root = data_dir.parent.parent
+    pt_path = ho3d_root / "processed" / f"{seq_name}.pt"
+    if not pt_path.exists():
+        raise FileNotFoundError(f"GT data not found at {pt_path}")
+
+    data = torch.load(pt_path, map_location="cpu")
+    obj_rot = data["obj_rot"]      # (total_frames, 3, 3)
+    obj_trans = data["obj_trans"]   # (total_frames, 3)
+    is_valid_all = data["is_valid"] # (total_frames,)
+
+    num_total = obj_rot.shape[0]
+    frame_indices_arr = np.asarray(frame_indices, dtype=np.int64)
+
+    # Build o2c: eye(4), set rot+trans, then flip y,z (OpenGL→OpenCV)
+    o2c_all = torch.eye(4).unsqueeze(0).repeat(num_total, 1, 1)
+    o2c_all[:, :3, :3] = obj_rot
+    o2c_all[:, :3, 3] = obj_trans
+    o2c_all[:, 1:3] *= -1
+
+    gt_o2c = o2c_all[frame_indices_arr].numpy().astype(np.float32)
+    is_valid = is_valid_all[frame_indices_arr].numpy().astype(bool)
+    return gt_o2c, is_valid
+
+
 def main(args):
     data_dir = Path(args.data_dir)
     out_dir = Path(args.output_dir)
     result_dir = Path(args.result_dir)
     cond_idx = args.cond_index
 
-    SAM3D_dir = data_dir / "SAM3D_aligned_post_process"
+    sam3d_root_dir = data_dir / "SAM3D_aligned_post_process" / f"{cond_idx:04d}"
     data_preprocess_dir = data_dir / "pipeline_preprocess"
     joint_opt_dir = result_dir / "pipeline_joint_opt"
 
@@ -123,13 +162,37 @@ def main(args):
 
     preprocessed_data = load_preprocessed_data(data_preprocess_dir, frame_indices)
 
+    if args.gt_pose:
+        # Use GT extrinsics from HO3D processed data
+        print("Using GT poses for NeuS initialization...")
+        gt_o2c, gt_valid = _load_gt_o2c(data_dir, frame_indices)
+        o2c_all = gt_o2c
+        o2c_keyframes_raw = o2c_all[keyframe_local_indices]
+        valid_keyframes = gt_valid[keyframe_local_indices]
 
-    # Use keyframe extrinsics/intrinsics from latest joint-opt image_info.
-    if "c2o" not in image_info:
-        raise KeyError("Latest image_info is missing 'c2o'.")
-    c2o_all = np.asarray(image_info["c2o"], dtype=np.float32)[selected_local_indices]
-    o2c_all = np.linalg.inv(c2o_all).astype(np.float32)
-    o2c_keyframes = o2c_all[keyframe_local_indices]
+        # Filter to only valid GT poses
+        valid_mask = valid_keyframes.astype(bool)
+        if not np.any(valid_mask):
+            raise RuntimeError("No valid GT poses found for keyframes.")
+        o2c_keyframes = o2c_keyframes_raw[valid_mask]
+        print(f"GT poses: {valid_mask.sum()}/{len(valid_mask)} keyframes have valid GT poses")
+
+        # Get scale from aligned_transform.json in sam3d_root_dir and apply to o2c translations
+        from robust_hoi_pipeline.pipeline_utils import load_sam3d_transform
+        sam3d_transform = load_sam3d_transform(sam3d_root_dir.parent, cond_idx)
+        sam3d_scale = sam3d_transform['scale']
+        # GT o2c translations are in camera-space meters; pipeline works in SAM3D-normalized space
+        # where cam_translation = sam3d_translation * scale, so divide by scale
+        o2c_keyframes[:, :3, 3] /= sam3d_scale
+        print(f"Applied SAM3D scale={sam3d_scale:.6f} to GT o2c translations")
+    else:
+        # Use keyframe extrinsics from latest joint-opt image_info.
+        if "c2o" not in image_info:
+            raise KeyError("Latest image_info is missing 'c2o'.")
+        c2o_all = np.asarray(image_info["c2o"], dtype=np.float32)[selected_local_indices]
+        o2c_all = np.linalg.inv(c2o_all).astype(np.float32)
+        o2c_keyframes = o2c_all[keyframe_local_indices]
+        valid_mask = None
 
     if "intrinsics" in image_info:
         intrinsics_all = np.asarray(image_info["intrinsics"], dtype=np.float32)[selected_local_indices]
@@ -142,8 +205,17 @@ def main(args):
     masks_hand_keyframes = [preprocessed_data["masks_hand"][i] for i in keyframe_local_indices] if "masks_hand" in preprocessed_data else None
     depths_keyframes = [preprocessed_data["depths"][i] for i in keyframe_local_indices]
 
+    # Filter to valid GT poses if using gt_pose
+    if valid_mask is not None:
+        K_keyframes = K_keyframes[valid_mask]
+        images_keyframes = [img for img, v in zip(images_keyframes, valid_mask) if v]
+        masks_keyframes = [m for m, v in zip(masks_keyframes, valid_mask) if v]
+        if masks_hand_keyframes is not None:
+            masks_hand_keyframes = [m for m, v in zip(masks_hand_keyframes, valid_mask) if v]
+        depths_keyframes = [d for d, v in zip(depths_keyframes, valid_mask) if v]
+
     neus_data_dir = out_dir / "neus_data"
-    sam3d_root_dir = SAM3D_dir / f"{cond_idx:04d}"
+    
 
     from robust_hoi_pipeline.neus_integration import prepare_neus_data, run_neus_training, save_neus_mesh
 
@@ -192,6 +264,8 @@ if __name__ == "__main__":
                         help="Weight for SAM3D loss")
     parser.add_argument("--max_registered_frames", type=int, default=-1,
                         help="If > -1, only use the first N valid registered frames when preparing NeuS data")
+    parser.add_argument("--gt_pose", action="store_true", default=False,
+                        help="Use GT object poses from ho3d_v3/processed/{seq_name}.pt instead of joint-opt poses")
 
     args = parser.parse_args()
     main(args)
