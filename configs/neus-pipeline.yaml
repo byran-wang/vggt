@@ -32,7 +32,7 @@ model:
   dynamic_ray_sampling: true
   batch_image_sampling: true
   randomized: true
-  ray_chunk: 4096
+  ray_chunk: 4096 # ray_chunk controls how many rays are processed in a single forward pass during inference/validation. At training time, only train_num_rays (256) rays are used per step, so chunking isn't needed.
   cos_anneal_end: ${trainer.max_steps}
   learned_background: false
   background_color: random
@@ -60,10 +60,10 @@ model:
       export_radius: 0.7  # If set, use this radius for mesh export instead of model.radius
     xyz_encoding_config:
       otype: HashGrid
-      n_levels: 16
+      n_levels: 14
       n_features_per_level: 2
       log2_hashmap_size: 19
-      base_resolution: 32
+      base_resolution: 64
       per_level_scale: 1.3195079107728942
       include_xyz: true
     mlp_network_config:
