@@ -13,6 +13,7 @@ import cv2
 import pickle
 sys.path = [".."] + sys.path
 from common.xdict import xdict
+from robust_hoi_pipeline.pipeline_neus_init import _load_joint_opt_image_info
 import trimesh
 import os
 from tqdm import tqdm
@@ -103,9 +104,7 @@ def get_hand_depth(depth_ps, mask_hand_ps, meta, device="cuda"):
 
     return torch.stack(hand_depth, dim=0)
     
-
-
-def read_data(args, data_in_process=False):
+def read_data(args):
     seq_name = args.seq_name
     # load data
     if args['dataset_type'] == "ho3d":
@@ -115,23 +114,17 @@ def read_data(args, data_in_process=False):
     else:
         raise NotImplementedError(f"Dataset type {args['dataset_type']} not implemented.")
 
-    if data_in_process:
-        data_dir = f"{data_dir}/pipeline_preprocess"
-
-    
-
     im_ps = sorted(
         glob(f"{data_dir}/rgb/*.jpg")
         + glob(f"{data_dir}/rgb/*.png")
     )
-    mask_obj_ps = sorted(glob(f"{data_dir}/mask_obj/*.png"))
+    mask_obj_ps = sorted(glob(f"{data_dir}/mask_object/*.png"))
     mask_hand_ps = sorted(glob(f"{data_dir}/mask_hand/*.png"))
-    if data_in_process:
-        depth_ps = sorted(glob(f"{data_dir}/depth_filtered/*.png"))
-    else:
-        depth_ps = sorted(glob(f"{data_dir}/depth/*.png"))
-
+    depth_ps = sorted(glob(f"{data_dir}/depth/*.png"))
+    
     assert len(im_ps) == len(mask_hand_ps) == len(mask_obj_ps) == len(depth_ps), "Number of images, hand masks, object masks, and depth maps must be equal."
+    num_total_frames = len(im_ps)
+
 
     im0 = Path(im_ps[0])
     intrinsic_file = str(im0.parent.parent / "meta" / f"{im0.stem}.pkl")
@@ -142,11 +135,8 @@ def read_data(args, data_in_process=False):
     
 
     meta = {}
-    
-    if data_in_process:
-        meta['K'] = np.array(_load_pickle_compat(intrinsic_file)['intrinsics'])
-    else:
-        meta['K'] = np.array(_load_pickle_compat(intrinsic_file)['camMat'])
+
+    meta['K'] = np.array(_load_pickle_compat(intrinsic_file)['camMat'])
     meta['im_paths'] = im_ps
     meta['mask_obj_paths'] = mask_obj_ps
     meta['mask_hand_paths'] = mask_hand_ps
@@ -164,16 +154,106 @@ def read_data(args, data_in_process=False):
     # )
     
     entities  = {}
-    if data_in_process:
-        j2d_p = f"{data_dir}/../hands/j2d.full.npy"
-        data = np.load(
-            f"{data_dir}/../hands/hold_fit.slerp.npy", allow_pickle=True
-        ).item()
+
+    j2d_p = f"{data_dir}/hands/j2d.full.npy"
+    data = np.load(
+        f"{data_dir}/hands/hold_fit.slerp.npy", allow_pickle=True
+    ).item()
+    hand_indices = [int(Path(p).stem) for p in im_ps]
+
+    if 'right' in data:
+        data_r = read_hand_data(data['right'], hand_indices)
+        j2d_right = read_j2d_right_data(j2d_p, hand_indices)
+        right_valid_1 = (~np.isnan(j2d_right.reshape(-1, 21*2).mean(axis=1))).astype(np.float32) # num_frames
+        right_valid = np.repeat(right_valid_1[:, np.newaxis], 21, axis=1)
+        j2d_right_pad = torch.FloatTensor(np.concatenate([j2d_right, right_valid[:, :, None]], axis=2))
+        mask_hands = get_hand_mask(meta['mask_hand_paths'])
+        depth_gt = get_hand_depth(meta['depth_paths'], meta['mask_hand_paths'], meta)
+        # assert and print error information if not equal
+        assert depth_gt.shape[0] == j2d_right_pad.shape[0], f"depth_gt length: {depth_gt.shape[0]} != j2d_right_pad length: {j2d_right_pad.shape[0]}"
+        data_r['j2d.gt'] = j2d_right_pad
+        # data_r['v3d.gt'] = get_hand_pc(meta['depth_paths'], meta['mask_hand_paths'], meta)
+        data_r['v3d.gt'] = None
+        data_r['depth.gt'] = depth_gt
+        data_r['valid'] = right_valid_1
+        data_r['mask_hand.gt'] = mask_hands
+        entities['right'] = data_r
+    
+    
+    mydata = xdict()
+    mydata['entities'] = entities
+    mydata['meta'] = meta
+    return mydata
+
+def read_data_after_object_reconstruction(args):
+    seq_name = args.seq_name
+    # load data
+    if args['dataset_type'] == "ho3d":
+        data_dir = f"./data/train/{seq_name}/pipeline_preprocess"
+    elif args['dataset_type'] == "zed":
+        data_dir = f"{args['out_dir']}/pipeline_preprocess"
     else:
-        j2d_p = f"{data_dir}/hands/j2d.full.npy"
-        data = np.load(
-            f"{data_dir}/hands/hold_fit.slerp.npy", allow_pickle=True
-        ).item()
+        raise NotImplementedError(f"Dataset type {args['dataset_type']} not implemented.")
+
+    
+
+    im_ps = sorted(
+        glob(f"{data_dir}/rgb/*.jpg")
+        + glob(f"{data_dir}/rgb/*.png")
+    )
+    mask_obj_ps = sorted(glob(f"{data_dir}/mask_obj/*.png"))
+    mask_hand_ps = sorted(glob(f"{data_dir}/mask_hand/*.png"))
+    depth_ps = sorted(glob(f"{data_dir}/depth_filtered/*.png"))
+
+    assert len(im_ps) == len(mask_hand_ps) == len(mask_obj_ps) == len(depth_ps), "Number of images, hand masks, object masks, and depth maps must be equal."
+
+    im0 = Path(im_ps[0])
+    intrinsic_file = str(im0.parent.parent / "meta" / f"{im0.stem}.pkl")
+
+    # Print image file names (not full paths) to quickly verify ordering
+    im_file_names = [os.path.basename(p) for p in im_ps]
+    print(f"Loaded images: {im_file_names}")
+    
+
+    meta = {}
+    
+    meta['K'] = np.array(_load_pickle_compat(intrinsic_file)['intrinsics'])
+    meta['im_paths'] = im_ps
+    meta['mask_obj_paths'] = mask_obj_ps
+    meta['mask_hand_paths'] = mask_hand_ps
+    meta['depth_paths'] = depth_ps
+    # load object latest checkpoint and mesh from neus_training
+    result_dir = Path(args['result_dir'])
+    neus_training_dir = result_dir / "neus_training" / "joint_opt"
+    ckpt_files = sorted((neus_training_dir / "ckpt").rglob("*.ckpt"), key=lambda p: p.stat().st_mtime)
+    mesh_files = sorted((neus_training_dir / "save").rglob("*.obj"), key=lambda p: p.stat().st_mtime)
+    assert ckpt_files, f"No checkpoint found in {neus_training_dir / 'ckpt'}"
+    assert mesh_files, f"No mesh found in {neus_training_dir / 'save'}"
+    meta['object_ckpt_f'] = str(ckpt_files[-1])
+    meta['object_mesh_f'] = str(mesh_files[-1])
+    # load o2c from latest image_info (c2o -> o2c via inverse)
+    joint_opt_dir = result_dir / "joint_opt"
+    image_info, _, _ = _load_joint_opt_image_info(joint_opt_dir)
+    c2o = image_info["c2o"]  # (N, 4, 4)
+    o2c_all = torch.FloatTensor(np.linalg.inv(c2o).astype(np.float32))
+    # select only the frames matching hand_indices
+    frame_indices = list(image_info["frame_indices"])
+    frame_to_local = {fid: i for i, fid in enumerate(frame_indices)}
+    hand_indices = [int(Path(p).stem) for p in im_ps]
+    o2c_selected = o2c_all[[frame_to_local[idx] for idx in hand_indices]]
+    meta['o2c'] = o2c_selected
+    meta['im_H_W'] = cv2.imread(im_ps[0]).shape[:2] # H, W
+    
+    # data_o = {}
+    # data_o['j2d.gt'] = torch.FloatTensor(
+    #     np.load(f"./data/{seq_name}/colmap_2d/keypoints.npy")
+    # )
+    
+    entities  = {}
+    j2d_p = f"{data_dir}/../hands/j2d.full.npy"
+    data = np.load(
+        f"{data_dir}/../hands/hold_fit.slerp.npy", allow_pickle=True
+    ).item()
     # get the hand mask
     hand_indices = [int(Path(p).stem) for p in im_ps]
 

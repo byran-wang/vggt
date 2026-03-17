@@ -13,7 +13,7 @@ import sys
 
 sys.path = [".", '..'] + sys.path
 
-from src.alignment.data import read_data
+from src.alignment.data import read_data_after_object_reconstruction
 from src.alignment.pl_module.ray_hit import RayHit
 from common.xdict import xdict
 from generator.src.alignment.data import FakeDataset
@@ -33,7 +33,7 @@ class SaveCheckpointBeforeOptimization(Callback):
 
 def main(args):
     device = "cuda"
-    data = read_data(args, data_in_process=True).to(device)
+    data = read_data_after_object_reconstruction(args).to(device)
     
     out_p = op.join(f"{args.out_dir}/hold_fit.aligned_{args.mode}.npy")
 
@@ -148,6 +148,7 @@ def parse_args():
     parser.add_argument('--is_arctic', action='store_true')
     # parser.add_argument("--data_path", type=str, default="")
     parser.add_argument("--out_dir", type=str, default="")
+    parser.add_argument("--result_dir", type=str, default="")
     parser.add_argument("--dataset_type", type=str, choices=["zed", "ho3d"])
     args = parser.parse_args()
     args = edict(vars(args))

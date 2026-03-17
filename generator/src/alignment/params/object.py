@@ -127,12 +127,18 @@ class ObjectParameters(nn.Module):
         targets = xdict()
         self.targets = targets
         self.im_paths = meta["im_paths"]
-        
-        cfg = load_config(meta['object_cfg_f'])
-        sdf = Zero123.load_from_checkpoint(
-            meta['object_ckpt_f'],
-            cfg=cfg.system,
-            resumed=meta['object_ckpt_f'] is not None)
+
+        # Load the NeuS system from checkpoint to get the SDF
+        import sys
+        from pathlib import Path
+        neus_root = str(Path(__file__).resolve().parents[4] / "third_party" / "instant-nsr-pl")
+        if neus_root not in sys.path:
+            sys.path.insert(0, neus_root)
+        import systems as neus_systems
+        from utils.misc import load_config as load_neus_config
+        neus_config_path = str(Path(__file__).resolve().parents[4] / "configs" / "neus-pipeline.yaml")
+        neus_config = load_neus_config(neus_config_path)
+        sdf = neus_systems.make(neus_config.system.name, neus_config, load_from_checkpoint=meta['object_ckpt_f'])
         sdf.to('cuda')
         sdf.eval()
         set_system_status(sdf, meta['object_ckpt_f'])

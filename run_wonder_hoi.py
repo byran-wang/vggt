@@ -113,6 +113,7 @@ class run_wonder_hoi:
                 "hoi_pipeline_HY_gen": self.hoi_pipeline_HY_gen,
                 "hoi_pipeline_HY_omni_gen": self.hoi_pipeline_HY_omni_gen,
                 "hoi_pipeline_align_hand_object_h": self.hoi_pipeline_align_hand_object_h,
+                "hoi_pipeline_align_hand_object_r": self.hoi_pipeline_align_hand_object_r,
             },
             "hand_pose_preprocess": {
                 "estimate_hand_pose": self.estimate_hand_pose,
@@ -1778,7 +1779,7 @@ class run_wonder_hoi:
         mode = "h"
         out_dir = f"{vggt_code_dir}/output/{scene_name}/align_hand_object"
         if self.rebuild:
-            cmd = f"rm -rf {out_dir}"
+            cmd = f"rm -rf {out_dir}/hold_fit.aligned_{mode}.npy"
             print(cmd)
             os.system(cmd)
 
@@ -1791,6 +1792,29 @@ class run_wonder_hoi:
 
         print(cmd)
         os.system(cmd)
+
+    def hoi_pipeline_align_hand_object_r(self, scene_name, **kwargs):
+        mode = "r"
+        out_dir = f"{vggt_code_dir}/output/{scene_name}/align_hand_object"
+        result_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/"
+        if self.rebuild:
+            cmd = f"rm -rf {out_dir}/hold_fit.aligned_{mode}.npy"
+            print(cmd)
+            os.system(cmd)
+
+        cmd = f"cd {vggt_code_dir}/generator && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python scripts/align_hands_object.py "
+        cmd += f"--seq_name {scene_name} "
+        cmd += f"--mode {mode} "
+        cmd += f"--out_dir {out_dir} "
+        cmd += f"--result_dir {result_dir} "
+        cmd += f"--dataset_type {dataset_type} "
+
+        print(cmd)
+        os.system(cmd)    
+
+    
+
 
     def hoi_pipeline_reg_remaining(self, scene_name, **kwargs):
         self.print_header(f"hoi pipeline register remaining for {scene_name}")
@@ -2203,6 +2227,7 @@ if __name__ == "__main__":
                 "hoi_pipeline_reg_remaining",
                 "hoi_pipeline_HY_gen",
                 "hoi_pipeline_align_hand_object_h",
+                "hoi_pipeline_align_hand_object_r",
                 "ho3d_eval_intrinsic",
                 "ho3d_eval_trans",
                 "ho3d_eval_rot",
