@@ -51,13 +51,11 @@ python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_joint_opt_global --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_reg_remaining --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_joint_opt --seq_list $seq_list --vis
-python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_joint_opt --seq_list $seq_list --eval
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_joint_opt_eval_vis --seq_list $seq_list --rebuild # outputs eval/nvdiffrast_overlay.mp4
 # python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_joint_opt_eval_vis --seq_list $seq_list --rebuild --render_hand true
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_neus_init --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_neus_global --seq_list $seq_list --rebuild --export_only true
-python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum --seq_list $seq_list
-python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum_vis --seq_list $seq_list --rebuild
+
 
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_HY_gen --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_align_SAM3D_with_HY --seq_list $seq_list --rebuild
@@ -71,8 +69,12 @@ python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_sdf_
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_eval_intrinsic ho3d_eval_trans ho3d_eval_rot --seq_list $seq_list --vis
 python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum_intrinsic eval_sum_trans eval_sum_rot --seq_list $seq_list
 
-python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_align_hand_object_h hoi_pipeline_align_hand_object_r hoi_pipeline_align_hand_object_o hoi_pipeline_align_hand_object_ho --seq_list $seq_list --rebuild
-python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_align_hand_object_ho --seq_list $seq_list --vis
+python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_align_hand_object_h hoi_pipeline_align_hand_object_r hoi_pipeline_align_hand_object_o hoi_pipeline_align_hand_object_ho --seq_list $seq_list --rebuild #--vis
+python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_eval --seq_list $seq_list --rebuild
+python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_eval_vis --seq_list $seq_list --rebuild
+
+python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum --seq_list $seq_list
+python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum_vis --seq_list $seq_list --rebuild
 
 ######################################## baseline #########################################
 python run_wonder_hoi.py --execute_list baseline --process_list foundation_pose_eval_vis --seq_list $seq_list --rebuild
