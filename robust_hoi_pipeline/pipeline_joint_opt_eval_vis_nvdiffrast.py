@@ -190,10 +190,9 @@ def load_hand_mesh_from_hand_object_alignment(results_dir: Path, data_preprocess
     if local_idx >= len(v3d_cam):
         print(f"[warn] frame_idx {frame_idx} (local {local_idx}) out of range (max {len(v3d_cam) - 1})")
         return None
-
+    verts = np.asarray(v3d_cam[local_idx], dtype=np.float32)
     if 0:
-        verts = np.asarray(v3d_cam[local_idx], dtype=np.float32)
-        debug_dir = align_dir / f"/debug_mesh"
+        debug_dir = align_dir / f"debug_mesh"
         debug_dir.mkdir(parents=True, exist_ok=True)
         trimesh.Trimesh(vertices=verts, faces=faces, process=False).export(
             str(debug_dir / f"{frame_idx:04d}_{hand_mode}.obj")
