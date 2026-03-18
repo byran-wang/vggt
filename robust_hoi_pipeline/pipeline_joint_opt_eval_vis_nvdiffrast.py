@@ -326,6 +326,7 @@ def main(args):
 
     c2o = np.asarray(image_info["c2o"], dtype=np.float64)
     c2o_with_scale = c2o.copy()
+    c2o_with_scale[:, :3, :3] *= scale
     c2o_with_scale[:, :3, 3] *= scale
     o2c_with_scale = np.linalg.inv(c2o_with_scale)
     
@@ -370,6 +371,7 @@ def main(args):
         fps=args.fps,
         default_mesh_tensors=default_mesh_tensors,
         desc="Rendering frames with nvdiffrast",
+        vis_in_rerun=False,
     )
 
     print(f"Saved {len(result['records'])} overlay frames to {result['overlay_dir']}")
