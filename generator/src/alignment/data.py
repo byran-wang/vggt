@@ -224,7 +224,12 @@ def read_data_after_object_reconstruction(args):
     meta['depth_paths'] = depth_ps
     # load object latest checkpoint and mesh from neus_training
     result_dir = Path(args['result_dir'])
-    neus_training_dir = result_dir / "neus_training" / "joint_opt"
+    neus_training_dir = result_dir / "neus_training"
+    # find the latest subdirectory in neus_training
+    subdirs = [d for d in neus_training_dir.iterdir() if d.is_dir()]
+    assert subdirs, f"No subdirectory found in {neus_training_dir}"
+    latest_subdir = max(subdirs, key=lambda d: d.stat().st_mtime)
+    neus_training_dir = latest_subdir / "joint_opt"
     ckpt_files = sorted((neus_training_dir / "ckpt").rglob("*.ckpt"), key=lambda p: p.stat().st_mtime)
     mesh_files = sorted((neus_training_dir / "save").rglob("*.obj"), key=lambda p: p.stat().st_mtime)
     assert ckpt_files, f"No checkpoint found in {neus_training_dir / 'ckpt'}"
@@ -232,10 +237,10 @@ def read_data_after_object_reconstruction(args):
     meta['object_ckpt_f'] = str(ckpt_files[-1])
     meta['object_mesh_f'] = str(mesh_files[-1])
     # load o2c from latest image_info (c2o -> o2c via inverse)
-    joint_opt_dir = result_dir / "joint_opt"
-    image_info, _, _ = _load_joint_opt_image_info(joint_opt_dir)
+    image_info, _, _ = _load_joint_opt_image_info(result_dir)
     c2o = image_info["c2o"]  # (N, 4, 4)
     o2c_all = torch.FloatTensor(np.linalg.inv(c2o).astype(np.float32))
+    assert len(o2c_all) == len(im_ps), f"Number of o2c ({len(o2c_all)}) must match number of images ({len(im_ps)})"
     # select only the frames matching hand_indices
     frame_indices = list(image_info["frame_indices"])
     frame_to_local = {fid: i for i, fid in enumerate(frame_indices)}
@@ -250,6 +255,7 @@ def read_data_after_object_reconstruction(args):
     # )
     
     entities  = {}
+    entities['object'] = xdict() # dummy object entity to be filled in ObjectParameters
     j2d_p = f"{data_dir}/../hands/j2d.full.npy"
     data = np.load(
         f"{data_dir}/../hands/hold_fit.slerp.npy", allow_pickle=True

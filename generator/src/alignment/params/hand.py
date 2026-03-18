@@ -69,24 +69,25 @@ class MANOParameters(nn.Module):
             rasterizer=raster_settings_silhouette,
             shader=SoftSilhouetteShader()
         )
-        # self.o2c = torch.tensor(meta["o2c"]).to("cuda")
+        self.o2c = torch.tensor(meta["o2c"]).to("cuda")
 
-        # with open("/home/simba/Documents/project/hold-private/code/body_models/contact_zones.pkl", "rb") as f:
-        #     contact_zones = pkl.load(f)
-        #     contact_zones = contact_zones["contact_zones"]
-        #     contact_idx = np.array([item for sublist in contact_zones.values() for item in sublist])
-        #     self.contact_idx = contact_idx[19:]
-        #     self.contact_idx_index_finger = contact_idx[19:47]
-        #     self.contact_idx_middle_finger = contact_idx[47:66]
-        #     self.contact_idx_ring_finger = contact_idx[66:73]
-        #     self.contact_idx_little_finger = contact_idx[73:98]
-        #     self.contact_idx_thumb_finger = contact_idx[98:]
+        _contact_zones_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "body_models", "contact_zones.pkl")
+        with open(_contact_zones_path, "rb") as f:
+            contact_zones = pkl.load(f)
+            contact_zones = contact_zones["contact_zones"]
+            contact_idx = np.array([item for sublist in contact_zones.values() for item in sublist])
+            self.contact_idx = contact_idx[19:]
+            self.contact_idx_index_finger = contact_idx[19:47]
+            self.contact_idx_middle_finger = contact_idx[47:66]
+            self.contact_idx_ring_finger = contact_idx[66:73]
+            self.contact_idx_little_finger = contact_idx[73:98]
+            self.contact_idx_thumb_finger = contact_idx[98:]
 
-        #     self.faces_idx_index_finger = range(381, 513)
-        #     self.faces_idx_middle_finger = range(613, 745)
-        #     self.faces_idx_ring_finger = range(849, 981)
-        #     self.faces_idx_little_finger = range(1081, 1213)
-        #     self.faces_idx_thumb = range(1251, 1383)
+            self.faces_idx_index_finger = range(381, 513)
+            self.faces_idx_middle_finger = range(613, 745)
+            self.faces_idx_ring_finger = range(849, 981)
+            self.faces_idx_little_finger = range(1081, 1213)
+            self.faces_idx_thumb = range(1251, 1383)
         self.to("cuda")        
 
     def to(self, device):
@@ -111,12 +112,12 @@ class MANOParameters(nn.Module):
         h2c_mat[:, :3, 3] = self.hand_transl
         h2c_mat = h2c_mat * self.hand_scale # scale the hand
         h2c_mat[:, 3, 3] = 1
-        # h2o_mat = torch.inverse(self.o2c) @ h2c_mat
+        h2o_mat = torch.inverse(self.o2c) @ h2c_mat
 
         j3d_cam = transform_points(j3d_can, h2c_mat)
         v3d_cam = transform_points(v3d_can, h2c_mat)
-        # j3d_obj = transform_points(j3d_can, h2o_mat)
-        # v3d_obj = transform_points(v3d_can, h2o_mat)
+        j3d_obj = transform_points(j3d_can, h2o_mat)
+        v3d_obj = transform_points(v3d_can, h2o_mat)
 
 
 
@@ -133,8 +134,8 @@ class MANOParameters(nn.Module):
 
         out["j3d_cam"] = j3d_cam
         out["v3d_cam"] = v3d_cam
-        # out["j3d_obj"] = j3d_obj
-        # out["v3d_obj"] = v3d_obj
+        out["j3d_obj"] = j3d_obj
+        out["v3d_obj"] = v3d_obj
         out["f3d"] = self.f3d
         out["v2d"] = v2ds
         out["j2d"] = j2ds
@@ -148,16 +149,16 @@ class MANOParameters(nn.Module):
         # out["im_paths"] = self.im_paths
         # out["mask_paths"] = self.mask_paths
         # out["K"] = self.K
-        # out["contact_idx"] = self.contact_idx
-        # out["contact_idx_index_finger"] = self.contact_idx_index_finger
-        # out["contact_idx_middle_finger"] = self.contact_idx_middle_finger
-        # out["contact_idx_ring_finger"] = self.contact_idx_ring_finger
-        # out["contact_idx_little_finger"] = self.contact_idx_little_finger
-        # out["contact_idx_thumb_finger"] = self.contact_idx_thumb_finger
+        out["contact_idx"] = self.contact_idx
+        out["contact_idx_index_finger"] = self.contact_idx_index_finger
+        out["contact_idx_middle_finger"] = self.contact_idx_middle_finger
+        out["contact_idx_ring_finger"] = self.contact_idx_ring_finger
+        out["contact_idx_little_finger"] = self.contact_idx_little_finger
+        out["contact_idx_thumb_finger"] = self.contact_idx_thumb_finger
 
-        # out["faces_idx_index_finger"] = self.faces_idx_index_finger
-        # out["faces_idx_middle_finger"] = self.faces_idx_middle_finger
-        # out["faces_idx_ring_finger"] = self.faces_idx_ring_finger
-        # out["faces_idx_little_finger"] = self.faces_idx_little_finger
-        # out["faces_idx_thumb"] = self.faces_idx_thumb
+        out["faces_idx_index_finger"] = self.faces_idx_index_finger
+        out["faces_idx_middle_finger"] = self.faces_idx_middle_finger
+        out["faces_idx_ring_finger"] = self.faces_idx_ring_finger
+        out["faces_idx_little_finger"] = self.faces_idx_little_finger
+        out["faces_idx_thumb"] = self.faces_idx_thumb
         return out

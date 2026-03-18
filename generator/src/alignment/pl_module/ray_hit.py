@@ -192,15 +192,27 @@ class RayHit():
        # read the meta data
         self.meta = meta
         device = "cuda"
-        self.K = meta["K"]
+        self.K = torch.FloatTensor(meta["K"]).to(device)
         self.o2c = meta['o2c']
         self.c2o = torch.inverse(self.o2c)
         self.imsize = cv2.imread(meta["im_paths"][0]).shape[:2] # H, W
         
         # construct the target masks
-        batch_masks = np.stack(
-            [np.array(Image.open(mask_path)) for mask_path in meta['mask_paths']], axis=0
-        )
+        if 'mask_paths' in meta:
+            batch_masks = np.stack(
+                [np.array(Image.open(mask_path)) for mask_path in meta['mask_paths']], axis=0
+            )
+        else:
+            # Build combined mask from separate object/hand masks
+            # Object=100, Right hand=250 (matching SEGM_IDS in fitting/utils.py)
+            from third_party.utils_simba.utils_simba.mask import load_mask_bool
+            combined = []
+            for obj_p, hand_p in zip(meta['mask_obj_paths'], meta['mask_hand_paths']):
+                mask = np.zeros(cv2.imread(meta["im_paths"][0]).shape[:2], dtype=np.uint8)
+                mask[load_mask_bool(obj_p)] = 100
+                mask[load_mask_bool(hand_p)] = 250  # hand overrides object on overlap
+                combined.append(mask)
+            batch_masks = np.stack(combined, axis=0)
         batch_masks = torch.tensor(batch_masks).to(preds['right.v3d_cam'].device)
         self.mask_tgs = construct_targets(batch_masks)
 
@@ -471,8 +483,8 @@ class RayHit():
             finger_occluded_vert_idxs = np.concatenate(finger_occluded_vert_idxs_list)
             finger_occluded_verts_w = torch.tensor(mesh_h.vertices[finger_occluded_vert_idxs]).float().cuda()
             finger_occluded_verts_c = transform_points(finger_occluded_verts_w[None], o2c[None])[0]
-            verts_proj = project2d_batch(self.meta["K"].unsqueeze(0), finger_occluded_verts_c.unsqueeze(0)).squeeze(0)
-            ray_origin, ray_direction = get_ray_origin_direction(c2o, self.meta['K'], verts_proj)
+            verts_proj = project2d_batch(self.K.unsqueeze(0), finger_occluded_verts_c.unsqueeze(0)).squeeze(0)
+            ray_origin, ray_direction = get_ray_origin_direction(c2o, self.K, verts_proj)
 
             ray_origin = ray_origin.to('cpu').numpy()
             ray_direction = ray_direction.to('cpu').numpy()
@@ -572,10 +584,10 @@ class RayHit():
             # Render depth buffer
             mesh_o_tensors = make_mesh_tensors(mesh)
             rgb_r, depth_r, normal_r = nvdiffrast_render(
-                                        K=np.array(self.meta['K'].to('cpu')), 
+                                        K=np.array(self.meta['K']), 
                                         H=self.meta['im_H_W'][0], 
                                         W=self.meta['im_H_W'][1], 
-                                        ob_in_cams=o2c, 
+                                        ob_in_cvcams=o2c,
                                         context='cuda', 
                                         get_normal=True, 
                                         glctx=dr.RasterizeCudaContext(), 
@@ -597,7 +609,7 @@ class RayHit():
             verts_w = torch.tensor(mesh.vertices).float().cuda()
             verts_c = transform_points(verts_w[None], o2c[None])[0]        
             # Project vertices to 2D
-            verts_proj = project2d_batch(self.meta["K"].unsqueeze(0), verts_c.unsqueeze(0)).squeeze(0)  # Shape: (N, 2)
+            verts_proj = project2d_batch(self.K.unsqueeze(0), verts_c.unsqueeze(0)).squeeze(0)  # Shape: (N, 2)
             x = verts_proj[:, 0]
             y = verts_proj[:, 1]
             z = verts_c[:, 2]  # Shape: (N,)
@@ -696,10 +708,10 @@ class RayHit():
                     H = H // 8 * 8
                     W = W // 8 * 8
                     rgb_r, depth_r, normal_r = nvdiffrast_render(
-                            K=np.array(self.meta['K'].to('cpu')), 
+                            K=np.array(self.meta['K']), 
                             H=H, 
                             W=W, 
-                            ob_in_cams=o2c, 
+                            ob_in_cvcams=o2c,
                             context='cuda', 
                             get_normal=True, 
                             glctx=dr.RasterizeCudaContext(), 

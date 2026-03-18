@@ -438,6 +438,8 @@ class PLModule(pl.LightningModule):
         if self.global_step == 0:
             targets = preds.detach().to(device)
             for key in self.entities.keys():
+                if key == "object":
+                    continue
                 targets[f"{key}.j2d.gt"] = self.entities[key]['j2d.gt']
                 targets[f"{key}.v3d.gt"] = self.entities[key]['v3d.gt']
                 targets[f"{key}.depth.gt"] = self.entities[key]['depth.gt']

@@ -68,7 +68,7 @@ def export_mesh(sdf, path='torus_mesh.obj'):
 
     # Evaluate the SDF
     with torch.no_grad():
-        sdf_values = sdf(points).detach().cpu().numpy()
+        sdf_values = sdf(points, with_grad=False, with_feature=False).detach().cpu().numpy()
 
     # Reshape the SDF values to a 3D grid and transpose to (z, y, x)
     sdf_values = sdf_values.reshape(resolution, resolution, resolution).transpose(0, 1, 2)
@@ -86,8 +86,10 @@ class ObjectParameters(nn.Module):
     def __init__(self, data, meta, debug=False, target_face_count=30000):
         super().__init__()
         # unpacking
-        K = meta["K"]
+        K = torch.FloatTensor(np.array(meta["K"]))
         o2c_all = meta["o2c"]
+        if not isinstance(o2c_all, torch.Tensor):
+            o2c_all = torch.FloatTensor(o2c_all)
         obj_rot = matrix_to_axis_angle(o2c_all[:, :3, :3])
         obj_transl = o2c_all[:, :3, 3]
         obj_mesh = trimesh.load(
@@ -110,7 +112,7 @@ class ObjectParameters(nn.Module):
         # get the object in camera coordinates
         obj_cam = transform_points(obj_cano, o2c_all)
 
-        K = K[None, :, :].repeat(len(o2c_all), 1, 1)
+        K = K[None, :, :].repeat(len(o2c_all), 1, 1).to(obj_cam.device)
         obj_2d = project2d_batch(K, obj_cam)    
 
         # object parameters
@@ -136,15 +138,19 @@ class ObjectParameters(nn.Module):
             sys.path.insert(0, neus_root)
         import systems as neus_systems
         from utils.misc import load_config as load_neus_config
-        neus_config_path = str(Path(__file__).resolve().parents[4] / "configs" / "neus-pipeline.yaml")
-        neus_config = load_neus_config(neus_config_path)
+        # Try to load the resolved config saved alongside the checkpoint
+        ckpt_path = Path(meta['object_ckpt_f'])
+        saved_config = ckpt_path.parent.parent / "config" / "resolved_config.yaml"
+        if saved_config.exists():
+            neus_config = load_neus_config(str(saved_config))
+        else:
+            neus_config_path = str(Path(__file__).resolve().parents[4] / "configs" / "neus-pipeline.yaml")
+            neus_config = load_neus_config(neus_config_path)
         sdf = neus_systems.make(neus_config.system.name, neus_config, load_from_checkpoint=meta['object_ckpt_f'])
         sdf.to('cuda')
         sdf.eval()
-        set_system_status(sdf, meta['object_ckpt_f'])
-        sdf.do_update_step(sdf.true_current_epoch, sdf.true_global_step)
         
-        self.sdf = sdf.geometry.forward_sdf
+        self.sdf = sdf.model.geometry
         if debug:
             export_mesh(self.sdf, 'obj_mesh.obj')
 

@@ -1778,8 +1778,9 @@ class run_wonder_hoi:
     def hoi_pipeline_align_hand_object_h(self, scene_name, **kwargs):
         mode = "h"
         out_dir = f"{vggt_code_dir}/output/{scene_name}/align_hand_object"
+        result_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/"
         if self.rebuild:
-            cmd = f"rm -rf {out_dir}/hold_fit.aligned_{mode}.npy"
+            cmd = f"rm -rf {out_dir}/hold_fit.aligned_{mode}.npy && rm -rf {out_dir}mano_fit_ckpt/{mode}/"
             print(cmd)
             os.system(cmd)
 
@@ -1788,6 +1789,7 @@ class run_wonder_hoi:
         cmd += f"--seq_name {scene_name} "
         cmd += f"--mode {mode} "
         cmd += f"--out_dir {out_dir} "
+        cmd += f"--result_dir {result_dir} "
         cmd += f"--dataset_type {dataset_type} "
 
         print(cmd)
@@ -1798,7 +1800,7 @@ class run_wonder_hoi:
         out_dir = f"{vggt_code_dir}/output/{scene_name}/align_hand_object"
         result_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/"
         if self.rebuild:
-            cmd = f"rm -rf {out_dir}/hold_fit.aligned_{mode}.npy"
+            cmd = f"rm -rf {out_dir}/hold_fit.aligned_{mode}.npy && rm -rf {out_dir}mano_fit_ckpt/{mode}/"
             print(cmd)
             os.system(cmd)
 

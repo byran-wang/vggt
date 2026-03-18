@@ -255,6 +255,11 @@ def run_neus_training(
 
         system = neus_systems.make(config.system.name, config)
 
+        # Save resolved config alongside checkpoint for later use
+        os.makedirs(config.config_dir, exist_ok=True)
+        from omegaconf import OmegaConf
+        OmegaConf.save(config, os.path.join(config.config_dir, "resolved_config.yaml"))
+
         _neus_cache["config"] = config
         _neus_cache["system"] = system
         print(f"[NeuS] Created in-process system (first call)")
