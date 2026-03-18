@@ -139,6 +139,68 @@ def load_hand_mesh_for_frame(data_preprocess_dir: Path, frame_idx: int):
         return None
     return {"vertices": verts, "faces": faces}
 
+_hand_alignment_cache = {}
+
+def load_hand_mesh_from_hand_object_alignment(results_dir: Path, data_preprocess_dir: Path, hand_mode: str, frame_idx: int):
+    align_dir = results_dir.parent / "align_hand_object"
+    npy_path = align_dir / f"hold_fit.aligned_{hand_mode}.npy"
+    cache_key = str(npy_path)
+
+    if cache_key not in _hand_alignment_cache:
+        if not npy_path.exists():
+            print(f"[warn] alignment file not found: {npy_path}")
+            _hand_alignment_cache[cache_key] = None
+        else:
+            data = np.load(str(npy_path), allow_pickle=True).item()
+            if "right" not in data:
+                print(f"[warn] no 'right' hand in alignment data: {npy_path}")
+                _hand_alignment_cache[cache_key] = None
+            else:
+                hand_data = data["right"]
+                # Build frame_id -> local_idx mapping
+                from glob import glob as _glob
+                rgb_dir = data_preprocess_dir / "rgb"
+                if rgb_dir.exists():
+                    im_ps = sorted(_glob(str(rgb_dir / "*.jpg")) + _glob(str(rgb_dir / "*.png")))
+                    frame_id_to_local = {int(Path(p).stem): i for i, p in enumerate(im_ps)}
+                else:
+                    frame_id_to_local = None
+                _hand_alignment_cache[cache_key] = {
+                    "v3d_cam": hand_data["v3d_cam"],
+                    "faces": np.asarray(hand_data["f3d"], dtype=np.int32),
+                    "frame_id_to_local": frame_id_to_local,
+                }
+
+    cached = _hand_alignment_cache[cache_key]
+    if cached is None:
+        return None
+
+    v3d_cam = cached["v3d_cam"]
+    faces = cached["faces"]
+    frame_id_to_local = cached["frame_id_to_local"]
+
+    if frame_id_to_local is not None:
+        if frame_idx not in frame_id_to_local:
+            print(f"[warn] frame_idx {frame_idx} not in alignment frames")
+            return None
+        local_idx = frame_id_to_local[frame_idx]
+    else:
+        local_idx = frame_idx
+
+    if local_idx >= len(v3d_cam):
+        print(f"[warn] frame_idx {frame_idx} (local {local_idx}) out of range (max {len(v3d_cam) - 1})")
+        return None
+
+    if 0:
+        verts = np.asarray(v3d_cam[local_idx], dtype=np.float32)
+        debug_dir = align_dir / f"/debug_mesh"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        trimesh.Trimesh(vertices=verts, faces=faces, process=False).export(
+            str(debug_dir / f"{frame_idx:04d}_{hand_mode}.obj")
+        )
+
+    return {"vertices": verts, "faces": faces}
+
 
 def ensure_sealed_right_hand_mesh(verts: np.ndarray, faces: np.ndarray):
     verts = np.asarray(verts, dtype=np.float32)
@@ -188,10 +250,12 @@ def _build_render_frames(
     valid_flags,
     gt_valid_flags,
     data_preprocess_dir: Path,
+    results_dir: Path,
     o2c_with_scale,
     mesh_obj: trimesh.Trimesh,
     c2o_with_scale,
     render_hand: bool,
+    hand_mode: str,
 ):
     frames = []
     for local_idx, frame_idx in enumerate(frame_indices):
@@ -216,7 +280,12 @@ def _build_render_frames(
             "pose_o2c": o2c_with_scale[local_idx],
         }
         if render_hand:
-            hand_mesh_cam = load_hand_mesh_for_frame(data_preprocess_dir, int(frame_idx))
+            if hand_mode == "trans":
+                hand_mesh_cam = load_hand_mesh_for_frame(data_preprocess_dir, int(frame_idx))
+            elif hand_mode == "h" or hand_mode=="o" or hand_mode=="ho":
+                hand_mesh_cam = load_hand_mesh_from_hand_object_alignment(results_dir, data_preprocess_dir, hand_mode, int(frame_idx))
+            else:
+                raise ValueError(f"Unsupported hand_mode: {hand_mode}")
             if hand_mesh_cam is not None:
                 merged_mesh = build_merged_object_hand_mesh(mesh_obj, hand_mesh_cam, c2o_with_scale[local_idx])
                 frame["mesh_tensors"] = make_mesh_tensors(merged_mesh, device="cuda")
@@ -287,10 +356,12 @@ def main(args):
         valid_flags=valid_flags,
         gt_valid_flags=gt_valid_flags,
         data_preprocess_dir=data_preprocess_dir,
+        results_dir=results_dir,
         o2c_with_scale=o2c_with_scale,
         mesh_obj=mesh_obj,
         c2o_with_scale=c2o_with_scale,
         render_hand=bool(args.render_hand),
+        hand_mode=args.hand_mode,
     )
 
     result = render_frames_with_nvdiffrast(
@@ -316,8 +387,9 @@ def parse_args():
     parser.add_argument("--fps", type=int, default=6, help="Output video FPS")
     parser.add_argument("--alpha", type=float, default=0.8, help="Overlay weight for rendered normals")
     parser.add_argument("--vis_gt", type=int, default=1, help="Use GT-valid filtering (1) or not (0)")
-    parser.add_argument("--render_hand", dest="render_hand", action="store_true", help="Render sealed right-hand mesh together with the object mesh")
+    parser.add_argument("--render_hand", dest="render_hand", action="store_true", default=True, help="Render sealed right-hand mesh together with the object mesh")
     parser.add_argument("--mesh_type", type=str, default="neus", choices=["sam3d", "neus"], help="Mesh source to use: 'neus' (default) or 'sam3d'")
+    parser.add_argument("--hand_mode", type=str, default="trans", choices=["trans", "h","o", "ho"], help="Hand fitting mode: trans, h, o, ho, ")
     return parser.parse_args()
 
 
