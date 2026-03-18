@@ -9,7 +9,15 @@ export LD_LIBRARY_PATH="/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH"
 
 declare -A device_sequences=(
   [0]="CUB1 DUC1 CUP3 SCI1 GT1 SPA1 MED1"
-  [1]="TC3 WC3 CUP4 SHP1 KNI1 MEC1 MOU1"
+  [1]="TC3 WC3 CUP4 SHP1 KNI1 MEC1 MOU1"  
+  # [0]="CUB1 DUC1"
+  # [1]="TC3 WC3"
+  # [2]="CUP3 SCI1"
+  # [3]="CUP4 SHP1"
+  # [4]="GT1 SPA1"
+  # [5]="KNI1 MEC1" 
+  # [6]="MED1"
+  # [7]="MOU1"    
 )
 
 current_dir=$(pwd)
@@ -46,11 +54,16 @@ for device in "${!device_sequences[@]}"; do
       --process_list hoi_pipeline_joint_opt \
       --seq_list $sequences --rebuild 
 
+    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+      --execute_list obj_process \
+      --process_list hoi_pipeline_align_hand_object_h hoi_pipeline_align_hand_object_r hoi_pipeline_align_hand_object_o hoi_pipeline_align_hand_object_ho \
+      --seq_list $sequences --rebuild            
+
     
     echo "Running fit_hand on CUDA device $device with sequences: $sequences"
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
       --execute_list obj_process \
-      --process_list hoi_pipeline_joint_opt_eval_vis eval_sum_vis \
+      --process_list hoi_pipeline_eval_vis eval_sum_vis \
       --seq_list $sequences --rebuild
 
 
