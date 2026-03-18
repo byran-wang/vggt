@@ -88,7 +88,7 @@ def main(args):
 
     if load_ckpt is not None:
         sd = torch.load(load_ckpt)["state_dict"]
-        pl_model.load_state_dict(sd)
+        pl_model.load_state_dict(sd, strict=False)
         print(f"Loaded hand model from {load_ckpt}")
     if args.mode == 'r':
         preds = xdict()

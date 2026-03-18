@@ -402,6 +402,12 @@ class PLModule(pl.LightningModule):
             self.models[node_id].to(device)
         
     def on_save_checkpoint(self, checkpoint):
+        # Remove NeuS SDF weights and per-frame object buffers from checkpoint
+        # (they are loaded from their own sources at init time)
+        if 'state_dict' in checkpoint:
+            keys_to_remove = [k for k in checkpoint['state_dict'] if k.startswith('models.object.sdf.')]
+            for k in keys_to_remove:
+                del checkpoint['state_dict'][k]
         return
         if 'state_dict' in checkpoint:
             state_dict = checkpoint['state_dict']
