@@ -36,9 +36,9 @@ optim_configs:
     num_iters: 3000
   hand_object_optim:
     lr: 0.01
-    decay_every: 1000
+    decay_every: 500
     decay_factor: 0.5
-    num_iters: 3000    
+    num_iters: 1000    
 
 weights:
   # hand-only
