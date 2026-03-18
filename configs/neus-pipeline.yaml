@@ -63,7 +63,7 @@ model:
       n_levels: 14
       n_features_per_level: 2
       log2_hashmap_size: 19
-      base_resolution: 64
+      base_resolution: 32
       per_level_scale: 1.3195079107728942
       include_xyz: true
     mlp_network_config:
