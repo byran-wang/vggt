@@ -2480,7 +2480,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 
 
                 t_train_start = time.time()
-                neus_ckpt, neus_mesh_path = run_neus_training(
+                neus_ckpt, neus_mesh_path, neus_mesh_inmem = run_neus_training(
                     neus_data_dir,
                     config_path="configs/neus-pipeline.yaml",
                     max_steps=neus_total_steps,
@@ -2495,15 +2495,19 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 time_per_step = t_train / max(actual_steps, 1)
                 print(f"[NeuS profile] prepare_neus_data: {t_prepare:.1f}s ({len(keyframe_local_indices)} keyframes)")
                 print(f"[NeuS profile] training + export: {t_train:.1f}s ({actual_steps} steps, {time_per_step:.3f}s/step, {1/time_per_step:.1f} steps/s)")
-                if neus_mesh_path is not None and Path(neus_mesh_path).exists():
+                if neus_mesh_inmem is not None:
+                    old_id = id(neus_mesh_trimesh)
+                    _foundation_pose_cache.get("per_mesh", {}).pop(old_id, None)
+                    neus_mesh_trimesh = neus_mesh_inmem
+                    print(f"Reloaded NeuS mesh (in-memory): {len(neus_mesh_trimesh.vertices)} vertices")
+                elif neus_mesh_path is not None and Path(neus_mesh_path).exists():
                     import trimesh
-                    # Evict old NeuS estimator from cache before replacing the mesh
                     old_id = id(neus_mesh_trimesh)
                     _foundation_pose_cache.get("per_mesh", {}).pop(old_id, None)
                     neus_mesh_trimesh = trimesh.load(str(neus_mesh_path), process=False)
                     if isinstance(neus_mesh_trimesh, trimesh.Scene):
                         neus_mesh_trimesh = neus_mesh_trimesh.dump(concatenate=True)
-                    print(f"Reloaded NeuS mesh: {len(neus_mesh_trimesh.vertices)} vertices")
+                    print(f"Reloaded NeuS mesh (from disk): {len(neus_mesh_trimesh.vertices)} vertices")
 
         image_info["register"] = image_info_work["registered"].tolist()
         image_info["invalid"] = image_info_work["invalid"].tolist()
