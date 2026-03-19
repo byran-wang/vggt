@@ -2437,7 +2437,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 print(f"[register_remaining_frames] joint optimization failed: {exc}")
 
         if image_info_work['keyframe'][next_frame_idx] and (key_frame_num >= 5) and (key_frame_num % 5 == 0) and args.optimize_3D_prior:
-            neus_data_dir = output_dir / "pipeline_joint_opt" / "neus_data" / f"{image_info_work['frame_indices'][next_frame_idx]:04d}"
+            neus_data_dir = output_dir / "pipeline_joint_opt" / "neus_data"
             neus_training_dir = output_dir / "pipeline_joint_opt" / "neus_training" / f"{image_info_work['frame_indices'][next_frame_idx]:04d}"
             keyframe_local_indices = np.flatnonzero(image_info_work["keyframe"].astype(bool))
             # Exclude next_frame_idx — not fully optimized yet and may contain outliers.
