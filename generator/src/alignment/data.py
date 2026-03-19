@@ -188,14 +188,7 @@ def read_data(args):
 def read_data_after_object_reconstruction(args):
     seq_name = args.seq_name
     # load data
-    if args['dataset_type'] == "ho3d":
-        data_dir = f"./data/train/{seq_name}/pipeline_preprocess"
-    elif args['dataset_type'] == "zed":
-        data_dir = f"{args['out_dir']}/pipeline_preprocess"
-    else:
-        raise NotImplementedError(f"Dataset type {args['dataset_type']} not implemented.")
-
-    
+    data_dir = f"{args['data_dir']}/pipeline_preprocess"
 
     im_ps = sorted(
         glob(f"{data_dir}/rgb/*.jpg")

@@ -1781,6 +1781,7 @@ class run_wonder_hoi:
     def _align_hand_object(self, scene_name, mode):
         out_dir = f"{vggt_code_dir}/output/{scene_name}/align_hand_object"
         result_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/"
+        data_dir = f"{self.dataset_dir}/{scene_name}"
         if self.vis:
             self.print_header(f"hoi pipeline joint optimization eval vis for {scene_name}")
             data_dir = f"{self.dataset_dir}/{scene_name}"
@@ -1816,6 +1817,7 @@ class run_wonder_hoi:
         cmd += f"--seq_name {scene_name} "
         cmd += f"--mode {mode} "
         cmd += f"--out_dir {out_dir} "
+        cmd += f"--data_dir {data_dir} "
         cmd += f"--result_dir {result_dir} "
         cmd += f"--dataset_type {dataset_type} "
 
