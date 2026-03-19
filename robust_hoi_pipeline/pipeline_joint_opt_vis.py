@@ -275,6 +275,65 @@ def visualize_hy_omni_points(
     print(f"Visualized HY omni mesh: {len(hy_verts)} vertices")
 
 
+def log_novel_view_camera(
+    entity_path: str = "world/novel_view/camera",
+    elevation_deg: float = 45.0,
+    azimuth_deg: float = 135.0,
+    distance: float = 0.4,
+    image_width: int = 512,
+    image_height: int = 512,
+    fov_deg: float = 45.0,
+    scale: float = 1.0,
+    align_transform = None,
+) -> None:
+    """Log a static novel-view camera frustum in Rerun.
+
+    The camera looks toward the world origin from a position defined by
+    spherical coordinates (elevation, azimuth, distance) in a Y-up world.
+    Intrinsics are derived from the given image size and vertical FOV.
+    """
+    distance = distance / scale
+    cx, cy = image_width / 2.0, image_height / 2.0
+    f = cy / np.tan(np.deg2rad(fov_deg) / 2.0)
+
+    elev = np.deg2rad(elevation_deg)
+    azim = np.deg2rad(azimuth_deg)
+    cam_pos = np.array([
+        distance * np.cos(elev) * np.sin(azim),
+        distance * np.sin(elev),
+        distance * np.cos(elev) * np.cos(azim),
+    ], dtype=np.float32)
+
+    # Look-at rotation: camera Z points toward origin
+    z_axis = -cam_pos / np.linalg.norm(cam_pos)
+    x_axis = np.cross(np.array([0.0, 1.0, 0.0], dtype=np.float32), z_axis)
+    x_axis /= np.linalg.norm(x_axis)
+    y_axis = np.cross(z_axis, x_axis)
+    R_c2w = np.stack([x_axis, y_axis, z_axis], axis=1).astype(np.float32)
+    R_c2w[:, 0] *= -1
+    R_c2w[:, 1] *= -1
+    cam_pos *= scale
+    c2w = np.eye(4, dtype=np.float32)
+    c2w[:3, :3] = R_c2w
+    c2w[:3, 3] = cam_pos
+    if align_transform is not None:
+        c2w = align_transform @ c2w
+        cam_pos = c2w[:3, 3]
+        R_c2w = c2w[:3, :3]
+
+    rr.log(entity_path, rr.Transform3D(translation=cam_pos, mat3x3=R_c2w), static=True)
+    rr.log(
+        entity_path,
+        rr.Pinhole(
+            resolution=[image_width, image_height],
+            focal_length=[f, f],
+            principal_point=[cx, cy],
+            image_plane_distance=0.2,
+        ),
+        static=True,
+    )
+
+
 def compute_pred_to_gt_alignment(
     data_gt,
     gt_o2c: Optional[np.ndarray],
@@ -891,6 +950,7 @@ def main(args):
         scale=scale,
         align_transform=align_pred_to_gt,
     )
+    log_novel_view_camera(scale=scale, align_transform=align_pred_to_gt)
 
     # Visualize only keyframes
     print("Visualizing keyframes...")
