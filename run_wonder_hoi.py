@@ -80,6 +80,7 @@ class run_wonder_hoi:
                 "ho3d_obj_3D_gen": self.ho3d_obj_3D_gen,
                 "ho3d_condition_id": self.ho3d_condition_id,
                 "ho3d_obj_SAM3D_gen": self.ho3d_obj_SAM3D_gen,
+                "ho3d_obj_SAM3D_filter_frames": self.ho3d_obj_SAM3D_filter_frames,
                 "ho3d_obj_SAM3D_post_opt_GS": self.ho3d_obj_SAM3D_post_opt_GS,
                 "ho3d_obj_SAM3D_post_optimization": self.ho3d_obj_SAM3D_post_optimization,
                 "ho3d_align_SAM3D_mask": self.ho3d_align_SAM3D_mask,
@@ -763,22 +764,13 @@ class run_wonder_hoi:
             print(cmd)
             os.system(cmd)
 
-        # python example.py --image_file $IMAGE_FILE --output_dir $scene_output_dir
-        cmd = f"cd {home_dir}/Documents/project/sam-3d-objects && "
-        cmd += f"LIDRA_SKIP_INIT=1 {self.conda_dir}/envs/sam3d-objects/bin/python demo.py "
-        # cmd += f"--image_file {self.dataset_dir}/{scene_name}/mask_obj/{id}.png "
-        cmd += f"--image-path {image_path} "
-        cmd += f"--mask-path {mask_path} "
-        cmd += f"--depth-file {depth_path} "
-        cmd += f"--meta-file {meta_path} "
-        cmd += f"--out-dir {out_dir} "
-        if self.vis:
-            cmd += f"--vis "
-        
-        # cmd = f"cd {home_dir}/Documents/project/sam-3d-objects && "
-        # cmd = f"mv {self.dataset_dir}/{scene_name}/SAM3D {self.dataset_dir}/{scene_name}/SAM3D_[no_rendering_optimization] "
-        print(cmd)        
-        os.system(cmd) 
+    def ho3d_obj_SAM3D_filter_frames(self, scene_name, **kwargs):
+        self.print_header(f"Filter frames by mask size and geometry quality for SAM3D for {scene_name}")
+        cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_filter_frames.py "
+        cmd += f"--dataset_dir {self.dataset_dir} "
+        cmd += f"--scene_name {scene_name} "
+        print(cmd)
+        os.system(cmd)
 
     def ho3d_obj_SAM3D_post_opt_GS(self, scene_name, **kwargs):
         self.print_header(f"Post-optimize SAM3D Gaussian Splatting for {scene_name}")
@@ -2219,6 +2211,7 @@ if __name__ == "__main__":
                 "ho3d_obj_3D_gen",
                 "ho3d_condition_id",
                 "ho3d_obj_SAM3D_gen",
+                "ho3d_obj_SAM3D_filter_frames",
                 "ho3d_obj_SAM3D_post_opt_GS",
                 "ho3d_obj_SAM3D_post_optimization",
                 "ho3d_align_SAM3D_mask",
