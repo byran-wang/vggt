@@ -1838,7 +1838,6 @@ class run_wonder_hoi:
         cmd += f"--out_dir {out_dir} "
         cmd += f"--data_dir {data_dir} "
         cmd += f"--result_dir {result_dir} "
-        cmd += f"--dataset_type {dataset_type} "
 
         print(cmd)
         os.system(cmd)   
