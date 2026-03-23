@@ -750,15 +750,37 @@ class run_wonder_hoi:
 
     def ho3d_obj_SAM3D_gen(self, scene_name, **kwargs):
         self.print_header(f"Generate object 3D model from SAM3D for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
-        image_path = f"{self.dataset_dir}/{scene_name}/rgb/{id}.jpg"
-        depth_path = f"{self.dataset_dir}/{scene_name}/depth/{id}.png"
-        mask_path = f"{self.dataset_dir}/{scene_name}/mask_object/{id}.png"
-        meta_path = f"{self.dataset_dir}/{scene_name}/meta/{id}.pkl"
-        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D/{id}/"
-                   
-        if self.rebuild:
-            cmd = f"rm -rf {out_dir}/*"
+        if self.seq_config["cond_select_strategy"] == "manual":
+            image_ids = [f"{self.seq_config['cond_idx']:04d}"]
+        elif self.seq_config["cond_select_strategy"] == "auto":
+            frame_list_file = f"{self.dataset_dir}/{scene_name}/pipeline_preprocess/frame_list_filtered.txt"
+            with open(frame_list_file, "r") as f:
+                image_ids = [f"{int(line.strip()):04d}" for line in f if line.strip()]
+        else:
+            raise ValueError(f"Unknown cond_select_strategy: {self.seq_config['cond_select_strategy']}")
+            
+        print(f"image_ids for SAM3D generation: {image_ids}")
+        for id in image_ids:
+            image_path = f"{self.dataset_dir}/{scene_name}/rgb/{id}.jpg"
+            depth_path = f"{self.dataset_dir}/{scene_name}/depth/{id}.png"
+            mask_path = f"{self.dataset_dir}/{scene_name}/mask_object/{id}.png"
+            meta_path = f"{self.dataset_dir}/{scene_name}/meta/{id}.pkl"
+            out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D/{id}/"
+
+            if self.rebuild:
+                cmd = f"rm -rf {out_dir}/*"
+                print(cmd)
+                os.system(cmd)
+
+            cmd = f"cd {home_dir}/Documents/project/sam-3d-objects && "
+            cmd += f"LIDRA_SKIP_INIT=1 {self.conda_dir}/envs/sam3d-objects/bin/python demo.py "
+            cmd += f"--image-path {image_path} "
+            cmd += f"--mask-path {mask_path} "
+            cmd += f"--depth-file {depth_path} "
+            cmd += f"--meta-file {meta_path} "
+            cmd += f"--out-dir {out_dir} "
+            if self.vis:
+                cmd += f"--vis "
             print(cmd)
             os.system(cmd)
 

@@ -47,6 +47,7 @@ def main(args):
     meta_dir = Path(f"{args.dataset_dir}/{args.scene_name}/pipeline_preprocess/meta")
     mask_obj_dir = Path(f"{args.dataset_dir}/{args.scene_name}/pipeline_preprocess/mask_obj")
     frame_list_file = Path(f"{args.dataset_dir}/{args.scene_name}/pipeline_preprocess/frame_list.txt")
+    out_dir = Path(f"{args.dataset_dir}/{args.scene_name}/SAM3D")
 
     # Load frame index list
     with open(frame_list_file, "r") as f:
@@ -54,26 +55,39 @@ def main(args):
     print(f"Loaded {len(frame_indices)} frames from {frame_list_file}")
 
     mask_pixel_counts = {}
-    geometry_qualities = {}
 
     for frame_idx in frame_indices:
         fid = f"{frame_idx:04d}"
-
         mask_path = mask_obj_dir / f"{fid}.png"
-        depth_path = depth_dir / f"{fid}.png"
-        meta_path = meta_dir / f"{fid}.pkl"
-
-        # Mask pixel count
         if mask_path.exists():
             mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
             mask_pixels = int((mask > 0).sum()) if mask is not None else 0
         else:
-            mask = None
             mask_pixels = 0
         mask_pixel_counts[frame_idx] = mask_pixels
+        print(f"  Frame {fid}: mask_pixels={mask_pixels}")
 
-        # Geometry quality via SVD
-        if depth_path.exists() and meta_path.exists() and mask is not None and mask_pixels > 0:
+
+    # Filter frames: sort by mask pixel count, keep top 150
+    sorted_by_mask = sorted(mask_pixel_counts.keys(), key=lambda i: mask_pixel_counts[i], reverse=True)
+    mask_filtered = set(sorted_by_mask[:args.max_mask_filtered_frames])
+
+    mask_filtered_ordered = [i for i in frame_indices if i in mask_filtered]
+    mask_out_path = out_dir / "frame_list_after_mask_filtered.txt"
+    with open(mask_out_path, "w") as f:
+        for idx in mask_filtered_ordered:
+            f.write(f"{idx}\n")
+    print(f"Saved mask-filtered frame list to {mask_out_path}")
+
+    # Compute geometry quality only on mask-filtered frames
+    geometry_qualities = {}
+    for frame_idx in mask_filtered_ordered:
+        fid = f"{frame_idx:04d}"
+        depth_path = depth_dir / f"{fid}.png"
+        meta_path = meta_dir / f"{fid}.pkl"
+        mask_path = mask_obj_dir / f"{fid}.png"
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE) if mask_path.exists() else None
+        if depth_path.exists() and meta_path.exists() and mask is not None:
             try:
                 K = _load_intrinsics(str(meta_path))
                 depth = get_depth(str(depth_path))
@@ -84,33 +98,37 @@ def main(args):
         else:
             quality = 0.0
         geometry_qualities[frame_idx] = quality
-
-        print(f"  Frame {fid}: mask_pixels={mask_pixels}, geometry_quality={quality:.4f}")
-
-    # Filter frames: sort by mask pixel count, keep top 150
-    sorted_by_mask = sorted(mask_pixel_counts.keys(), key=lambda i: mask_pixel_counts[i], reverse=True)
-    mask_filtered = set(sorted_by_mask[:150])
+        print(f"  Frame {fid}: geometry_quality={quality:.4f}")
 
     # Filter frames: sort by geometry quality, keep top 100
     sorted_by_geom = sorted(geometry_qualities.keys(), key=lambda i: geometry_qualities[i], reverse=True)
-    geom_filtered = set(sorted_by_geom[:100])
+    geom_filtered = set(sorted_by_geom[:args.max_geometry_filtered_frames])
+
+    depth_filtered_ordered = [i for i in frame_indices if i in geom_filtered]
+    depth_out_path = out_dir / "frame_list_after_depth_filtered.txt"
+    with open(depth_out_path, "w") as f:
+        for idx in depth_filtered_ordered:
+            f.write(f"{idx}\n")
+    print(f"Saved depth-filtered frame list to {depth_out_path}")
 
     # Keep only frames that pass both filters, preserving original order
     filtered = [i for i in frame_indices if i in mask_filtered and i in geom_filtered]
 
 
     # Write filtered frame list
-    out_path = Path(f"{args.dataset_dir}/{args.scene_name}/pipeline_preprocess/frame_list_filtered.txt")
+    out_path = out_dir / "frame_list_filtered.txt"
     with open(out_path, "w") as f:
         for idx in filtered:
             f.write(f"{idx}\n")
-    print(f"Saved filtered frame list to {out_path}")
+    print(f"Saved final filtered frame list to {out_path}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Filter frames by mask size and geometry quality for SAM3D")
     parser.add_argument("--dataset_dir", type=str, required=True)
     parser.add_argument("--scene_name", type=str, required=True)
+    parser.add_argument("--max_mask_filtered_frames", type=int, default=100, help="Max frames to keep after mask filtering")
+    parser.add_argument("--max_geometry_filtered_frames", type=int, default=50, help="Max frames to keep after geometry filtering")
 
     args = parser.parse_args()
     main(args)

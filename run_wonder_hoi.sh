@@ -26,9 +26,8 @@ python run_wonder_hoi.py --execute_list data_convert --process_list convert_dept
 # get the hand and object mask by sam3
 python run_wonder_hoi.py --execute_list data_convert --process_list ho3d_get_obj_mask ho3d_get_hand_mask --seq_list $seq_list --rebuild
 ####Note: following steps run on local pc with 32 GB RAM.
-python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_gen --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_filter_frames --seq_list $seq_list --rebuild
-
+python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_gen --seq_list $seq_list --rebuild
 
 ####Note: following steps can be run on server, since they do not need the monitor. 
 # Remember to check the depth *.ply files in ply_fs by Meshlab after get_depth_from_foundation_stereo.
@@ -36,7 +35,7 @@ python run_wonder_hoi.py --execute_list data_convert --process_list get_depth_fr
 # python run_wonder_hoi.py --execute_list data_convert --process_list ho3d_inpaint --seq_list $seq_list
 python run_wonder_hoi.py --execute_list data_convert --process_list ho3d_estimate_hand_pose ho3d_interpolate_hamer --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list hand_pose_postprocess --process_list fit_hand_intrinsic fit_hand_trans --seq_list $seq_list --rebuild
-python run_wonder_hoi.py --execute_list data_convert --process_list hot3d_sync_hands_to_local --seq_list $seq_list --rebuild 
+# python run_wonder_hoi.py --execute_list data_convert --process_list hot3d_sync_hands_to_local --seq_list $seq_list --rebuild 
 
 # python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_post_opt_GS --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_SAM3D_mask ho3d_align_SAM3D_pts --seq_list $seq_list --rebuild #--vis
