@@ -154,7 +154,6 @@ def parse_args():
     # parser.add_argument("--data_path", type=str, default="")
     parser.add_argument("--out_dir", type=str, default="")
     parser.add_argument("--data_dir", type=str, default="")
-    parser.add_argument("--dataset_type", type=str, choices=["zed", "ho3d"])
     args = parser.parse_args()
     args = edict(vars(args))
     # dirs = os.listdir((args.object_dir + "/save"))

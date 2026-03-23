@@ -20,10 +20,14 @@ elif dataset == "ho3d":
     dataset_dir = f"{home_dir}/Documents/dataset/BundleSDF/HO3D_v3/train/"
     dataset_type = "ho3d"
     from confs.sequence_config_ho3d import sequences, sequence_name_list
-elif dataset == "zijian":
-    dataset_dir = f"{home_dir}/Documents/dataset/zijian/"
-    dataset_type = "zijian"
-    from confs.sequence_config_zijian import sequences, sequence_name_list
+elif dataset == "rs_zijian":
+    dataset_dir = f"{home_dir}/Documents/dataset/rs_zijian/"
+    dataset_type = "rs_zijian"
+    from confs.sequence_config_rs_zijian import sequences, sequence_name_list
+elif dataset == "zed_zijian":
+    dataset_dir = f"{home_dir}/Documents/dataset/zed_zijian/"
+    dataset_type = "zed_zijian"
+    from confs.sequence_config_zed_zijian import sequences, sequence_name_list    
 else:
     raise ValueError(f"Please 'export DATASET=zed or ho3d' at first")           
 

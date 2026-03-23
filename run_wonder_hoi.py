@@ -545,8 +545,6 @@ class run_wonder_hoi:
         if "num_frames" in kwargs:
             cmd_parts.append(f"--num_frames {kwargs['num_frames']}")
 
-        cmd_parts.append(f"--dataset_type {dataset_type}")
-
         cmd = " ".join(cmd_parts)
         print(cmd)
         os.system(cmd)
@@ -1072,7 +1070,7 @@ class run_wonder_hoi:
         os.system(cmd)
 
     def get_depth_from_foundation_stereo(self,seq_name, **kwargs):
-        if dataset_type != "zed":
+        if "zed" not in dataset_type:
             print("only support zed dataset type")
             return
         #iterate over all scene_name in dataset_dir
@@ -1104,7 +1102,7 @@ class run_wonder_hoi:
         
         data_dir = f"{self.dataset_dir}/{scene_name}"
         depth_dir = "depth"
-        if dataset_type == "zed":
+        if "zed" in dataset_type:
             depth_dir = "depth_ZED"
         
         out_dir = f"ply_{dataset_type}"
@@ -1124,7 +1122,7 @@ class run_wonder_hoi:
         os.system(cmd)
 
     def soft_link_depth(self, scene_name, **kwargs):
-        if dataset_type != "zed":
+        if "zed" not in dataset_type:
             print("only support zed dataset type")
             return
         
@@ -2178,7 +2176,7 @@ if __name__ == "__main__":
                 "realsense_convert_data", 
                 "ZED_read_data",
                 "ZED_parse_data",
-                "convert_zed_depth_to_ply",
+                "convert_depth_to_ply",
                 "soft_link_depth",
                 "get_depth_from_foundation_stereo",
                 "estimate_hand_pose",
