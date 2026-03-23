@@ -40,7 +40,7 @@ class run_wonder_hoi:
             },
             "data_convert": {
                 "ZED_parse_data": self.ZED_parse_data,
-                "convert_zed_depth_to_ply": self.convert_zed_depth_to_ply,
+                "convert_depth_to_ply": self.convert_depth_to_ply,
                 "soft_link_depth": self.soft_link_depth,
                 "get_depth_from_foundation_stereo": self.get_depth_from_foundation_stereo,
                 "hot3d_cp_images": self.hot3d_cp_images,
@@ -1098,22 +1098,28 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
-    def convert_zed_depth_to_ply(self, scene_name, **kwargs):
-        #iterate over all scene_name in dataset_dir
-        if dataset_type != "zed":
-            print("only support zed dataset type")
-            return
+    def convert_depth_to_ply(self, scene_name, **kwargs):
         
         self.print_header(f"convert depth to ply for {scene_name}")
+        
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+        depth_dir = "depth"
+        if dataset_type == "zed":
+            depth_dir = "depth_ZED"
+        
+        out_dir = f"ply_{dataset_type}"
+
         if self.rebuild:
-            cmd = f"cd {self.dataset_dir}/{scene_name} && rm -rf ply_zed"
+            cmd = f"rm -rf {self.dataset_dir}/{scene_name}/{out_dir}"
             print(cmd)
             os.system(cmd)
 
         cmd = f"cd {vggt_code_dir} && " \
             f"{self.conda_dir}/envs/vggsfm_tmp/bin/python depth_to_ply.py " \
-            f"--input_dir {self.dataset_dir}/{scene_name} " \
-            f"--ply_interval 10 --use_rgb"
+            f"--input_dir {data_dir} " \
+            f"--depth_dir {depth_dir} " \
+            f"--output_dir {out_dir} " \
+            f"--ply_interval 10 --use_rgb "
         print(cmd)
         os.system(cmd)
 

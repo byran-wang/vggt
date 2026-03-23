@@ -102,7 +102,7 @@ def main(args):
         meta_file = meta_dir / f"{depth_file.stem}.pkl"
         cam_mat = _load_intrinsic(meta_file) if meta_file.is_file() else default_cam_mat
 
-        depth = get_depth(str(depth_file), zfar=args.zfar, depth_scale=args.depth_scale)
+        depth = get_depth(str(depth_file), zfar=args.zfar)
         valid = depth > args.min_depth
         if np.isfinite(args.zfar):
             valid &= depth < args.zfar
@@ -114,8 +114,12 @@ def main(args):
         colors = None
 
         if args.use_rgb:
-            rgb_file = rgb_dir / f"{depth_file.stem}.jpg"
-            if rgb_file.is_file():
+            rgb_file = next(
+                (rgb_dir / f"{depth_file.stem}{ext}" for ext in (".jpg", ".png")
+                 if (rgb_dir / f"{depth_file.stem}{ext}").is_file()),
+                None
+            )
+            if rgb_file is not None and rgb_file.is_file():
                 rgb = cv2.imread(str(rgb_file), cv2.IMREAD_COLOR)
                 if rgb is not None and rgb.shape[:2] == depth.shape:
                     colors = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)[valid]
@@ -137,6 +141,5 @@ if __name__ == "__main__":
     parser.add_argument("--ply_interval", type=int, default=1, help="Save one ply every N frames by frame index.")
     parser.add_argument("--min_depth", type=float, default=0.01, help="Minimum valid depth in meters.")
     parser.add_argument("--zfar", type=float, default=np.inf, help="Maximum valid depth in meters.")
-    parser.add_argument("--depth_scale", type=float, default=0.00012498664727900177, help="Depth decode scale.")
     parser.add_argument("--use_rgb", action="store_true", help="If set, attach rgb colors from rgb/*.jpg.")
     main(parser.parse_args())
