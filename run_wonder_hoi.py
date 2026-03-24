@@ -84,6 +84,7 @@ class run_wonder_hoi:
                 "ho3d_obj_SAM3D_post_opt_GS": self.ho3d_obj_SAM3D_post_opt_GS,
                 "ho3d_obj_SAM3D_post_optimization": self.ho3d_obj_SAM3D_post_optimization,
                 "ho3d_align_SAM3D_mask": self.ho3d_align_SAM3D_mask,
+                "ho3d_align_by_foundation_pose": self.ho3d_align_by_foundation_pose,
                 "ho3d_align_SAM3D_pts": self.ho3d_align_SAM3D_pts,
                 "ho3d_SAM3D_post_process": self.ho3d_SAM3D_post_process,
                 "ho3d_keyframe_optimization": self.ho3d_keyframe_optimization,
@@ -871,6 +872,27 @@ class run_wonder_hoi:
             cmd += f"--vis "
 
         print(cmd)        
+        os.system(cmd)
+
+    def ho3d_align_by_foundation_pose(self, scene_name, **kwargs):
+        self.print_header(f"Align by FoundationPose for {scene_name}")
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+        id = f"{self.seq_config['cond_idx']:04d}"
+        out_dir = f"{self.dataset_dir}/{scene_name}/foundation_pose_align/{id}/"
+
+        if self.rebuild:
+            cmd = f"rm -rf {out_dir}"
+            print(cmd)
+            os.system(cmd)
+
+        cmd = f"cd {vggt_code_dir}/third_party/FoundationPose && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/align_by_foundation_pose.py "
+        cmd += f"--data_dir {data_dir} "
+        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--out_dir {out_dir} "
+        if self.vis:
+            cmd += f"--vis_in_rerun "
+        print(cmd)
         os.system(cmd)
 
     def ho3d_align_SAM3D_pts(self, scene_name, **kwargs):
@@ -2240,6 +2262,7 @@ if __name__ == "__main__":
                 "ho3d_obj_SAM3D_post_opt_GS",
                 "ho3d_obj_SAM3D_post_optimization",
                 "ho3d_align_SAM3D_mask",
+                "ho3d_align_by_foundation_pose",
                 "ho3d_align_SAM3D_pts",
                 "ho3d_SAM3D_post_process",
                 "ho3d_keyframe_optimization",

@@ -86,7 +86,7 @@ def main(args):
     # Load GT mesh
     gt_mesh_dir = data_dir / "gt_mesh"
     mesh = None
-    for name in ("model.obj", "model.ply", "textured.obj"):
+    for name in ("mesh.obj", "textured.obj"):
         candidate = gt_mesh_dir / name
         if candidate.exists():
             mesh = trimesh.load(str(candidate), force="mesh")
