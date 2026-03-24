@@ -16,6 +16,7 @@ from lightglue import LightGlue, SuperPoint
 from lightglue.utils import match_pair
 
 from third_party.utils_simba.utils_simba.depth import (
+    depth2xyzmap,
     get_depth,
     load_filtered_depth,
 )
@@ -314,15 +315,21 @@ def save_points_to_ply(
     points: np.ndarray,
     output_path: str,
     color: Tuple[int, int, int, int] = (255, 255, 255, 255),
+    colors: np.ndarray = None,
 ):
     """Save 3D points to PLY file.
 
     Args:
         points: (N, 3) array of 3D points
         output_path: Path to save PLY file
-        color: RGBA color tuple for all points
+        color: RGBA color tuple for all points (used when colors is None)
+        colors: (N, 3) or (N, 4) per-point colors; overrides color if provided
     """
-    pcd = trimesh.PointCloud(points, colors=np.tile(color, (len(points), 1)))
+    if colors is None:
+        colors = np.tile(color, (len(points), 1))
+    elif colors.shape[1] == 3:
+        colors = np.concatenate([colors, np.full((len(colors), 1), 255, dtype=colors.dtype)], axis=1)
+    pcd = trimesh.PointCloud(points, colors=colors)
     pcd.export(output_path)
     print(f"Saved {len(points)} points to {output_path}")
 
@@ -698,6 +705,19 @@ def main(args):
         valid_sam3d_pts = sam3d_pts_3d[valid_mask]
         save_points_to_ply(valid_cond_pts, os.path.join(args.out_dir, "cond_pts_3d.ply"), color=(0, 255, 0, 255))
         save_points_to_ply(valid_sam3d_pts, os.path.join(args.out_dir, "sam3d_pts_3d.ply"), color=(255, 0, 0, 255))
+
+        # Save full depth point clouds
+        cond_xyz = depth2xyzmap(cond_depth, K_cond)  # (H, W, 3)
+        cond_valid_depth = cond_depth > 0.01
+        cond_depth_pts = cond_xyz[cond_valid_depth]
+        cond_depth_colors = cond_image[cond_valid_depth]  # RGB from image
+        save_points_to_ply(cond_depth_pts, os.path.join(args.out_dir, "cond_depth_pcd.ply"), colors=cond_depth_colors)
+
+        sam3d_xyz = depth2xyzmap(sam3d_depth, K_sam3d)  # (H, W, 3)
+        sam3d_valid_depth = sam3d_depth > 0.01
+        sam3d_depth_pts = sam3d_xyz[sam3d_valid_depth]
+        sam3d_depth_colors = sam3d_image[sam3d_valid_depth]  # RGB from image
+        save_points_to_ply(sam3d_depth_pts, os.path.join(args.out_dir, "sam3d_depth_pcd.ply"), colors=sam3d_depth_colors)
     
     if valid_mask.sum() < 20:
         print("Not enough valid correspondences for alignment")
