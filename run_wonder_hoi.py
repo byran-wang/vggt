@@ -591,7 +591,7 @@ class run_wonder_hoi:
         cmd = f"cd {vggt_code_dir} && "
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_fit_hand_vis.py "
         cmd += f"--data_dir {data_dir} "
-        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
         cmd += f"--interval {self.seq_config['frame_interval']} "
         cmd += f"--hand_mode trans " #(e.g. 'rot', 'trans', 'intrinsic')"
         print(cmd)
@@ -723,7 +723,7 @@ class run_wonder_hoi:
 
     def hot3d_obj_3D_gen(self, scene_name, **kwargs):
         self.print_header(f"Generate object 3D model from Hunyuan for {scene_name}")
-        # id = f"{self.seq_config['cond_idx']:04d}"
+        # id = f"{self._get_best_cond_id(scene_name)}"
         obj_ids = [5]
         for id in obj_ids:
             out_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{id:04d}/"
@@ -1482,8 +1482,8 @@ class run_wonder_hoi:
         cmd += f"--scene_dir {data_dir} "
         cmd += f"--max_frame_num {frame_number * frame_interval -1} --frame_interval {frame_interval} --dataset_type {dataset_type} "
         cmd += f"--output_dir {out_dir} "
-        cmd += f"--cond_index {int(self.seq_config['cond_idx'] / self.seq_config['frame_interval'])} "
-        cmd += f"--cond_index_raw {int(self.seq_config['cond_idx'])} "
+        cmd += f"--cond_index {int(int(self._get_best_cond_id(scene_name)) / self.seq_config['frame_interval'])} "
+        cmd += f"--cond_index_raw {int(self._get_best_cond_id(scene_name))} "
         print(cmd)
         os.system(cmd)
 
@@ -1515,7 +1515,7 @@ class run_wonder_hoi:
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python align_gen_3d.py "
         cmd += f"--input_dir {data_dir} "
         cmd += f"--output_dir {out_dir} "
-        cmd += f"--init_pose_image_idx {int(self.seq_config['cond_idx'] / self.seq_config['frame_interval'])} "
+        cmd += f"--init_pose_image_idx {int(int(self._get_best_cond_id(scene_name)) / self.seq_config['frame_interval'])} "
 
 
         print(cmd)
@@ -1620,7 +1620,7 @@ class run_wonder_hoi:
         frame_interval = self.seq_config["frame_interval"]
         cond_select_strategy = self.seq_config["cond_select_strategy"]
         if self.rebuild:
-            cmd = f" rm -rf {out_dir}/{self.seq_config['cond_idx']:04d} "
+            cmd = f" rm -rf {out_dir}/{self._get_best_cond_id(scene_name)} "
             print(f"{cmd}")
             os.system(cmd)
 
@@ -1628,7 +1628,7 @@ class run_wonder_hoi:
         cmd += f"--image_dir {data_dir} "
         cmd += f"--out_dir {out_dir} "
         cmd += f"--cond_select_strategy {cond_select_strategy} "
-        cmd += f"--cond_view {self.seq_config['cond_idx']} "
+        cmd += f"--cond_view {int(self._get_best_cond_id(scene_name))} "
         cmd += f"--max_frame_num {frame_number * frame_interval -1} --frame_interval {frame_interval} "
         print(f"{cmd}")
         os.system(cmd)
@@ -1650,7 +1650,7 @@ class run_wonder_hoi:
         cmd += f"--data_dir {data_dir} "
         cmd += f"--output_dir {out_dir} "
         cmd += f"--start 0 --end {frame_number * frame_interval - 1} --interval {frame_interval} "
-        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
         print(cmd)
         os.system(cmd)
 
@@ -1672,7 +1672,7 @@ class run_wonder_hoi:
         cmd += f"--data_dir {data_dir} "
         cmd += f"--result_dir {result_dir} "
         cmd += f"--output_dir {out_dir} "
-        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
         cmd += f"--max_steps 3000 "
         cmd += f"--robust_hoi_weight 0.0 " # set to 0.0 to disable robust hoi in neus initialization
         cmd += f"--sam3d_weight 1.0 " # only run sam3d neus initialization without robust hoi
@@ -1693,7 +1693,7 @@ class run_wonder_hoi:
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python3 robust_hoi_pipeline/pipeline_get_corres.py "
         cmd += f"--data_dir {data_dir} "
         cmd += f"--out_dir {out_dir} "
-        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
         print(cmd)
         os.system(cmd)
 
@@ -1734,7 +1734,7 @@ class run_wonder_hoi:
         cmd += f"--data_dir {data_dir} "
         cmd += f"--output_dir {out_dir} "
         cmd += f"--result_dir {result_dir}/ "
-        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
         cmd += f"--max_steps 10000 "
         cmd += f"--robust_hoi_weight 1.0 " # set to 0.0 to disable robust hoi in neus initialization
         cmd += f"--sam3d_weight 0.0 " # only run sam3d neus initialization without robust hoi
@@ -1762,11 +1762,11 @@ class run_wonder_hoi:
         cmd += f"--data_dir {data_dir} "
         cmd += f"--output_dir {out_dir} "
         cmd += f"--result_dir {result_dir}/ "
-        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
         cmd += f"--max_steps 20000 "
         cmd += f"--robust_hoi_weight 1.0 " # set to 0.0 to disable robust hoi in neus initialization
         cmd += f"--sam3d_weight 0.0 " # only run sam3d neus initialization without robust hoi
-        # cmd += f"--gt_pose "
+        cmd += f"--gt_pose "
         if "max_registered_frames" in kwargs:
             cmd += f"--max_registered_frames {int(kwargs['max_registered_frames'])} "
         if export_only:
@@ -1789,7 +1789,7 @@ class run_wonder_hoi:
         cmd += f"--result_folder {out_dir}/pipeline_joint_opt/ "
         cmd += f"--out_dir {out_dir}/pipeline_joint_opt/eval/ "
         cmd += f"--SAM3D_dir {data_dir}/SAM3D_aligned_post_process "
-        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
 
         print(cmd)
         os.system(cmd)     
@@ -1814,7 +1814,7 @@ class run_wonder_hoi:
         cmd += f"--result_folder {result_dir} "
         cmd += f"--out_dir {out_dir} "
         cmd += f"--SAM3D_dir {data_dir}/SAM3D_aligned_post_process "
-        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
         cmd += f"--hand_mode {mode} "
         cmd += f"--render_hand "
         if dataset_type != "ho3d":
@@ -1834,7 +1834,7 @@ class run_wonder_hoi:
             cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_joint_opt_vis.py "
             cmd += f"--data_dir {data_dir} "
             cmd += f"--output_dir {out_dir} "
-            cmd += f"--cond_index {self.seq_config['cond_idx']} "
+            cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
             if dataset_type != "ho3d":
                 cmd += f"--vis_gt 0 "
             print(cmd)
@@ -1850,7 +1850,7 @@ class run_wonder_hoi:
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_joint_opt.py "
         cmd += f"--data_dir {data_dir} "
         cmd += f"--output_dir {out_dir} "
-        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
         cmd += f"--optimize_3D_prior "
         print(cmd)
         os.system(cmd)
@@ -1893,7 +1893,7 @@ class run_wonder_hoi:
             cmd += f"--result_folder {result_dir} "
             cmd += f"--out_dir {out_dir} "
             cmd += f"--SAM3D_dir {data_dir}/SAM3D_aligned_post_process "
-            cmd += f"--cond_index {self.seq_config['cond_idx']} "
+            cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
             cmd += f"--hand_mode {mode} "
             cmd += f"--render_hand "
             cmd += f"--vis_gt 0 "
@@ -1940,7 +1940,7 @@ class run_wonder_hoi:
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_reg_remaining.py "
         cmd += f"--data_dir {data_dir} "
         cmd += f"--output_dir {out_dir} "
-        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
         print(cmd)
         os.system(cmd)
 
@@ -2012,7 +2012,7 @@ class run_wonder_hoi:
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_algin_SAM3D_with_HY.py "
         cmd += f"--data_dir {data_dir} "
         cmd += f"--output_dir {out_dir} "
-        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
         print(cmd)
         os.system(cmd)
 
