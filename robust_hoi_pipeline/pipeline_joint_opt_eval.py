@@ -99,12 +99,8 @@ def build_mesh_object_predictions(
     }
 
 
-def find_joint_opt_mesh_from_ckpt(joint_opt_ckpt: Path):
+def find_joint_opt_mesh_from_ckpt(save_dir: Path):
     """Find an exported NeuS mesh near the fixed checkpoint path."""
-    if not joint_opt_ckpt.exists():
-        return None
-
-    save_dir = joint_opt_ckpt.parent.parent / "save"
     if not save_dir.exists():
         return None
 
@@ -217,23 +213,20 @@ def eval_mesh_chamfer(
     """
     hy_omni_mesh = results_dir.parent / "pipeline_HY_to_SAM3D" / "HY_omni_in_sam3d.obj"
     sam3d_mesh = SAM3D_dir.parent / "SAM3D" / f"{args.cond_index:04d}" / "scene.glb"
-    joint_opt_ckpt = (
-        results_dir.parent / "pipeline_neus_init" / "neus_training" / "joint_opt" / "ckpt" / "epoch=0-step=10000.ckpt"
+    joint_opt_ckpt_dir = (
+        results_dir.parent / "pipeline_neus_global" / "neus_training" / "joint_opt" / "save"
     )
-    joint_opt_mesh = find_joint_opt_mesh_from_ckpt(joint_opt_ckpt)
+    joint_opt_mesh = find_joint_opt_mesh_from_ckpt(joint_opt_ckpt_dir)
 
     mesh_specs = [
         ("sam3d", sam3d_mesh),
-        # ("joint_opt", joint_opt_mesh),
+        ("neus", joint_opt_mesh),
         # ("hy_omni", hy_omni_mesh),
     ]
 
     for prefix, mesh_path in mesh_specs:
         if mesh_path is None or not mesh_path.exists():
-            if prefix == "joint_opt" and joint_opt_ckpt.exists():
-                print(f"Joint-opt checkpoint exists at {joint_opt_ckpt}, but no exported mesh found under save/")
-            else:
-                print(f"[{prefix}] Mesh not found, skip Chamfer evaluation")
+            print(f"[{prefix}] Mesh {mesh_path} not found, skip Chamfer evaluation")
             continue
 
         pred_mesh_data = build_mesh_object_predictions(
