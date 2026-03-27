@@ -279,6 +279,38 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
+    def _get_best_cond_id(self, scene_name) -> str:
+        """Return the 4-digit condition frame id string based on cond_select_strategy.
+
+        - manual: uses seq_config['cond_idx']
+        - auto:   reads best_id.txt written by ho3d_align_SAM3D_pts
+        """
+        strategy = self.seq_config["cond_select_strategy"]
+        if strategy == "manual":
+            return f"{self.seq_config['cond_idx']:04d}"
+        elif strategy == "auto":
+            best_id_path = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/best_id.txt"
+            with open(best_id_path, "r") as f:
+                return f.read().strip()
+        else:
+            raise ValueError(f"Unknown cond_select_strategy: {strategy}")
+
+    def _get_cond_ids(self, scene_name) -> list:
+        """Return the list of 4-digit condition frame id strings based on cond_select_strategy.
+
+        - manual: single-element list from seq_config['cond_idx']
+        - auto:   all ids from frame_list_filtered.txt (candidates scored by ho3d_align_SAM3D_pts)
+        """
+        strategy = self.seq_config["cond_select_strategy"]
+        if strategy == "manual":
+            return [f"{self.seq_config['cond_idx']:04d}"]
+        elif strategy == "auto":
+            frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D/frame_list_filtered.txt"
+            with open(frame_list_file, "r") as f:
+                return [f"{int(line.strip()):04d}" for line in f if line.strip()]
+        else:
+            raise ValueError(f"Unknown cond_select_strategy: {strategy}")
+
     def ho3d_image_to_video(self, data_dir, **kwargs):
         out_video = f"{data_dir}/left.mp4"
 
@@ -554,7 +586,7 @@ class run_wonder_hoi:
         self.print_header(f"hoi pipeline hand visualization for {scene_name}")
         data_dir = f"{self.dataset_dir}/{scene_name}"
         out_dir = f"{vggt_code_dir}/output/{scene_name}"
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
 
         cmd = f"cd {vggt_code_dir} && "
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_fit_hand_vis.py "
@@ -639,7 +671,7 @@ class run_wonder_hoi:
             os.system(cmd)
         # this command should be run in the docker container threestudio with the env py38
             
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
 
         if self.vis:
             cmd = ""
@@ -672,7 +704,7 @@ class run_wonder_hoi:
 
     def obj_3D_gen(self, scene_name, **kwargs):
         self.print_header(f"Generate object 3D model from Hunyuan for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
         out_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{id}/"
                    
         if self.rebuild:
@@ -712,7 +744,7 @@ class run_wonder_hoi:
 
     def ho3d_obj_3D_gen(self, scene_name, **kwargs):
         self.print_header(f"Generate object 3D model from Hunyuan for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
         out_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{id}/"
                    
         if self.rebuild:
@@ -751,14 +783,7 @@ class run_wonder_hoi:
 
     def ho3d_obj_SAM3D_gen(self, scene_name, **kwargs):
         self.print_header(f"Generate object 3D model from SAM3D for {scene_name}")
-        if self.seq_config["cond_select_strategy"] == "manual":
-            image_ids = [f"{self.seq_config['cond_idx']:04d}"]
-        elif self.seq_config["cond_select_strategy"] == "auto":
-            frame_list_file = f"{self.dataset_dir}/{scene_name}/pipeline_preprocess/frame_list_filtered.txt"
-            with open(frame_list_file, "r") as f:
-                image_ids = [f"{int(line.strip()):04d}" for line in f if line.strip()]
-        else:
-            raise ValueError(f"Unknown cond_select_strategy: {self.seq_config['cond_select_strategy']}")
+        image_ids = self._get_cond_ids(scene_name)
             
         print(f"image_ids for SAM3D generation: {image_ids}")
         for id in image_ids:
@@ -795,7 +820,7 @@ class run_wonder_hoi:
 
     def ho3d_obj_SAM3D_post_opt_GS(self, scene_name, **kwargs):
         self.print_header(f"Post-optimize SAM3D Gaussian Splatting for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
         out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D/{id}/"
 
         cmd = f"cd {home_dir}/Documents/project/sam-3d-objects && "
@@ -806,7 +831,7 @@ class run_wonder_hoi:
 
     def ho3d_obj_SAM3D_post_optimization(self, scene_name, **kwargs):
         self.print_header(f"Generate object 3D model from SAM3D for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
         image_path = f"{self.dataset_dir}/{scene_name}/rgb/{id}.jpg"
         depth_path = f"{self.dataset_dir}/{scene_name}/depth/{id}.png"
         mask_path = f"{self.dataset_dir}/{scene_name}/mask_object/{id}.png"
@@ -846,14 +871,7 @@ class run_wonder_hoi:
 
     def ho3d_align_SAM3D_mask(self, scene_name, **kwargs):
         self.print_header(f"Align SAM3D model for {scene_name}")
-        if self.seq_config["cond_select_strategy"] == "manual":
-            image_ids = [f"{self.seq_config['cond_idx']:04d}"]
-        elif self.seq_config["cond_select_strategy"] == "auto":
-            frame_list_file = f"{self.dataset_dir}/{scene_name}/pipeline_preprocess/frame_list_filtered.txt"
-            with open(frame_list_file, "r") as f:
-                image_ids = [f"{int(line.strip()):04d}" for line in f if line.strip()]
-        else:
-            raise ValueError(f"Unknown cond_select_strategy: {self.seq_config['cond_select_strategy']}")
+        image_ids = self._get_cond_ids(scene_name)
 
         print(f"image_ids for SAM3D mask alignment: {image_ids}")
         for id in image_ids:
@@ -880,7 +898,8 @@ class run_wonder_hoi:
     def ho3d_align_by_foundation_pose(self, scene_name, **kwargs):
         self.print_header(f"Align by FoundationPose for {scene_name}")
         data_dir = f"{self.dataset_dir}/{scene_name}"
-        id = f"{self.seq_config['cond_idx']:04d}"
+
+        id = self._get_best_cond_id(scene_name)
         out_dir = f"{self.dataset_dir}/{scene_name}/foundation_pose_align/{id}/"
 
         if self.rebuild:
@@ -889,9 +908,9 @@ class run_wonder_hoi:
             os.system(cmd)
 
         cmd = f"cd {vggt_code_dir}/third_party/FoundationPose && "
-        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/align_by_foundation_pose.py "
+        cmd += f"{self.conda_dir}/envs/foundation_pose/bin/python {vggt_code_dir}/align_by_foundation_pose.py "
         cmd += f"--data_dir {data_dir} "
-        cmd += f"--cond_index {self.seq_config['cond_idx']} "
+        cmd += f"--cond_index {int(id)} "
         cmd += f"--out_dir {out_dir} "
         if self.vis:
             cmd += f"--vis_in_rerun "
@@ -900,14 +919,7 @@ class run_wonder_hoi:
 
     def ho3d_align_SAM3D_pts(self, scene_name, **kwargs):
         self.print_header(f"Align SAM3D model using 3D points for {scene_name}")
-        if self.seq_config["cond_select_strategy"] == "manual":
-            image_ids = [f"{self.seq_config['cond_idx']:04d}"]
-        elif self.seq_config["cond_select_strategy"] == "auto":
-            frame_list_file = f"{self.dataset_dir}/{scene_name}/pipeline_preprocess/frame_list_filtered.txt"
-            with open(frame_list_file, "r") as f:
-                image_ids = [f"{int(line.strip()):04d}" for line in f if line.strip()]
-        else:
-            raise ValueError(f"Unknown cond_select_strategy: {self.seq_config['cond_select_strategy']}")
+        image_ids = self._get_cond_ids(scene_name)
 
         print(f"image_ids for SAM3D pts alignment: {image_ids}")
         scores = {}
@@ -963,7 +975,7 @@ class run_wonder_hoi:
 
     def ho3d_SAM3D_post_process(self, scene_name, **kwargs):
         self.print_header(f"Copy SAM3D results for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
         src_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/{id}/"
         dst_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_post_process/{id}/"
 
@@ -989,7 +1001,7 @@ class run_wonder_hoi:
 
     def align_mesh_image(self, scene_name, **kwargs):
         self.print_header(f"align mesh and image for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
         data_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{id}/"
         out_dir = f"{self.dataset_dir}/{scene_name}/align_mesh_image/{id}/"
 
@@ -1017,7 +1029,7 @@ class run_wonder_hoi:
 
     def get_pts_observed(self, scene_name, **kwargs):
         self.print_header(f"get pts observed for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
         data_dir = f"{self.dataset_dir}/{scene_name}"
         out_dir = f"{self.dataset_dir}/{scene_name}/pts_observed"
 
@@ -1046,7 +1058,7 @@ class run_wonder_hoi:
 
     def align_corres(self, scene_name, **kwargs):
         self.print_header(f"align corres for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
         cond_data_dir = f"{self.dataset_dir}/{scene_name}/align_mesh_image/{id}/"
         query_data_dir = f"{self.dataset_dir}/{scene_name}/pts_observed/"
         out_dir = f"{self.dataset_dir}/{scene_name}/features/"
@@ -1072,7 +1084,7 @@ class run_wonder_hoi:
 
     def align_pcs(self, scene_name, **kwargs):
         self.print_header(f"align pcs for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
         data_dir = f"{self.dataset_dir}/{scene_name}/"
         out_dir = f"{data_dir}/align/"
         
@@ -1103,7 +1115,7 @@ class run_wonder_hoi:
 
     def scale_3D_gen(self, scene_name, **kwargs):
         self.print_header(f"scale 3D gen for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
 
         mesh_file = f"{self.dataset_dir}/{scene_name}/3D_gen/{id}/white_mesh_remesh.obj"
         align_file = f"{self.dataset_dir}/{scene_name}/align/{id}.json"
@@ -1118,7 +1130,7 @@ class run_wonder_hoi:
 
     def mesh2SDF(self, scene_name, **kwargs):
         self.print_header(f"mesh2SDF for {scene_name}")
-        cond_idx = f"{self.seq_config['cond_idx']:04d}"
+        cond_idx = self._get_best_cond_id(scene_name)
 
         data_dir = f"{self.dataset_dir}/{scene_name}/3D_gen/{cond_idx}/"
         out_dir = f"{self.dataset_dir}/{scene_name}/SDF_gen/"
@@ -1138,7 +1150,7 @@ class run_wonder_hoi:
 
     def hunyuan_omni(self, scene_name, **kwargs):
         self.print_header(f"hunyuan omni for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
         data_dir = f"{self.dataset_dir}/{scene_name}/"
         out_dir = f"{data_dir}/hunyuan_omni/"
 
@@ -1548,7 +1560,7 @@ class run_wonder_hoi:
         data_dir = f"{self.dataset_dir}/{scene_name}/"
         result_dir = f"{vggt_code_dir}/output/{scene_name}/results/"
         out_dir = f"{vggt_code_dir}/output/{scene_name}/sdf_optimization/"
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
 
         cmd = "export CC=gcc-11 && export CXX=g++-11 && export CUDAHOSTCXX=g++-11 &&"
         cmd += f"cd {vggt_code_dir}/third_party/instant-nsr-pl && "
@@ -1644,7 +1656,7 @@ class run_wonder_hoi:
 
     def hoi_pipeline_data_preprocess_sam3d_neus(self, scene_name, **kwargs):
         self.print_header(f"hoi pipeline sam3d neus initialization for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
         data_dir = f"{self.dataset_dir}/{scene_name}"
         result_dir = f"{vggt_code_dir}/output/{scene_name}/"
         out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_post_process/{id}/neus/"
@@ -1815,7 +1827,7 @@ class run_wonder_hoi:
         self.print_header(f"hoi pipeline joint optimization for {scene_name}")
         data_dir = f"{self.dataset_dir}/{scene_name}"
         out_dir = f"{vggt_code_dir}/output/{scene_name}"
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
 
         if self.vis:
             cmd = f"cd {vggt_code_dir} && "
@@ -1953,7 +1965,7 @@ class run_wonder_hoi:
 
     def hoi_pipeline_HY_gen(self, scene_name, **kwargs):
         self.print_header(f"Generate object 3D model from Hunyuan for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
         out_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_hunyuan_3d/"
         data_dir = f"{self.dataset_dir}/{scene_name}"
                    
@@ -1973,7 +1985,7 @@ class run_wonder_hoi:
 
     def hoi_pipeline_HY_omni_gen(self, scene_name, **kwargs):
         self.print_header(f"hunyuan omni for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
+        id = self._get_best_cond_id(scene_name)
         data_dir = f"{self.dataset_dir}/{scene_name}/"
         out_dir = f"{vggt_code_dir}/output/{scene_name}/"
         save_dir = f"{out_dir}/pipeline_hunyuan_omni/"
