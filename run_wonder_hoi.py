@@ -846,33 +846,36 @@ class run_wonder_hoi:
 
     def ho3d_align_SAM3D_mask(self, scene_name, **kwargs):
         self.print_header(f"Align SAM3D model for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
-        image_path = f"{self.dataset_dir}/{scene_name}/rgb/{id}.jpg"
-        depth_path = f"{self.dataset_dir}/{scene_name}/depth/{id}.png"
-        mask_path = f"{self.dataset_dir}/{scene_name}/mask_object/{id}.png"
-        meta_path = f"{self.dataset_dir}/{scene_name}/meta/{id}.pkl"
+        if self.seq_config["cond_select_strategy"] == "manual":
+            image_ids = [f"{self.seq_config['cond_idx']:04d}"]
+        elif self.seq_config["cond_select_strategy"] == "auto":
+            frame_list_file = f"{self.dataset_dir}/{scene_name}/pipeline_preprocess/frame_list_filtered.txt"
+            with open(frame_list_file, "r") as f:
+                image_ids = [f"{int(line.strip()):04d}" for line in f if line.strip()]
+        else:
+            raise ValueError(f"Unknown cond_select_strategy: {self.seq_config['cond_select_strategy']}")
 
+        print(f"image_ids for SAM3D mask alignment: {image_ids}")
+        for id in image_ids:
+            out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_mask/{id}/"
 
-        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_mask/{id}/"
-                   
-        if self.rebuild:
-            cmd = f"rm -rf {out_dir}/*"
+            if self.rebuild:
+                cmd = f"rm -rf {out_dir}/*"
+                print(cmd)
+                os.system(cmd)
+
+            cmd = f"cd {home_dir}/Documents/project/vggt && "
+            cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python align_SAM3D_mask.py "
+            cmd += f"--data-dir {self.dataset_dir}/{scene_name}/ "
+            cmd += f"--hand-pose-suffix trans "
+            cmd += f"--cond-index {int(id)} "
+            cmd += f"--out-dir {out_dir} "
+
+            if self.vis:
+                cmd += f"--vis "
+
             print(cmd)
             os.system(cmd)
-
-        # python example.py --image_file $IMAGE_FILE --output_dir $scene_output_dir
-        cmd = f"cd {home_dir}/Documents/project/vggt && "
-        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python align_SAM3D_mask.py "
-        cmd += f"--data-dir {self.dataset_dir}/{scene_name}/ "
-        cmd += f"--hand-pose-suffix trans "
-        cmd += f"--cond-index {self.seq_config['cond_idx']} "
-        cmd += f"--out-dir {out_dir} "
-
-        if self.vis:
-            cmd += f"--vis "
-
-        print(cmd)        
-        os.system(cmd)
 
     def ho3d_align_by_foundation_pose(self, scene_name, **kwargs):
         self.print_header(f"Align by FoundationPose for {scene_name}")
@@ -897,27 +900,66 @@ class run_wonder_hoi:
 
     def ho3d_align_SAM3D_pts(self, scene_name, **kwargs):
         self.print_header(f"Align SAM3D model using 3D points for {scene_name}")
-        id = f"{self.seq_config['cond_idx']:04d}"
-        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/{id}/"
-                   
-        if self.rebuild:
-            cmd = f"rm -rf {out_dir}/*"
+        if self.seq_config["cond_select_strategy"] == "manual":
+            image_ids = [f"{self.seq_config['cond_idx']:04d}"]
+        elif self.seq_config["cond_select_strategy"] == "auto":
+            frame_list_file = f"{self.dataset_dir}/{scene_name}/pipeline_preprocess/frame_list_filtered.txt"
+            with open(frame_list_file, "r") as f:
+                image_ids = [f"{int(line.strip()):04d}" for line in f if line.strip()]
+        else:
+            raise ValueError(f"Unknown cond_select_strategy: {self.seq_config['cond_select_strategy']}")
+
+        print(f"image_ids for SAM3D pts alignment: {image_ids}")
+        scores = {}
+        for id in image_ids:
+            out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/{id}/"
+
+            if self.rebuild:
+                cmd = f"rm -rf {out_dir}/*"
+                print(cmd)
+                os.system(cmd)
+
+            cmd = f"cd {home_dir}/Documents/project/vggt && "
+            cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python align_SAM3D_pts.py "
+            cmd += f"--data-dir {self.dataset_dir}/{scene_name}/ "
+            cmd += f"--cond-index {int(id)} "
+            cmd += f"--SAM3D-index {int(id)} "
+            cmd += f"--out-dir {out_dir} "
+
+            if self.vis:
+                cmd += f"--vis "
             print(cmd)
             os.system(cmd)
+            # Read score from alignment.json
+            alignment_json = os.path.join(out_dir, "alignment.json")
+            if os.path.exists(alignment_json):
+                with open(alignment_json, "r") as f:
+                    alignment = json.load(f)
+                scores[id] = alignment.get("mean_error", float("inf"))
+                print(f"  id={id} mean_error={scores[id]:.4f}")
+            else:
+                scores[id] = float("inf")
+                print(f"  id={id} alignment.json not found, score=inf")
 
-        # python example.py --image_file $IMAGE_FILE --output_dir $scene_output_dir
-        cmd = f"cd {home_dir}/Documents/project/vggt && "
-        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python align_SAM3D_pts.py "
-        cmd += f"--data-dir {self.dataset_dir}/{scene_name}/ "
-        # cmd += f"--cond-index {int(self.seq_config['cond_idx']/self.seq_config['frame_interval']) * self.seq_config['frame_interval']} "
-        cmd += f"--cond-index {self.seq_config['cond_idx']} "
-        cmd += f"--SAM3D-index {self.seq_config['cond_idx']} "
-        cmd += f"--out-dir {out_dir} "
+        if self.seq_config["cond_select_strategy"] == "auto":
+            # Save scores
+            scores_path = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/scores.json"
+            with open(scores_path, "w") as f:
+                json.dump(scores, f, indent=2)
+            print(f"Saved scores to {scores_path}")
 
-        if self.vis:
-            cmd += f"--vis "        
-        print(cmd)
-        os.system(cmd)
+            # Select best image_id (lowest mean_error)
+            best_id = min(scores, key=lambda k: scores[k])
+            best_id_path = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/best_id.txt"
+            with open(best_id_path, "w") as f:
+                f.write(best_id)
+            print(f"Best image_id: {best_id} (mean_error={scores[best_id]:.4f}), saved to {best_id_path}")
+
+            # Print sorted ranking
+            sorted_ids = sorted(scores, key=lambda k: scores[k])
+            print("Ranking (best to worst):")
+            for rank, sid in enumerate(sorted_ids):
+                print(f"  {rank+1}. id={sid} mean_error={scores[sid]:.4f}")
 
     def ho3d_SAM3D_post_process(self, scene_name, **kwargs):
         self.print_header(f"Copy SAM3D results for {scene_name}")
