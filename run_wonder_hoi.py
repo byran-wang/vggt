@@ -1766,7 +1766,7 @@ class run_wonder_hoi:
         cmd += f"--max_steps 20000 "
         cmd += f"--robust_hoi_weight 1.0 " # set to 0.0 to disable robust hoi in neus initialization
         cmd += f"--sam3d_weight 0.0 " # only run sam3d neus initialization without robust hoi
-        cmd += f"--gt_pose "
+        # cmd += f"--gt_pose "
         if "max_registered_frames" in kwargs:
             cmd += f"--max_registered_frames {int(kwargs['max_registered_frames'])} "
         if export_only:
