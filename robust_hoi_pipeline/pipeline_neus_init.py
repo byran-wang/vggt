@@ -241,7 +241,7 @@ def main(args):
         masks_hand=masks_hand_keyframes,
     )
 
-    neus_ckpt, neus_mesh = run_neus_training(
+    neus_ckpt, neus_mesh, _ = run_neus_training(
         neus_data_dir,
         config_path="configs/neus-pipeline.yaml",
         max_steps=args.max_steps,
