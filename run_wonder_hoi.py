@@ -1763,7 +1763,7 @@ class run_wonder_hoi:
         cmd += f"--output_dir {out_dir} "
         cmd += f"--result_dir {result_dir}/ "
         cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
-        cmd += f"--max_steps 20000 "
+        cmd += f"--max_steps 2000 "
         cmd += f"--robust_hoi_weight 1.0 " # set to 0.0 to disable robust hoi in neus initialization
         cmd += f"--sam3d_weight 0.0 " # only run sam3d neus initialization without robust hoi
         # cmd += f"--gt_pose "
