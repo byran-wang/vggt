@@ -96,7 +96,7 @@ system:
     lambda_rgb_mse: 10.        # MSE between rendered and GT RGB
     lambda_rgb_l1: 0.          # L1 between rendered and GT RGB
     lambda_mask: 0.           # BCE(opacity, gt_mask) — supervise opacity with GT foreground mask
-    lambda_eikonal: 2.0        # (|∇sdf| - 1)^2 — enforce unit-norm SDF gradient (valid distance field)
+    lambda_eikonal: 0.3        # (|∇sdf| - 1)^2 — enforce unit-norm SDF gradient (valid distance field)
     lambda_curvature: 0.       # |∇²sdf| — penalize high-curvature surfaces (smoothing)
     lambda_sparsity: 0.0       # exp(-sparsity_scale * |sdf|) — push SDF away from near-zero fog
     lambda_distortion: 0.      # MipNeRF360 distortion loss — concentrate density, reduce floaters
