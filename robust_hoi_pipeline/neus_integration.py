@@ -255,8 +255,6 @@ def run_neus_training(
         config.dataset.root_dir = str(neus_data_dir)
         config.trainer.max_steps = max_steps
         config.checkpoint.every_n_train_steps = max_steps
-        config.ckpt_dir = os.path.join(str(output_dir), config.trial_name, "ckpt")
-        config.save_dir = os.path.join(str(output_dir), config.trial_name, "save")
         config.dataset.robust_hoi_weight = robust_hoi_weight
         config.dataset.sam3d_weight = sam3d_weight
         if sam3d_root_dir and Path(sam3d_root_dir).exists() and sam3d_weight > 0.0:
@@ -269,11 +267,8 @@ def run_neus_training(
     pl.seed_everything(config.get("seed", 42))
     dm = neus_datasets.make(config.dataset.name, config.dataset)
 
-    # steps actually trained this call (used for checkpoint interval)
-    steps_this_run = max_steps - (int(_get_checkpoint_global_step(resume_ckpt) or 0))
-
     callbacks = [
-        ModelCheckpoint(dirpath=config.ckpt_dir, save_top_k=-1, every_n_train_steps=steps_this_run),
+        ModelCheckpoint(dirpath=config.ckpt_dir, **config.checkpoint),
         LearningRateMonitor(logging_interval="step"),
         CustomProgressBar(refresh_rate=1),
     ]
@@ -308,21 +303,14 @@ def run_neus_training(
         system.export()
     else:
         print(f"[NeuS] Training: max_steps={max_steps}, resume={'yes' if resume_ckpt else 'no'}")
-        import time
-        t_fit_start = time.time()
         if resume_ckpt:
             trainer.fit(system, datamodule=dm, ckpt_path=resume_ckpt)
         else:
             trainer.fit(system, datamodule=dm)
-        t_fit = time.time() - t_fit_start
-        print(f"[NeuS profile] trainer.fit: {t_fit:.1f}s")
 
         # Export mesh
-        t_export_start = time.time()
         system.cuda()
         system.export()
-        t_export = time.time() - t_export_start
-        print(f"[NeuS profile] mesh export: {t_export:.1f}s")
 
     # ------------------------------------------------------------------
     # Update cache

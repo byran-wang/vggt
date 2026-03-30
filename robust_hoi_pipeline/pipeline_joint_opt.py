@@ -2205,8 +2205,6 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         reset_neus_cache,
         run_neus_training,
         save_neus_mesh,
-        _neus_cache,
-        _get_checkpoint_global_step,
     )
 
     args = _build_default_joint_opt_args(output_dir, cond_idx)
@@ -2443,18 +2441,8 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             # Exclude next_frame_idx — not fully optimized yet and may contain outliers.
             keyframe_local_indices = keyframe_local_indices[keyframe_local_indices != next_frame_idx]
             if keyframe_local_indices.size > 0:
-                # Resume from previous checkpoint if available, otherwise train from scratch
-                neus_increment = 500  # steps per new batch of keyframes
-                neus_fresh_steps = 3000  # steps for first training
-                neus_warmup_steps = 500  # must match system.warmup_steps in neus-pipeline.yaml
-                prev_ckpt = _neus_cache.get("ckpt_path")
-                prev_step = _get_checkpoint_global_step(prev_ckpt)
-                if prev_step is not None:
-                    neus_total_steps = max(prev_step + neus_increment, neus_warmup_steps + 1)
-                    print(f"[NeuS] Resuming from step {prev_step}, training to step {neus_total_steps}")
-                else:
-                    neus_total_steps = neus_fresh_steps
-                    print(f"[NeuS] Fresh training for {neus_total_steps} steps")
+                # neus_total_steps = args.neus_init_steps
+                neus_total_steps = 3000 # hardcoded
                 o2c_keyframes = image_info_work["extrinsics"][keyframe_local_indices].astype(np.float32)
                 K_keyframes = intrinsics[keyframe_local_indices].astype(np.float32)
                 images_keyframes = [preprocessed_data["images"][i] for i in keyframe_local_indices]
@@ -2465,8 +2453,6 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 )
                 depths_keyframes = [preprocessed_data["depths"][i] for i in keyframe_local_indices]
 
-                import time
-                t_prepare_start = time.time()
                 prepare_neus_data(
                     images=images_keyframes,
                     masks=masks_keyframes,
@@ -2476,10 +2462,8 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                     neus_data_dir=neus_data_dir,
                     masks_hand=masks_hand_keyframes,
                 )
-                t_prepare = time.time() - t_prepare_start
-                
 
-                t_train_start = time.time()
+                reset_neus_cache()
                 neus_ckpt, neus_mesh_path = run_neus_training(
                     neus_data_dir,
                     config_path="configs/neus-pipeline.yaml",
@@ -2490,11 +2474,6 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                     robust_hoi_weight=1.0,
                     sam3d_weight=0.0,
                 )
-                t_train = time.time() - t_train_start
-                actual_steps = neus_total_steps - (prev_step or 0)
-                time_per_step = t_train / max(actual_steps, 1)
-                print(f"[NeuS profile] prepare_neus_data: {t_prepare:.1f}s ({len(keyframe_local_indices)} keyframes)")
-                print(f"[NeuS profile] training + export: {t_train:.1f}s ({actual_steps} steps, {time_per_step:.3f}s/step, {1/time_per_step:.1f} steps/s)")
                 if neus_mesh_path is not None and Path(neus_mesh_path).exists():
                     import trimesh
                     # Evict old NeuS estimator from cache before replacing the mesh
