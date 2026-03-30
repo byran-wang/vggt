@@ -73,6 +73,7 @@ def main(args):
     depth_dir = input_dir / args.depth_dir
     meta_dir = input_dir / args.meta_dir
     rgb_dir = input_dir / args.rgb_dir
+    mask_dir = input_dir / args.mask_dir if args.mask_depth else None
     output_dir = input_dir / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -103,6 +104,14 @@ def main(args):
         cam_mat = _load_intrinsic(meta_file) if meta_file.is_file() else default_cam_mat
 
         depth = get_depth(str(depth_file), zfar=args.zfar)
+
+        if mask_dir is not None:
+            mask_file = mask_dir / f"{depth_file.stem}.png"
+            if mask_file.is_file():
+                mask = cv2.imread(str(mask_file), cv2.IMREAD_GRAYSCALE)
+                if mask is not None and mask.shape == depth.shape:
+                    depth[mask == 0] = 0
+
         valid = depth > args.min_depth
         if np.isfinite(args.zfar):
             valid &= depth < args.zfar
@@ -142,4 +151,6 @@ if __name__ == "__main__":
     parser.add_argument("--min_depth", type=float, default=0.01, help="Minimum valid depth in meters.")
     parser.add_argument("--zfar", type=float, default=np.inf, help="Maximum valid depth in meters.")
     parser.add_argument("--use_rgb", action="store_true", help="If set, attach rgb colors from rgb/*.jpg.")
+    parser.add_argument("--mask_depth", action="store_true", help="If set, apply mask from mask_dir to zero out depth.")
+    parser.add_argument("--mask_dir", type=str, default="mask", help="Mask folder name under input_dir.")
     main(parser.parse_args())

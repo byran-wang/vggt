@@ -1204,6 +1204,7 @@ class run_wonder_hoi:
             depth_dir = "depth_ZED"
         
         out_dir = f"ply_{dataset_type}"
+        mask_dir = "mask_object"
 
         if self.rebuild:
             cmd = f"rm -rf {self.dataset_dir}/{scene_name}/{out_dir}"
@@ -1215,7 +1216,8 @@ class run_wonder_hoi:
             f"--input_dir {data_dir} " \
             f"--depth_dir {depth_dir} " \
             f"--output_dir {out_dir} " \
-            f"--ply_interval 10 --use_rgb "
+            f"--mask_dir {mask_dir} " \
+            f"--ply_interval 10 --use_rgb --mask_depth"
         print(cmd)
         os.system(cmd)
 
