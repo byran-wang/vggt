@@ -82,41 +82,31 @@ def prepare_neus_data(
     assert extrinsics_o2c.shape[0] == n_kf
     assert intrinsics.shape[0] == n_kf
 
-    # Write images, masks, depths — skip files that already exist
-    skipped = 0
+    # Write images, masks, depths
     for i in range(n_kf):
         fname = f"{i:04d}.png"
 
         # RGB image
-        img_path = img_dir / fname
-        if images[i] is not None and not img_path.exists():
-            Image.fromarray(images[i]).save(str(img_path))
+        if images[i] is not None:
+            Image.fromarray(images[i]).save(str(img_dir / fname))
 
         # mask: object mask only
-        mask_path = mask_dir / fname
-        if masks[i] is not None and not mask_path.exists():
+        if masks[i] is not None:
             mask = masks[i]
             if mask.ndim == 3:
                 mask = mask[:, :, 0]
-            Image.fromarray(mask).save(str(mask_path))
+            Image.fromarray(mask).save(str(mask_dir / fname))
 
         # hand mask
-        hand_mask_path = mask_hand_dir / fname
-        if masks_hand is not None and masks_hand[i] is not None and not hand_mask_path.exists():
+        if masks_hand is not None and masks_hand[i] is not None:
             hand_mask = masks_hand[i]
             if hand_mask.ndim == 3:
                 hand_mask = hand_mask[:, :, 0]
-            Image.fromarray(hand_mask).save(str(hand_mask_path))
+            Image.fromarray(hand_mask).save(str(mask_hand_dir / fname))
 
         # Depth (24-bit encoded PNG)
-        depth_path = depth_dir / fname
-        if depths[i] is not None and not depth_path.exists():
-            save_depth(depths[i], str(depth_path))
-        else:
-            skipped += 1
-
-    if skipped:
-        print(f"[NeuS] prepare_neus_data: skipped {skipped}/{n_kf} frames already on disk")
+        if depths[i] is not None:
+            save_depth(depths[i], str(depth_dir / fname))
 
     # Write key_frame_idx.txt (all frames are keyframes in this context)
     kf_idx_path = neus_data_dir / "key_frame_idx.txt"
