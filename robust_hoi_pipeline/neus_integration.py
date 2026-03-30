@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
+from utils_simba.depth import save_depth
 
 
 # ---------------------------------------------------------------------------
@@ -35,25 +36,6 @@ def reset_neus_cache() -> None:
     """Drop the cached in-process NeuS system and resume checkpoint."""
     _neus_cache.clear()
 
-
-# Depth encoding scale (matches utils_simba.depth)
-_DEPTH_SCALE = 0.00012498664727900177
-
-
-def _save_depth_png(depth: np.ndarray, path: str) -> None:
-    """Save depth as 24-bit encoded PNG (3-channel uint8), matching utils_simba format."""
-    import cv2
-
-    depth_scale_inv = 1.0 / _DEPTH_SCALE
-    max_depth = (2**24) * _DEPTH_SCALE
-    depth = depth.clip(0, max_depth)
-
-    depth_scaled = (depth * depth_scale_inv).astype(np.uint32)
-    encoded = np.zeros((*depth.shape[:2], 3), dtype=np.uint8)
-    encoded[..., 2] = np.bitwise_and(depth_scaled, 0xFF)
-    encoded[..., 1] = np.bitwise_and(np.right_shift(depth_scaled, 8), 0xFF)
-    encoded[..., 0] = np.bitwise_and(np.right_shift(depth_scaled, 16), 0xFF)
-    cv2.imwrite(path, encoded)
 
 
 def prepare_neus_data(
@@ -129,7 +111,7 @@ def prepare_neus_data(
         # Depth (24-bit encoded PNG)
         depth_path = depth_dir / fname
         if depths[i] is not None and not depth_path.exists():
-            _save_depth_png(depths[i], str(depth_path))
+            save_depth(depths[i], str(depth_path))
         else:
             skipped += 1
 

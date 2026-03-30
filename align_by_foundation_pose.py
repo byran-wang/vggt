@@ -7,6 +7,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import trimesh
+from utils_simba.depth import get_depth
 
 # Add FoundationPose to path so estimater/Utils are importable
 sys.path.insert(0, str(Path(__file__).parent / "third_party" / "FoundationPose"))
@@ -31,17 +32,6 @@ def _load_pickle(path):
             return _Compat(f).load()
 
 
-def load_depth(depth_path):
-    """24-bit encoded depth PNG → metres."""
-    depth_scale = 0.00012498664727900177
-    raw = cv2.imread(str(depth_path), cv2.IMREAD_UNCHANGED)
-    if raw is None:
-        raise FileNotFoundError(f"Depth not found: {depth_path}")
-    if raw.ndim == 3:
-        depth = (raw[..., 0] * 256.0 * 256.0 + raw[..., 1] * 256.0 + raw[..., 2]) * depth_scale
-    else:
-        depth = raw.astype(np.float32) * depth_scale
-    return depth.astype(np.float32)
 
 
 def load_intrinsics(meta_path):
@@ -66,7 +56,7 @@ def main(args):
     rgb = cv2.cvtColor(cv2.imread(str(rgb_path)), cv2.COLOR_BGR2RGB)
 
     # Load depth
-    depth = load_depth(data_dir / "depth" / f"{fid}.png")
+    depth = get_depth(str(data_dir / "depth" / f"{fid}.png"))
 
     # Resize depth to match rgb if needed
     if depth.shape[:2] != rgb.shape[:2]:
