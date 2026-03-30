@@ -101,7 +101,7 @@ system:
     lambda_sparsity: 0.0       # exp(-sparsity_scale * |sdf|) — push SDF away from near-zero fog
     lambda_distortion: 0.      # MipNeRF360 distortion loss — concentrate density, reduce floaters
     lambda_opaque: 0.         # BCE(opacity, opacity) = entropy — push opacity toward 0 or 1
-    lambda_depth: 1.         # L1 between rendered and GT depth (if available)
+    lambda_depth: 0.         # L1 between rendered and GT depth (if available)
     sparsity_scale: 1.         # Controls sharpness of sparsity penalty (larger = tighter near-surface)
   optimizer:
     name: AdamW
