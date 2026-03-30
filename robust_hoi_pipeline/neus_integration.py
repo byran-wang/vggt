@@ -327,20 +327,9 @@ def run_neus_training(
         t_fit = time.time() - t_fit_start
         print(f"[NeuS profile] trainer.fit: {t_fit:.1f}s")
 
-        # Export mesh — build trimesh in-memory, skip disk save+load
+        # Export mesh
         t_export_start = time.time()
         system.cuda()
-        mesh_dict = system.model.export(system.config.export)
-        import trimesh as _trimesh
-        v = mesh_dict["v_pos"].cpu().numpy() if hasattr(mesh_dict["v_pos"], "cpu") else mesh_dict["v_pos"]
-        f = mesh_dict["t_pos_idx"].cpu().numpy() if hasattr(mesh_dict["t_pos_idx"], "cpu") else mesh_dict["t_pos_idx"]
-        colors = None
-        if "v_rgb" in mesh_dict and mesh_dict["v_rgb"] is not None:
-            colors = mesh_dict["v_rgb"].cpu().numpy() if hasattr(mesh_dict["v_rgb"], "cpu") else mesh_dict["v_rgb"]
-            colors = (colors * 255).clip(0, 255).astype(np.uint8)
-        neus_mesh_in_memory = _trimesh.Trimesh(vertices=v, faces=f, vertex_colors=colors, process=False)
-        _neus_cache["mesh"] = neus_mesh_in_memory
-        # Still save to disk for debugging / downstream use
         system.export()
         t_export = time.time() - t_export_start
         print(f"[NeuS profile] mesh export: {t_export:.1f}s")
@@ -355,7 +344,7 @@ def run_neus_training(
     print(f"[NeuS] Latest checkpoint: {latest_ckpt}")
     print(f"[NeuS] Exported mesh: {latest_mesh}")
 
-    return latest_ckpt, latest_mesh, _neus_cache.get("mesh")
+    return latest_ckpt, latest_mesh
 
 
 def _find_latest_checkpoint(output_dir: Path) -> Optional[str]:
