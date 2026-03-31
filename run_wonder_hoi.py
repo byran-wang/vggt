@@ -81,6 +81,7 @@ class run_wonder_hoi:
                 "ho3d_condition_id": self.ho3d_condition_id,
                 "ho3d_obj_SAM3D_gen": self.ho3d_obj_SAM3D_gen,
                 "ho3d_obj_SAM3D_filter_2D": self.ho3d_obj_SAM3D_filter_2D,
+                "ho3d_obj_SAM3D_filter_3D": self.ho3d_obj_SAM3D_filter_3D,
                 "ho3d_obj_SAM3D_post_opt_GS": self.ho3d_obj_SAM3D_post_opt_GS,
                 "ho3d_obj_SAM3D_post_optimization": self.ho3d_obj_SAM3D_post_optimization,
                 "ho3d_align_SAM3D_mask": self.ho3d_align_SAM3D_mask,
@@ -295,7 +296,7 @@ class run_wonder_hoi:
         else:
             raise ValueError(f"Unknown cond_select_strategy: {strategy}")
 
-    def _get_cond_ids(self, scene_name) -> list:
+    def _get_cond_ids(self, frame_list_file) -> list:
         """Return the list of 4-digit condition frame id strings based on cond_select_strategy.
 
         - manual: single-element list from seq_config['cond_idx']
@@ -305,7 +306,6 @@ class run_wonder_hoi:
         if strategy == "manual":
             return [f"{self.seq_config['cond_idx']:04d}"]
         elif strategy == "auto":
-            frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D/frame_list_filtered.txt"
             with open(frame_list_file, "r") as f:
                 return [f"{int(line.strip()):04d}" for line in f if line.strip()]
         else:
@@ -783,7 +783,8 @@ class run_wonder_hoi:
 
     def ho3d_obj_SAM3D_gen(self, scene_name, **kwargs):
         self.print_header(f"Generate object 3D model from SAM3D for {scene_name}")
-        image_ids = self._get_cond_ids(scene_name)
+        frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D/frame_list_after_depth_filtered.txt"
+        image_ids = self._get_cond_ids(frame_list_file)
             
         print(f"image_ids for SAM3D generation: {image_ids}")
         for id in image_ids:
@@ -818,6 +819,20 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
+    def ho3d_obj_SAM3D_post_opt_GS(self, scene_name, **kwargs):
+        self.print_header(f"Post-optimize SAM3D Gaussian Splatting for {scene_name}")
+        id = self._get_best_cond_id(scene_name)
+        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D/{id}/"
+
+        cmd = f"cd {home_dir}/Documents/project/sam-3d-objects && "
+        cmd += f"LIDRA_SKIP_INIT=1 {self.conda_dir}/envs/sam3d-objects/bin/python post_opt_GS.py "
+        cmd += f"--out-dir {out_dir} "
+        print(cmd)
+        os.system(cmd)
+
+    def ho3d_obj_SAM3D_filter_3D(self, scene_name, **kwargs):
+        self.print_header(f"Filter frames by 3D optical center distance for SAM3D for {scene_name}")
+        cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_filter_3D.py "
         cmd += f"--dataset_dir {self.dataset_dir} "
         cmd += f"--scene_name {scene_name} "
         print(cmd)
@@ -876,7 +891,8 @@ class run_wonder_hoi:
 
     def ho3d_align_SAM3D_mask(self, scene_name, **kwargs):
         self.print_header(f"Align SAM3D model for {scene_name}")
-        image_ids = self._get_cond_ids(scene_name)
+        frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D/frame_list_after_3d_filtered.txt"
+        image_ids = self._get_cond_ids(frame_list_file)
 
         print(f"image_ids for SAM3D mask alignment: {image_ids}")
         for id in image_ids:
@@ -924,7 +940,8 @@ class run_wonder_hoi:
 
     def ho3d_align_SAM3D_pts(self, scene_name, **kwargs):
         self.print_header(f"Align SAM3D model using 3D points for {scene_name}")
-        image_ids = self._get_cond_ids(scene_name)
+        frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D/frame_list_after_3d_filtered.txt"
+        image_ids = self._get_cond_ids(frame_list_file)
 
         print(f"image_ids for SAM3D pts alignment: {image_ids}")
         scores = {}
@@ -2319,7 +2336,8 @@ if __name__ == "__main__":
                 "ho3d_obj_3D_gen",
                 "ho3d_condition_id",
                 "ho3d_obj_SAM3D_gen",
-                "ho3d_obj_SAM3D_filter_frames",
+                "ho3d_obj_SAM3D_filter_2D",
+                "ho3d_obj_SAM3D_filter_3D",
                 "ho3d_obj_SAM3D_post_opt_GS",
                 "ho3d_obj_SAM3D_post_optimization",
                 "ho3d_align_SAM3D_mask",
