@@ -26,7 +26,7 @@ python run_wonder_hoi.py --execute_list data_convert --process_list convert_dept
 # get the hand and object mask by sam3
 python run_wonder_hoi.py --execute_list data_convert --process_list ho3d_get_obj_mask ho3d_get_hand_mask --seq_list $seq_list --rebuild
 ####Note: following steps run on local pc with 32 GB RAM.
-python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_filter_frames ho3d_obj_SAM3D_gen --seq_list $seq_list
+python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_filter_2D ho3d_obj_SAM3D_gen ho3d_obj_SAM3D_filter_3D --seq_list $seq_list
 
 ####Note: following steps can be run on server, since they do not need the monitor. 
 # Remember to check the depth *.ply files in ply_fs by Meshlab after get_depth_from_foundation_stereo.
