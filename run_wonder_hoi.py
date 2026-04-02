@@ -82,6 +82,7 @@ class run_wonder_hoi:
                 "ho3d_obj_SAM3D_gen": self.ho3d_obj_SAM3D_gen,
                 "ho3d_obj_SAM3D_filter_2D": self.ho3d_obj_SAM3D_filter_2D,
                 "ho3d_obj_SAM3D_filter_3D": self.ho3d_obj_SAM3D_filter_3D,
+                "ho3d_obj_SAM3D_filter_3D_vis": self.ho3d_obj_SAM3D_filter_3D_vis,
                 "ho3d_obj_SAM3D_post_opt_GS": self.ho3d_obj_SAM3D_post_opt_GS,
                 "ho3d_obj_SAM3D_post_optimization": self.ho3d_obj_SAM3D_post_optimization,
                 "ho3d_align_SAM3D_mask": self.ho3d_align_SAM3D_mask,
@@ -833,6 +834,14 @@ class run_wonder_hoi:
     def ho3d_obj_SAM3D_filter_3D(self, scene_name, **kwargs):
         self.print_header(f"Filter frames by 3D optical center distance for SAM3D for {scene_name}")
         cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_filter_3D.py "
+        cmd += f"--dataset_dir {self.dataset_dir} "
+        cmd += f"--scene_name {scene_name} "
+        print(cmd)
+        os.system(cmd)
+
+    def ho3d_obj_SAM3D_filter_3D_vis(self, scene_name, **kwargs):
+        self.print_header(f"Visualize 3D-filtered SAM3D frames in Rerun for {scene_name}")
+        cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_filter_3D_vis.py "
         cmd += f"--dataset_dir {self.dataset_dir} "
         cmd += f"--scene_name {scene_name} "
         print(cmd)
@@ -2338,6 +2347,7 @@ if __name__ == "__main__":
                 "ho3d_obj_SAM3D_gen",
                 "ho3d_obj_SAM3D_filter_2D",
                 "ho3d_obj_SAM3D_filter_3D",
+                "ho3d_obj_SAM3D_filter_3D_vis",
                 "ho3d_obj_SAM3D_post_opt_GS",
                 "ho3d_obj_SAM3D_post_optimization",
                 "ho3d_align_SAM3D_mask",
