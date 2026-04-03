@@ -17,7 +17,7 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
 from utils_simba.depth import depth2xyzmap
-from utils_simba.rerun import log_mesh
+from utils_simba.rerun import log_mesh, log_camera_frame
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_preprocessed_frame
 from robust_hoi_pipeline.frame_management import load_register_indices
 from robust_hoi_pipeline.pipeline_utils import load_sam3d_transform
@@ -401,30 +401,13 @@ def visualize_gt_frame(
     jpeg_quality: int = 85,
 ):
     """Visualize GT camera pose and image for a single frame."""
-    gt_frame_entity = "world/gt_current_frame"
-    # Log GT camera pose (o2c inverted to c2o for transform)
     gt_c2o = np.linalg.inv(gt_o2c).astype(np.float32)
-    rr.log(
-        f"{gt_frame_entity}/camera",
-        rr.Transform3D(
-            translation=gt_c2o[:3, 3],
-            mat3x3=gt_c2o[:3, :3],
-        ),
+    K = preprocess_data.get('intrinsics')
+    img = preprocess_data.get('image')
+    log_camera_frame(
+        "world/gt_current_frame/camera", K, gt_c2o, img,
+        image_plane_distance=1.0, jpeg_quality=jpeg_quality, static=False,
     )
-    if preprocess_data.get('intrinsics') is not None and preprocess_data.get('image') is not None:
-        K = preprocess_data['intrinsics']
-        H, W = preprocess_data['image'].shape[:2]
-        rr.log(
-            f"{gt_frame_entity}/camera",
-            rr.Pinhole(
-                resolution=[W, H],
-                focal_length=[K[0, 0], K[1, 1]],
-                principal_point=[K[0, 2], K[1, 2]],
-                image_plane_distance=1.0,
-            ),
-            static=False,
-        )
-        rr.log(f"{gt_frame_entity}/camera", rr.Image(preprocess_data['image']).compress(jpeg_quality=jpeg_quality), static=False)
 
 
 def visualize_all_cameras(

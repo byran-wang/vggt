@@ -13,6 +13,12 @@ sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
 import vggt.utils.gt as gt
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_preprocessed_frame
+from utils_simba.rerun import (
+    get_vertex_colors,
+    stamp_frame_text,
+    log_camera_frame,
+    backproject_depth_to_points,
+)
 
 
 def _to_numpy(v):
@@ -45,26 +51,6 @@ def _load_frame_indices(data_preprocess_dir: Path):
     return fids
 
 
-def compute_frustum_lines(K, H, W, c2w, depth=0.05):
-    """Compute camera frustum line segments in world space."""
-    K_inv = np.linalg.inv(K[:3, :3])
-    corners_px = np.array([
-        [0, 0, 1], [W, 0, 1], [W, H, 1], [0, H, 1],
-    ], dtype=np.float64)
-    corners_cam = (K_inv @ corners_px.T).T * depth
-    R = c2w[:3, :3].astype(np.float64)
-    t = c2w[:3, 3].astype(np.float64)
-    origin_w = t.copy()
-    corners_w = (R @ corners_cam.T).T + t
-
-    segments = []
-    for c in corners_w:
-        segments.append(np.stack([origin_w, c]))
-    for j in range(4):
-        segments.append(np.stack([corners_w[j], corners_w[(j + 1) % 4]]))
-    return segments
-
-
 def main(args):
     data_dir = Path(args.data_dir)
     data_preprocess_dir = data_dir / "pipeline_preprocess"
@@ -93,17 +79,7 @@ def main(args):
         gt_mesh = trimesh.load(str(gt_mesh_path), force="mesh", process=False)
     gt_verts_can = np.array(gt_mesh.vertices, dtype=np.float32) if gt_mesh is not None else None
     gt_faces = np.array(gt_mesh.faces, dtype=np.uint32) if gt_mesh is not None else None
-
-    gt_vertex_colors = None
-    if gt_mesh is not None:
-        if hasattr(gt_mesh, "visual") and hasattr(gt_mesh.visual, "vertex_colors"):
-            vc = np.asarray(gt_mesh.visual.vertex_colors)
-            if vc.ndim == 2 and vc.shape[0] == len(gt_verts_can) and vc.shape[1] >= 3:
-                gt_vertex_colors = vc[:, :3].astype(np.uint8)
-        if gt_vertex_colors is None and hasattr(gt_mesh, "visual") and hasattr(gt_mesh.visual, "to_color"):
-            vc = np.asarray(gt_mesh.visual.to_color().vertex_colors)
-            if vc.ndim == 2 and vc.shape[0] == len(gt_verts_can) and vc.shape[1] >= 3:
-                gt_vertex_colors = vc[:, :3].astype(np.uint8)
+    gt_vertex_colors = get_vertex_colors(gt_mesh)
 
     # Load GT hand mesh
     gt_hand_verts_cam = None
@@ -172,32 +148,15 @@ def main(args):
         if K_img is not None:
             K_i = np.asarray(K_img, dtype=np.float64)
 
-        # Log camera transform and pinhole
-        entity = "world/camera"
-        rr.log(entity, rr.Transform3D(
-            translation=c2o_i[:3, 3],
-            mat3x3=c2o_i[:3, :3],
-        ), static=False)
-
+        # Stamp frame text on image and log camera
         if img is not None:
-            H, W = img.shape[:2]
-            from PIL import Image, ImageDraw, ImageFont
-            pil_img = Image.fromarray(img)
-            draw = ImageDraw.Draw(pil_img)
-            try:
-                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 40)
-            except (IOError, OSError):
-                font = ImageFont.load_default()
-            draw.text((10, 10), f"Frame {fid:04d}", fill=(255, 255, 0), font=font)
-            img = np.array(pil_img)
-
-            rr.log(entity, rr.Pinhole(
-                resolution=[W, H],
-                focal_length=[float(K_i[0, 0]), float(K_i[1, 1])],
-                principal_point=[float(K_i[0, 2]), float(K_i[1, 2])],
-                image_plane_distance=args.image_plane_distance,
-            ), static=False)
-            rr.log(entity, rr.Image(img).compress(jpeg_quality=args.jpeg_quality), static=False)
+            img = stamp_frame_text(img, f"Frame {fid:04d}")
+        log_camera_frame(
+            "world/camera", K_i, c2o_i, img,
+            image_plane_distance=args.image_plane_distance,
+            jpeg_quality=args.jpeg_quality,
+            static=False,
+        )
 
         # Log depth views
         depth = preprocess_data.get("depth")
@@ -220,41 +179,21 @@ def main(args):
                 hand_depth[mask_hand == 0] = 0.0
                 rr.log("world/depth_hand", rr.DepthImage(hand_depth), static=False)
 
-            # Backproject depth to 3D point cloud in object space
-            if img is not None:
-                H, W = img.shape[:2]
-                K_inv = np.linalg.inv(K_i[:3, :3])
-                uu, vv = np.meshgrid(np.arange(W), np.arange(H))
-                pixels = np.stack([uu, vv, np.ones_like(uu)], axis=-1).reshape(-1, 3).astype(np.float64)
-                valid = depth.ravel() > 0
-                rays_cam = (K_inv @ pixels.T).T  # (H*W, 3)
-                pts_cam = rays_cam * depth.ravel()[:, None]
+            # Backproject depth to 3D point clouds in object space
+            def _log_depth_points(entity, mask=None):
+                pts, colors = backproject_depth_to_points(
+                    depth, K_i, c2o_i, image=img, mask=mask, max_points=50000,
+                )
+                kw = dict(positions=pts, radii=0.001)
+                if colors is not None:
+                    kw["colors"] = colors
+                rr.log(entity, rr.Points3D(**kw), static=False)
 
-                def _log_points(entity, pt_mask, color_src):
-                    pts = pts_cam[pt_mask]
-                    pts_obj = (c2o_i[:3, :3] @ pts.T).T + c2o_i[:3, 3]
-                    cs = color_src.reshape(-1, 3)[pt_mask] if color_src is not None else None
-                    if len(pts_obj) > 50000:
-                        sel = np.random.choice(len(pts_obj), 50000, replace=False)
-                        pts_obj = pts_obj[sel]
-                        cs = cs[sel] if cs is not None else None
-                    kw = dict(positions=pts_obj.astype(np.float32), radii=0.001)
-                    if cs is not None:
-                        kw["colors"] = cs
-                    rr.log(entity, rr.Points3D(**kw), static=False)
-
-                # Full depth point cloud
-                _log_points("world/depth_points", valid, img)
-
-                # Object-masked point cloud
-                if mask_obj is not None:
-                    obj_valid = valid & (mask_obj.ravel() > 0)
-                    _log_points("world/depth_points_obj", obj_valid, img)
-
-                # Hand-masked point cloud
-                if mask_hand is not None:
-                    hand_valid = valid & (mask_hand.ravel() > 0)
-                    _log_points("world/depth_points_hand", hand_valid, img)
+            _log_depth_points("world/depth_points")
+            if mask_obj is not None:
+                _log_depth_points("world/depth_points_obj", mask=mask_obj)
+            if mask_hand is not None:
+                _log_depth_points("world/depth_points_hand", mask=mask_hand)
 
         # Log hand mesh in camera space (transform to object space for visualization)
         if gt_hand_verts_cam is not None and gt_hand_faces is not None and i < len(gt_hand_verts_cam):
