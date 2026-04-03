@@ -72,6 +72,8 @@ python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum_intr
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_align_hand_object_h hoi_pipeline_align_hand_object_r hoi_pipeline_align_hand_object_o hoi_pipeline_align_hand_object_ho --seq_list $seq_list --rebuild #--vis
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_eval --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_eval_vis --seq_list $seq_list --rebuild
+# Visualize GT mesh, pose, and images in Rerun
+python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_eval_vis_gt --seq_list $seq_list
 
 python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum --seq_list $seq_list
 python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum_vis --seq_list $seq_list --rebuild

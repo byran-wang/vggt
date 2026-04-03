@@ -57,6 +57,17 @@ def load_preprocessed_frame(data_preprocess_dir: Path, frame_idx: int) -> Dict:
     depth_path = data_preprocess_dir / "depth_filtered" / f"{frame_idx:04d}.png"
     data["depth"] = get_depth(str(depth_path)) if depth_path.exists() else None
 
+    # Scale depth back to metric space if depth_scale.json exists
+    if data["depth"] is not None:
+        depth_scale_path = data_preprocess_dir / "depth_scale.json"
+        if depth_scale_path.exists():
+            with open(depth_scale_path, "r") as f:
+                depth_scale_info = json.load(f)
+            obj_scale = depth_scale_info.get("obj_scale")
+            if obj_scale is not None:
+                data["depth"] = data["depth"] * obj_scale
+                data["depth_scale"] = obj_scale
+
     normal_path = data_preprocess_dir / "normal" / f"{frame_idx:04d}.png"
     data["normal"] = get_normal(str(normal_path)) if normal_path.exists() else None
 

@@ -438,6 +438,13 @@ def pipeline_data_preprocess(args):
         for frame_data in preprocessed_data:
             f.write(f"{frame_data['frame_idx']:04d}\n")
 
+    # Save depth scale (obj_scale used to divide depth values)
+    depth_scale_path = out_dir / "depth_scale.json"
+    depth_scale_info = {"obj_scale": obj_scale}
+    with open(depth_scale_path, 'w') as f:
+        json.dump(depth_scale_info, f, indent=2)
+    print(f"Saved depth scale to {depth_scale_path}")
+
     print(f"Saved {len(preprocessed_data)} frames to {out_dir}")
     print(f"Frame list saved to {frame_list_path}")
 

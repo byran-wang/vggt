@@ -113,6 +113,7 @@ class run_wonder_hoi:
                 "hoi_pipeline_joint_opt": self.hoi_pipeline_joint_opt,
                 "hoi_pipeline_eval": self.hoi_pipeline_eval,
                 "hoi_pipeline_eval_vis": self.hoi_pipeline_eval_vis,
+                "hoi_pipeline_eval_vis_gt": self.hoi_pipeline_eval_vis_gt,
                 "hoi_pipeline_joint_opt_global": self.hoi_pipeline_joint_opt_global,
                 "hoi_pipeline_reg_remaining": self.hoi_pipeline_reg_remaining,
                 "hoi_pipeline_HY_gen": self.hoi_pipeline_HY_gen,
@@ -1856,6 +1857,17 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
+    def hoi_pipeline_eval_vis_gt(self, scene_name, **kwargs):
+        self.print_header(f"Visualize GT mesh/pose/image in Rerun for {scene_name}")
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+
+        cmd = f"cd {vggt_code_dir} && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_joint_opt_eval_vis_gt.py "
+        cmd += f"--data_dir {data_dir} "
+        cmd += f"--render_hand "
+        print(cmd)
+        os.system(cmd)
+
     def hoi_pipeline_joint_opt(self, scene_name, **kwargs):
         self.print_header(f"hoi pipeline joint optimization for {scene_name}")
         data_dir = f"{self.dataset_dir}/{scene_name}"
@@ -2376,6 +2388,7 @@ if __name__ == "__main__":
                 "hoi_pipeline_joint_opt",
                 "hoi_pipeline_eval",
                 "hoi_pipeline_eval_vis",
+                "hoi_pipeline_eval_vis_gt",
                 "hoi_pipeline_joint_opt_global",
                 "hoi_pipeline_reg_remaining",
                 "hoi_pipeline_HY_gen",
