@@ -114,10 +114,22 @@ def main(args):
     rr.send_blueprint(blueprint)
     rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_UP, static=True)
 
+    # Load depth_scale once (constant across frames) to put everything in SAM3D-scaled space
+    _first_preprocess = load_preprocessed_frame(data_preprocess_dir, int(frame_indices[0]))
+    depth_scale = _first_preprocess.get("depth_scale")
+    if depth_scale is not None:
+        print(f"Depth scale found: {depth_scale}, scaling GT mesh and poses to SAM3D space")
+
+    # Scale GT object mesh and hand mesh vertices to SAM3D-scaled space
+    vis_verts_can = gt_verts_can
+    if gt_verts_can is not None and depth_scale is not None:
+        vis_verts_can = gt_verts_can / depth_scale
+
+
     # Log GT mesh at identity (canonical space) as static
-    if gt_verts_can is not None and gt_faces is not None:
+    if vis_verts_can is not None and gt_faces is not None:
         mesh_kwargs = dict(
-            vertex_positions=gt_verts_can,
+            vertex_positions=vis_verts_can,
             triangle_indices=gt_faces,
         )
         if gt_vertex_colors is not None:
@@ -125,7 +137,7 @@ def main(args):
         rr.log("world/gt_mesh", rr.Mesh3D(**mesh_kwargs), static=True)
 
         # Also log GT mesh vertices as 3D points
-        pts_kwargs = dict(positions=gt_verts_can, radii=0.001)
+        pts_kwargs = dict(positions=vis_verts_can, radii=0.001)
         if gt_vertex_colors is not None:
             pts_kwargs["colors"] = gt_vertex_colors
         rr.log("world/gt_mesh_points", rr.Points3D(**pts_kwargs), static=True)
@@ -147,6 +159,25 @@ def main(args):
         K_img = preprocess_data.get("intrinsics")
         if K_img is not None:
             K_i = np.asarray(K_img, dtype=np.float64)
+
+        # Log hand mesh in camera space (transform to object space for visualization)
+        if gt_hand_verts_cam is not None and gt_hand_faces is not None and i < len(gt_hand_verts_cam):
+            hv = gt_hand_verts_cam[i]
+            if np.isfinite(hv).all() and hv.min() > -500:
+                # Transform hand verts from camera space to object (world) space
+                hv_obj = (c2o_i[:3, :3] @ hv.T).T + c2o_i[:3, 3]
+                if depth_scale is not None:
+                    hv_obj = hv_obj / depth_scale
+                rr.log("world/gt_hand", rr.Mesh3D(
+                    vertex_positions=hv_obj.astype(np.float32),
+                    triangle_indices=gt_hand_faces,
+                    mesh_material=rr.Material(albedo_factor=[225, 186, 160]),
+                ), static=False)
+
+        # Scale camera translation to SAM3D-scaled space
+        if depth_scale is not None:
+            c2o_i = c2o_i.copy()
+            c2o_i[:3, 3] = c2o_i[:3, 3] / depth_scale
 
         # Stamp frame text on image and log camera
         if img is not None:
@@ -195,17 +226,7 @@ def main(args):
             if mask_hand is not None:
                 _log_depth_points("world/depth_points_hand", mask=mask_hand)
 
-        # Log hand mesh in camera space (transform to object space for visualization)
-        if gt_hand_verts_cam is not None and gt_hand_faces is not None and i < len(gt_hand_verts_cam):
-            hv = gt_hand_verts_cam[i]
-            if np.isfinite(hv).all() and hv.min() > -500:
-                # Transform hand verts from camera space to object (world) space
-                hv_obj = (c2o_i[:3, :3] @ hv.T).T + c2o_i[:3, 3]
-                rr.log("world/gt_hand", rr.Mesh3D(
-                    vertex_positions=hv_obj.astype(np.float32),
-                    triangle_indices=gt_hand_faces,
-                    mesh_material=rr.Material(albedo_factor=[225, 186, 160]),
-                ), static=False)
+
 
         print(f"  Frame {fid:04d}: valid")
 
@@ -221,7 +242,7 @@ def parse_args():
     parser.add_argument("--max_frames", type=int, default=-1,
                         help="Maximum number of frames to visualize")
     parser.add_argument("--jpeg_quality", type=int, default=85)
-    parser.add_argument("--image_plane_distance", type=float, default=3.0,
+    parser.add_argument("--image_plane_distance", type=float, default=5.0,
                         help="Image plane distance for camera frustum size")
     return parser.parse_args()
 
