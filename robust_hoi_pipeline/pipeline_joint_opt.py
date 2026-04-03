@@ -1796,26 +1796,31 @@ def _joint_optimize_keyframes(
 
     cond_ki = list(kf_indices).index(cond_local_idx) if cond_local_idx in kf_indices else -1
 
-    optimizer = torch.optim.Adam([
-        {"params": [delta_aa, delta_t], "lr": lr_pose},
-        {"params": [pts3d], "lr": lr_points},
-    ])
-
     nn_cache = [None] * n_kf
 
-    for it in range(num_iters):
+    # Use L-BFGS (quasi-Newton with second-order gradient approximation)
+    optimizer = torch.optim.LBFGS(
+        [delta_aa, delta_t, pts3d],
+        lr=lr_pose,
+        max_iter=1,
+        history_size=10,
+        line_search_fn="strong_wolfe",
+    )
+
+    _iter_log = {}  # scratch space for logging inside closure
+
+    def closure():
         optimizer.zero_grad()
         R_o2c, t_o2c = current_Rt()
 
         # === reprojection loss (COLMAP-style: Cauchy kernel on ||r||²) ===
-        # r_ij = u_ij - π(K_i, R_i X_j + t_i),  ρ(s) = c² log(1 + s/c²)
         cam = torch.einsum('bij,mj->bmi', R_o2c, pts3d) + t_o2c[:, None, :]
         z = cam[:, :, 2:3].clamp(min=1e-6)
         px = K[:, 0:1, 0:1] * cam[:, :, 0:1] / z + K[:, 0:1, 2:3]
         py = K[:, 1:2, 1:2] * cam[:, :, 1:2] / z + K[:, 1:2, 2:3]
         proj = torch.cat([px, py], dim=-1)
 
-        residual_sq = ((proj - trk) ** 2).sum(-1)  # ||r_ij||² (n_kf, M)
+        residual_sq = ((proj - trk) ** 2).sum(-1)
         front = cam[:, :, 2] > 0
         m = valid & front
 
@@ -1829,7 +1834,7 @@ def _joint_optimize_keyframes(
         # === point-to-plane loss ===
         loss_p = torch.tensor(0.0, device=device)
         if use_p2p:
-            update_nn = (it % 5 == 0)
+            update_nn = (_iter_log.get("it", 0) % 5 == 0)
             np2p = 0
 
             for ki in range(n_kf):
@@ -1840,7 +1845,6 @@ def _joint_optimize_keyframes(
                 tic = -(RiT @ ti)
                 pts_obj = (RiT @ dclouds[ki].T).T + tic
 
-                # Filter out non-finite points before mesh query
                 fin_mask = torch.isfinite(pts_obj).all(dim=-1)
                 if fin_mask.sum() == 0:
                     continue
@@ -1857,10 +1861,9 @@ def _joint_optimize_keyframes(
                     )
 
                 cp, cn, cached_mask = nn_cache[ki]
-                # Re-filter with cached mask on non-update iterations
                 if not update_nn:
                     pts_obj_fin = pts_obj[cached_mask]
-                d = ((pts_obj_fin - cp) * cn).sum(-1)      # signed point-to-plane
+                d = ((pts_obj_fin - cp) * cn).sum(-1)
                 da = d.abs()
                 loss_p = loss_p + torch.where(
                     da < 0.05, 0.5 * d ** 2, 0.05 * (da - 0.025)
@@ -1870,7 +1873,7 @@ def _joint_optimize_keyframes(
             if np2p > 0:
                 loss_p = loss_p / np2p
 
-        # === point-to-depth loss (predicted cam-z vs observed depth map) ===
+        # === point-to-depth loss ===
         loss_d = torch.tensor(0.0, device=device)
         depth_valid = valid & front & has_obs_depth
         if depth_valid.any():
@@ -1887,19 +1890,26 @@ def _joint_optimize_keyframes(
         loss = lambda_reproj * loss_r + lambda_p2plane * loss_p + lambda_depth * loss_d
         loss.backward()
 
-        # keep condition frame
+        # Keep condition frame fixed
         with torch.no_grad():
             if cond_ki >= 0 and delta_aa.grad is not None:
                 delta_aa.grad[cond_ki] = 0
                 delta_t.grad[cond_ki] = 0
-            # if pts3d.grad is not None:
-            #     pts3d.grad[~fin_t] = 0
 
-        optimizer.step()
+        _iter_log["loss_r"] = loss_r.item()
+        _iter_log["loss_p"] = loss_p.item()
+        _iter_log["loss_d"] = loss_d.item()
+        _iter_log["loss"] = loss.item()
+
+        return loss
+
+    for it in range(num_iters):
+        _iter_log["it"] = it
+        optimizer.step(closure)
 
         if it == 0 or (it + 1) % 5 == 0:
-            print(f"[joint_opt] {it+1}/{num_iters}  reproj={loss_r.item():.3f}  "
-                  f"p2plane={loss_p.item():.5f}  p2depth={loss_d.item():.5f}  total={loss.item():.3f}")
+            print(f"[joint_opt] {it+1}/{num_iters}  reproj={_iter_log['loss_r']:.3f}  "
+                  f"p2plane={_iter_log['loss_p']:.5f}  p2depth={_iter_log['loss_d']:.5f}  total={_iter_log['loss']:.3f}")
 
     # --- write back ---
     with torch.no_grad():
