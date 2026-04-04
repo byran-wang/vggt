@@ -20,6 +20,9 @@ from utils_simba.rerun import (
     backproject_depth_to_points,
 )
 
+from utils_simba.logger import get_logger
+logger = get_logger(__name__)
+
 
 def _to_numpy(v):
     if v is None:
@@ -64,7 +67,7 @@ def main(args):
     def get_image_fids():
         return frame_indices
 
-    print(f"Loading GT data for {seq_name} with {len(frame_indices)} frames...")
+    logger.info(f"Loading GT data for {seq_name} with {len(frame_indices)} frames...")
     data_gt = gt.load_data(seq_name, get_image_fids)
 
     # Extract GT arrays
@@ -93,7 +96,7 @@ def main(args):
                 gt_hand_verts_cam, gt_hand_faces, is_rhand=True)
             gt_hand_faces = gt_hand_faces.astype(np.int32)
         except Exception as exc:
-            print(f"[warn] Failed to seal GT hand mesh: {exc}")
+            logger.warning(f"Failed to seal GT hand mesh: {exc}")
             gt_hand_faces = gt_hand_faces.astype(np.int32)
 
     # Init rerun
@@ -118,7 +121,9 @@ def main(args):
     _first_preprocess = load_preprocessed_frame(data_preprocess_dir, int(frame_indices[0]))
     depth_scale = _first_preprocess.get("depth_scale")
     if depth_scale is not None:
-        print(f"Depth scale found: {depth_scale}, scaling GT mesh and poses to SAM3D space")
+        logger.info(f"Depth scale found: {depth_scale}, scaling GT mesh and poses to SAM3D space")
+    else:
+        logger.warning("No depth scale found")
 
     # Scale GT object mesh and hand mesh vertices to SAM3D-scaled space
     vis_verts_can = gt_verts_can
@@ -142,7 +147,7 @@ def main(args):
             pts_kwargs["colors"] = gt_vertex_colors
         rr.log("world/gt_mesh_points", rr.Points3D(**pts_kwargs), static=True)
 
-    print(f"Visualizing {len(frame_indices)} frames...")
+    logger.info(f"Visualizing {len(frame_indices)} frames...")
     for i, fid in enumerate(frame_indices):
         if i >= len(gt_o2c) or i >= len(gt_is_valid) or not gt_is_valid[i]:
             continue
@@ -228,9 +233,9 @@ def main(args):
 
 
 
-        print(f"  Frame {fid:04d}: valid")
+        logger.debug(f"  Frame {fid:04d}: valid")
 
-    print(f"Done. Visualized GT for {seq_name}.")
+    logger.info(f"Done. Visualized GT for {seq_name}.")
 
 
 def parse_args():
