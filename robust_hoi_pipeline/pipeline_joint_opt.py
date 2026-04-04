@@ -23,6 +23,9 @@ from utils_simba.depth import get_depth, depth2xyzmap
 from utils_simba.render import diff_renderer, projection_matrix_from_intrinsics
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_sam3d_transform
 from robust_hoi_pipeline.geometry_utils import compute_reproj_errors
+from utils_simba.logger import get_logger
+
+logger = get_logger(__name__)
 import os
 RUN_ON_SERVER = os.getenv("RUN_ON_SERVER", "").lower() == "true"
 device = "cuda"
@@ -79,7 +82,7 @@ def _get_foundation_pose(mesh, debug_dir=None):
     )
     per_mesh[mesh_id] = est
     _foundation_pose_cache["per_mesh"] = per_mesh
-    print(f"[FoundationPose] Initialized estimator (mesh {len(mesh.vertices)} verts)")
+    logger.info(f"[FoundationPose] Initialized estimator (mesh {len(mesh.vertices)} verts)")
     return est
 
 
@@ -93,7 +96,7 @@ def _run_foundation_pose_track(obj_mesh, rgb, depth, ob_mask, K, current_o2c, de
     Returns None if tracking fails or inputs are invalid.
     """
     if rgb is None or depth is None or K is None:
-        print("[FoundationPose] Missing inputs, skipping tracking")
+        logger.warning("[FoundationPose] Missing inputs, skipping tracking")
         return None
 
 
@@ -114,7 +117,7 @@ def _run_foundation_pose_track(obj_mesh, rgb, depth, ob_mask, K, current_o2c, de
     pose = est.track_one(rgb=rgb, depth=depth, K=K, iteration=5)
     if pose is None or not np.isfinite(pose).all():
         raise RuntimeError("[FoundationPose] Tracking returned invalid pose")
-    print(f"[FoundationPose] Tracking succeeded, pose translation: {pose[:3, 3]}")
+    logger.debug(f"[FoundationPose] Tracking succeeded, pose translation: {pose[:3, 3]}")
     return pose.astype(np.float64)
 
 
@@ -294,21 +297,21 @@ def prepare_joint_opt_inputs(
     vis_thresh: float,
 ) -> Tuple[List[int], Dict, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
     """Load preprocessing, tracks, and SAM3D transform for joint optimization."""
-    print("Loading preprocessed data...")
+    logger.info("Loading preprocessed data...")
     frame_indices = load_frame_list(data_preprocess_dir)
     preprocessed = load_preprocessed_data(data_preprocess_dir, frame_indices)
-    print(f"Loaded {len(frame_indices)} frames: {frame_indices[:5]}{'...' if len(frame_indices) > 5 else ''}")
+    logger.info(f"Loaded {len(frame_indices)} frames: {frame_indices[:5]}{'...' if len(frame_indices) > 5 else ''}")
 
-    print("Loading VGGSfM tracks...")
+    logger.info("Loading VGGSfM tracks...")
     track_data = load_tracks(tracks_dir)
     tracks = track_data['tracks']
     vis_scores = track_data['vis_scores']
     tracks_mask = track_data['tracks_mask']
     # Mask out tracks with low visibility scores
     tracks_mask = tracks_mask & (vis_scores >= vis_thresh)
-    print(f"Loaded tracks: {tracks.shape[0]} frames, {tracks.shape[1]} tracks")
+    logger.info(f"Loaded tracks: {tracks.shape[0]} frames, {tracks.shape[1]} tracks")
 
-    print("Loading SAM3D transformation...")
+    logger.info("Loading SAM3D transformation...")
     sam3d_transform = load_sam3d_transform(sam3d_dir, cond_idx)
     cond_cam_to_obj = np.eye(4, dtype=np.float32)
     cond_cam_to_obj[:3, :3] = sam3d_transform['scale'] * sam3d_transform['cond_cam_to_sam3d'][:3, :3]
@@ -320,7 +323,7 @@ def prepare_joint_opt_inputs(
         cond_local_idx = frame_indices.index(cond_idx)
     except ValueError:
         raise ValueError(f"Condition index {cond_idx} not found in frame list: {frame_indices}")
-    print(f"Condition frame {cond_idx} is at local index {cond_local_idx}")
+    logger.info(f"Condition frame {cond_idx} is at local index {cond_local_idx}")
 
     # Align hand c2o poses with cond_cam_to_obj at condition frame (right-multiplication)
     hand_c2o = preprocessed.get('hand_c2o')
@@ -331,7 +334,7 @@ def prepare_joint_opt_inputs(
         for i in range(len(hand_o2c)):
             if hand_o2c[i] is not None:
                 hand_o2c[i] = (hand_o2c[i].astype(np.float64) @ align_tf).astype(np.float32)
-        print(f"Aligned hand o2c poses with cond_cam_to_obj at condition frame {cond_idx}")
+        logger.info(f"Aligned hand o2c poses with cond_cam_to_obj at condition frame {cond_idx}")
     preprocessed['hand_c2o'] = np.linalg.inv(hand_o2c)
 
     return (
@@ -419,7 +422,7 @@ def register_first_frame(
     cond_cam_to_obj: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Lift condition-frame tracks and initialize per-frame poses/keyframes."""
-    print("Lifting tracks to 3D (condition frame only)...")
+    logger.info("Lifting tracks to 3D (condition frame only)...")
     cond_points_3d = lift_tracks_to_3d(
         tracks[cond_local_idx:cond_local_idx + 1],
         tracks_mask[cond_local_idx:cond_local_idx + 1],
@@ -430,7 +433,7 @@ def register_first_frame(
     points_3d = cond_points_3d[0]
     valid_3d_count = np.isfinite(points_3d).all(axis=-1).sum()
     cond_mask_count = int(tracks_mask[cond_local_idx].sum())
-    print(f"Lifted {valid_3d_count} valid 3D points out of {cond_mask_count} masked track observations")
+    logger.info(f"Lifted {valid_3d_count} valid 3D points out of {cond_mask_count} masked track observations")
 
     c2o_per_frame = []
     for i in range(len(frame_indices)):
@@ -513,7 +516,7 @@ def save_reproj_errors(image_info: Dict, register_idx: int, image: np.ndarray, r
         cv2.putText(vis_img, text2, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         cv2.putText(vis_img, text2, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)
     Image.fromarray(vis_img).save(img_path)
-    print(f"Saved reproj error image to {img_path}")
+    logger.debug(f"Saved reproj error image to {img_path}")
 
 
 _STATIC_KEYS = {
@@ -561,7 +564,7 @@ def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir:
     if not shared_path.exists():
         static_info = {k: v for k, v in image_info.items() if k in _STATIC_KEYS}
         _save_compressed(shared_path, static_info)
-        print(f"Saved shared static info to {shared_path}")
+        logger.debug(f"Saved shared static info to {shared_path}")
 
     # Save only dynamic (per-registration) data
     frame_dir.mkdir(parents=True, exist_ok=True)
@@ -579,7 +582,7 @@ def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir:
         dynamic_info["track_vis_count"] = np.zeros(n_pts, dtype=np.int32)
 
     _save_compressed(info_path, dynamic_info)
-    print(f"Saved image info to {frame_dir}")
+    logger.debug(f"Saved image info to {frame_dir}")
 
 
 
@@ -657,7 +660,7 @@ def print_frame_reproj_error(image_info_work, frame_idx, tag="joint_opt"):
     errs, _ = compute_reproj_errors(p3[fin], p2[fin], ext, K)
     valid_errs = errs[np.isfinite(errs)]
     if len(valid_errs) > 0:
-        print(f"[{tag}] Frame {frame_idx}: reproj_error mean={valid_errs.mean():.2f} "
+        logger.debug(f"[{tag}] Frame {frame_idx}: reproj_error mean={valid_errs.mean():.2f} "
               f"median={np.median(valid_errs):.2f} max={valid_errs.max():.2f} "
               f"({len(valid_errs)}/{fm.sum()} pts)")
 
@@ -706,7 +709,7 @@ def mask_track_for_outliers(image_info, frame_idx, reproj_thresh, min_track_numb
     outlier_idx = finite_idx[errs > reproj_thresh]
     if len(outlier_idx) > 0:
         track_mask[frame_idx][outlier_idx] = 0
-        print(f"[mask_reproj_outliers] Frame {frame_idx}: masked {len(outlier_idx)} tracks "
+        logger.debug(f"[mask_reproj_outliers] Frame {frame_idx}: masked {len(outlier_idx)} tracks "
               f"with reproj error > {reproj_thresh}px")
 
 
@@ -1084,7 +1087,7 @@ def _filter_depth_by_object_bbox(image_info_work, frame_idx, bbox_min=[-0.8, -0.
     outside = ~np.all((pts_obj >= bbox_min) & (pts_obj <= bbox_max), axis=1)
     if outside.any():
         d[ys[outside], xs[outside]] = 0
-        print(f"[filter_depth_bbox] Frame {frame_idx}: zeroed {int(outside.sum())}/{len(ys)} depth pixels outside object bbox")
+        logger.debug(f"[filter_depth_bbox] Frame {frame_idx}: zeroed {int(outside.sum())}/{len(ys)} depth pixels outside object bbox")
 
 
 def _prepare_frame_observations(
@@ -1104,7 +1107,7 @@ def _prepare_frame_observations(
 
     d = depth_priors[frame_idx]
     if d is None:
-        print(f"[align_depth] Frame {frame_idx}: no depth, skipping")
+        logger.warning(f"[align_depth] Frame {frame_idx}: no depth, skipping")
         return None
 
     K = intrinsics[frame_idx] if intrinsics.ndim == 3 else intrinsics
@@ -1405,7 +1408,7 @@ def _prepare_track_reproj_data(image_info_work, frame_idx, K, device):
     trk_pts3d = torch.tensor(points_3d_all[trk_valid], dtype=torch.float32, device=device)
     trk_pts2d = torch.tensor(pred_tracks_all[frame_idx][trk_valid], dtype=torch.float32, device=device)
     K_tensor = torch.tensor(K.astype(np.float32), dtype=torch.float32, device=device)
-    print(f"[align_depth] Frame {frame_idx}: using {int(trk_valid.sum())} tracks for reprojection loss")
+    logger.debug(f"[align_depth] Frame {frame_idx}: using {int(trk_valid.sum())} tracks for reprojection loss")
     return trk_pts3d, trk_pts2d, K_tensor
 
 
@@ -1462,9 +1465,9 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
 
     has_enough_depth = len(ys) >= max_pts
     if len(ys) == 0:
-        print(f"[align_depth] Frame {frame_idx}: no depth points in object bbox")
+        logger.warning(f"[align_depth] Frame {frame_idx}: no depth points in object bbox")
     elif not has_enough_depth:
-        print(f"[align_depth] Frame {frame_idx}: only {len(ys)} depth points (< {max_pts}), disabling depth loss")
+        logger.warning(f"[align_depth] Frame {frame_idx}: only {len(ys)} depth points (< {max_pts}), disabling depth loss")
 
     if len(ys) > max_pts:
         sel = np.random.choice(len(ys), max_pts, replace=False)
@@ -1473,7 +1476,7 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
     pts_cam_sel = _depth_pixels_to_cam_points(d, K, ys, xs) if len(ys) > 0 else None
 
     if not torch.cuda.is_available():
-        print(f"[align_depth] Frame {frame_idx}: CUDA unavailable, skipping depth optimization")
+        logger.warning(f"[align_depth] Frame {frame_idx}: CUDA unavailable, skipping depth optimization")
         return False
 
     H, W = d.shape
@@ -1564,7 +1567,7 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
         loss_depth, valid_count = _compute_depth_loss(depth_r, obs_depth, obs_mask, K, debug_ctx=_debug_ctx)
         if loss_depth is None:
             loss_depth = torch.tensor(0.0, device=device)
-            print(f"[align_depth] Frame {frame_idx}: iter {it}, only {valid_count} valid rendered pixels, and set depth loss to 0")
+            logger.debug(f"[align_depth] Frame {frame_idx}: iter {it}, only {valid_count} valid rendered pixels, and set depth loss to 0")
 
         loss_iou = _compute_iou_loss(render_union, obs_hoi_mask)
         loss_reproj = _compute_reproj_loss(R, trans, trk_pts3d_t, trk_pts2d_t, K_t)
@@ -1608,14 +1611,14 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
                     filename_prefix="hand_mesh_obj",
                     it=it + 1,
                 )
-            print(
+            logger.debug(
                 f"[align_depth] Frame {frame_idx}: iter {it+1}/{num_iters}, total {loss.item():.3f} "
                 f"loss_contact={loss_contact.item():.3f}, loss_iou={loss_iou.item():.3f}, "
                 f"loss_d={loss_depth.item():.3f}, loss_reproj={loss_reproj.item():.3f}, valid={valid_count}"
             )
 
     if not np.isfinite(best["loss"]):
-        print(f"[align_depth] Frame {frame_idx}: optimization failed (best_valid={best['valid']})")
+        logger.warning(f"[align_depth] Frame {frame_idx}: optimization failed (best_valid={best['valid']})")
         return False
 
     if pts_cam_sel is not None:
@@ -1635,7 +1638,7 @@ def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
 
     extrinsics[frame_idx, :3, :3] = best["R"].astype(np.float32)
     extrinsics[frame_idx, :3, 3] = best["t"].astype(np.float32)
-    print(
+    logger.info(
         f"[align_depth] Frame {frame_idx}: alignment done, "
         f"best_loss={best['loss']:.6f}, valid={best['valid']}"
     )
@@ -1663,7 +1666,7 @@ def _joint_optimize_keyframes(
     try:
         import trimesh
     except ImportError:
-        print("[joint_opt] trimesh not installed, skipping")
+        logger.warning("[joint_opt] trimesh not installed, skipping")
         return
 
     if neus_mesh_path is None or not Path(neus_mesh_path).exists():
@@ -1671,7 +1674,7 @@ def _joint_optimize_keyframes(
     else:
         mesh = trimesh.load(neus_mesh_path, process=False)
         if len(mesh.vertices) < 3:
-            print("[joint_opt] Mesh too small, disabling point-to-plane")
+            logger.warning("[joint_opt] Mesh too small, disabling point-to-plane")
             mesh = None
 
     use_p2p = mesh is not None
@@ -1685,7 +1688,7 @@ def _joint_optimize_keyframes(
     if use_p2p:
         mesh_face_normals = np.array(mesh.face_normals, dtype=np.float32)
         mesh_info = f", mesh={len(mesh.vertices)} verts"
-    print(f"[joint_opt] Starting: {len(kf_indices)} keyframes{mesh_info}, p2p={'on' if use_p2p else 'off'}")
+    logger.info(f"[joint_opt] Starting: {len(kf_indices)} keyframes{mesh_info}, p2p={'on' if use_p2p else 'off'}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -1908,7 +1911,7 @@ def _joint_optimize_keyframes(
         optimizer.step(closure)
 
         if it == 0 or (it + 1) % 5 == 0:
-            print(f"[joint_opt] {it+1}/{num_iters}  reproj={_iter_log['loss_r']:.3f}  "
+            logger.debug(f"[joint_opt] {it+1}/{num_iters}  reproj={_iter_log['loss_r']:.3f}  "
                   f"p2plane={_iter_log['loss_p']:.5f}  p2depth={_iter_log['loss_d']:.5f}  total={_iter_log['loss']:.3f}")
 
     # --- write back ---
@@ -1924,7 +1927,7 @@ def _joint_optimize_keyframes(
         pts3d_out[~finite_mask] = np.nan  # restore NaN for originally invalid points
         image_info_work["points_3d"] = pts3d_out
 
-    print(f"[joint_opt] Done. Refined {int(opt_mask.sum())} poses, "
+    logger.info(f"[joint_opt] Done. Refined {int(opt_mask.sum())} poses, "
           f"{int(finite_mask.sum())} 3D points.")
     
 def _find_nearest_registered_frame(image_info_work, frame_idx):
@@ -1946,7 +1949,7 @@ def _reset_pose_to_nearest_registered(image_info_work, frame_idx):
     nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
     if nearest_idx is not None:
         image_info_work["extrinsics"][frame_idx] = image_info_work["extrinsics"][nearest_idx].copy()
-        print(f"[reproj_recovery] Reset frame {frame_idx} pose to nearest registered frame {nearest_idx}")
+        logger.warning(f"[reproj_recovery] Reset frame {frame_idx} pose to nearest registered frame {nearest_idx}")
 
 
 def _estimate_pose_from_nearest_registered(image_info_work, frame_idx):
@@ -1964,7 +1967,7 @@ def _reset_and_track_foundation_pose(image_info_work, frame_idx, obj_mesh, debug
     Returns (estimated_o2c_pose, success).
     """
     if obj_mesh is None:
-        print("[FoundationPose] Missing mesh, skipping tracking")
+        logger.warning("[FoundationPose] Missing mesh, skipping tracking")
         return None, False
 
     images = image_info_work.get("images")
@@ -1977,9 +1980,9 @@ def _reset_and_track_foundation_pose(image_info_work, frame_idx, obj_mesh, debug
     current_o2c, nearest_idx = _estimate_pose_from_nearest_registered(image_info_work, frame_idx)
     if current_o2c is None:
         current_o2c = image_info_work["extrinsics"][frame_idx].astype(np.float64)
-        print(f"[FoundationPose] Frame {frame_idx}: no nearest registered frame, using current pose as init")
+        logger.warning(f"[FoundationPose] Frame {frame_idx}: no nearest registered frame, using current pose as init")
     else:
-        print(f"[FoundationPose] Frame {frame_idx}: using nearest registered frame {nearest_idx} pose as init")
+        logger.debug(f"[FoundationPose] Frame {frame_idx}: using nearest registered frame {nearest_idx} pose as init")
 
     fp_pose = _run_foundation_pose_track(
         obj_mesh, rgb, depth, None, K, current_o2c,
@@ -1987,7 +1990,7 @@ def _reset_and_track_foundation_pose(image_info_work, frame_idx, obj_mesh, debug
     )
     if fp_pose is None:
         return None, False
-    print(f"[FoundationPose] Frame {frame_idx}: got tracking estimate")
+    logger.debug(f"[FoundationPose] Frame {frame_idx}: got tracking estimate")
     return fp_pose, True
 
 
@@ -2076,20 +2079,20 @@ def check_which_estimate_is_better_and_update(
         candidates.append(("foundation_pose_neus", np.asarray(fp_pose_neus, dtype=np.float64)))
 
     if not candidates:
-        print(f"[pose_select] Frame {frame_idx}: no valid pose estimate candidates")
+        logger.warning(f"[pose_select] Frame {frame_idx}: no valid pose estimate candidates")
         return None, False, np.inf
 
     nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
     if nearest_idx is None:
         src, pose = candidates[0]
-        print(f"[pose_select] Frame {frame_idx}: no nearby registered frame, choose {src}")
+        logger.warning(f"[pose_select] Frame {frame_idx}: no nearby registered frame, choose {src}")
         return pose, True, np.inf
 
     nearby_pose = image_info_work["extrinsics"][nearest_idx].astype(np.float64)
     nearby_pts_obj = _build_depth_points_obj_for_pose(image_info_work, nearest_idx, nearby_pose)
     if nearby_pts_obj is None:
         src, pose = candidates[0]
-        print(f"[pose_select] Frame {frame_idx}: nearby depth points unavailable, choose {src}")
+        logger.warning(f"[pose_select] Frame {frame_idx}: nearby depth points unavailable, choose {src}")
         return pose, True, np.inf
 
     best_src = None
@@ -2098,17 +2101,17 @@ def check_which_estimate_is_better_and_update(
     for src, pose in candidates:
         curr_pts_obj = _build_depth_points_obj_for_pose(image_info_work, frame_idx, pose)
         score = _mean_nn_distance(curr_pts_obj, nearby_pts_obj)
-        print(f"[pose_select] Frame {frame_idx}: {src} depth NN mean distance = {score:.6f}")
+        logger.debug(f"[pose_select] Frame {frame_idx}: {src} depth NN mean distance = {score:.6f}")
         if score < best_score:
             best_score = score
             best_src = src
             best_pose = pose
 
     if best_pose is None:
-        print(f"[pose_select] Frame {frame_idx}: pose scoring failed")
+        logger.warning(f"[pose_select] Frame {frame_idx}: pose scoring failed")
         return None, False, np.inf
 
-    print(f"[pose_select] Frame {frame_idx}: selected {best_src} (score={best_score:.6f})")
+    logger.info(f"[pose_select] Frame {frame_idx}: selected {best_src} (score={best_score:.6f})")
     return best_pose, True, best_score
 
 
@@ -2132,18 +2135,18 @@ def _check_contact_and_reset(hand_verts_in_cam, obj_verts, image_info_work, fram
         loss_val = contact_loss.item()
         
         if loss_val > thresh_contact:
-            print(f"[align_depth] Frame {frame_idx}: initial contact loss {loss_val:.4f} > {thresh_contact}, resetting pose to nearby frame")
+            logger.warning(f"[align_depth] Frame {frame_idx}: initial contact loss {loss_val:.4f} > {thresh_contact}, resetting pose to nearby frame")
             nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
             if nearest_idx is not None:
                 ext_near = image_info_work["extrinsics"][nearest_idx].astype(np.float32)
                 image_info_work["extrinsics"][frame_idx, :3, :3] = ext_near[:3, :3]
                 image_info_work["extrinsics"][frame_idx, :3, 3] = ext_near[:3, 3]
-                print(f"[align_depth] Frame {frame_idx}: reset to nearest registered frame {nearest_idx}")
+                logger.warning(f"[align_depth] Frame {frame_idx}: reset to nearest registered frame {nearest_idx}")
                 return "reset"
-            print(f"[align_depth] Frame {frame_idx}: no nearby registered frame found, reset skipped")
+            logger.warning(f"[align_depth] Frame {frame_idx}: no nearby registered frame found, reset skipped")
             return "ok"
         else:
-            print(f"[align_depth] Frame {frame_idx}: initial contact loss {loss_val:.4f} within threshold {thresh_contact}, skipping pose reset")
+            logger.debug(f"[align_depth] Frame {frame_idx}: initial contact loss {loss_val:.4f} within threshold {thresh_contact}, skipping pose reset")
             return "skip"
 
 
@@ -2162,8 +2165,8 @@ def _check_pose_moved(image_info_work, frame_idx, min_rot=2, min_trans=0.005):
     angle = np.rad2deg(np.arccos(np.clip((np.trace(R_delta) - 1) / 2, -1.0, 1.0)))
     trans = np.linalg.norm(T_curr[:3, 3] - T_near[:3, 3])
     if angle < min_rot and trans < min_trans:
-        print(f"[check_pose_moved] Frame {frame_idx} pose barely moved "
-              f"(rot={angle:.2f}°, trans={trans:.4f}), nearest={nearest_idx}")
+        logger.warning(f"[check_pose_moved] Frame {frame_idx} pose barely moved "
+              f"(rot={angle:.2f}\u00b0, trans={trans:.4f}), nearest={nearest_idx}")
         return False
     return True
 
@@ -2186,7 +2189,7 @@ def _init_pose_from_hand(image_info_work, frame_idx):
 
 
 def print_image_info_stats(image_info, invalid_cnt):
-    print(
+    logger.info(
         f"stats {np.array(image_info['registered']).sum() + np.array(image_info['invalid']).sum() - 1}/{len(image_info['frame_indices'])} :, " # -1 for the first condition frame
         f"registered: {np.array(image_info['registered']).sum()}, "
         f"keyframes: {np.array(image_info['keyframe']).sum()}, "
@@ -2271,7 +2274,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         sam3d_mesh = trimesh.load(str(sam_3d_mesh_file), process=False)
         if isinstance(sam3d_mesh, trimesh.Scene):
             sam3d_mesh = sam3d_mesh.dump(concatenate=True)
-        print(f"Loaded SAM3D mesh: {len(sam3d_mesh.vertices)} vertices")
+        logger.info(f"Loaded SAM3D mesh: {len(sam3d_mesh.vertices)} vertices")
 
     # Load the NeuS mesh (if available) for FoundationPose tracking
     neus_mesh_trimesh = None
@@ -2282,15 +2285,15 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         neus_mesh_trimesh = trimesh.load(str(neus_mesh_path), process=False)
         if isinstance(neus_mesh_trimesh, trimesh.Scene):
             neus_mesh_trimesh = neus_mesh_trimesh.dump(concatenate=True)
-        print(f"Loaded NeuS mesh: {len(neus_mesh_trimesh.vertices)} vertices")
+        logger.info(f"Loaded NeuS mesh: {len(neus_mesh_trimesh.vertices)} vertices")
 
     while image_info_work["registered"].sum() + image_info_work["invalid"].sum() < num_frames:
         next_frame_idx = find_next_frame(image_info_work)
         if next_frame_idx is None:
             break
 
-        print("+" * 50)
-        print(f"Next frame to register: {image_info['frame_indices'][next_frame_idx]} (local idx {next_frame_idx})")
+        logger.info("+" * 50)
+        logger.info(f"Next frame to register: {image_info['frame_indices'][next_frame_idx]} (local idx {next_frame_idx})")
         debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
         if RUN_ON_SERVER:
             debug_dir = None
@@ -2303,7 +2306,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         # ):
         if 0:
             image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True  
-            print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to insufficient inliers/depth pixels")
+            logger.warning(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to insufficient inliers/depth pixels")
             invalid_cnt["insufficient_pixel"] += 1
             save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
             print_image_info_stats(image_info_work, invalid_cnt)
@@ -2344,7 +2347,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 fp_pose_neus=fp_pose_neus,
                 fp_success_neus=fp_success_neus,
             )
-            print(f"[register] Frame {next_frame_idx} iter {iters}: score={iter_score:.6f}, fp_crop_ratio={fp_crop_ratio:.2f}")
+            logger.debug(f"[register] Frame {next_frame_idx} iter {iters}: score={iter_score:.6f}, fp_crop_ratio={fp_crop_ratio:.2f}")
             if iter_success and iter_score < best_score:
                 best_score = iter_score
                 best_pose_overall = iter_pose
@@ -2354,9 +2357,9 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         if best_pose_overall is not None:
             image_info_work["extrinsics"][next_frame_idx, :3, :3] = best_pose_overall[:3, :3].astype(np.float32)
             image_info_work["extrinsics"][next_frame_idx, :3, 3] = best_pose_overall[:3, 3].astype(np.float32)
-            print(f"[register] Frame {next_frame_idx}: applied best pose (score={best_score:.6f})")
+            logger.info(f"[register] Frame {next_frame_idx}: applied best pose (score={best_score:.6f})")
         if not estimate_success:
-            print(f"[register_remaining_frames] Pose estimation failed for frame {next_frame_idx}, resetting to nearest registered frame")
+            logger.warning(f"[register_remaining_frames] Pose estimation failed for frame {next_frame_idx}, resetting to nearest registered frame")
             _reset_pose_to_nearest_registered(image_info_work, next_frame_idx)
         # Save depth 3D points in object space for this frame
         _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_PnP")
@@ -2368,7 +2371,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             
 
         if is_moved:
-            print(f"[register_remaining_frames] Frame {next_frame_idx} align depth to mesh due to high reprojection error")
+            logger.warning(f"[register_remaining_frames] Frame {next_frame_idx} align depth to mesh due to high reprojection error")
             # _reset_pose_to_nearest_registered(image_info_work, next_frame_idx)
             # _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_reset_when_pnp_fail")
             # _init_pose_from_hand(image_info_work, next_frame_idx)
@@ -2383,20 +2386,20 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             # Align the frame with SAM3D mesh using depth with outlier rejection
             # if sam3d_mesh is not None:
             if 0:
-                print(f"[register_remaining_frames] Aligning frame {next_frame_idx} with SAM3D mesh using depth")
+                logger.info(f"[register_remaining_frames] Aligning frame {next_frame_idx} with SAM3D mesh using depth")
                 sucess = _align_frame_with_sam3d(image_info_work, next_frame_idx, sam3d_mesh, 
                                              debug_dir=debug_dir
                                              )
                 if not sucess:
                     image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True
-                    print(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to large reprojection error and failed depth-mesh alignment")
+                    logger.warning(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to large reprojection error and failed depth-mesh alignment")
                     invalid_cnt["reproj_err"] += 1
                     save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
                     print_image_info_stats(image_info_work, invalid_cnt)
                     continue
                 else:
                     sucess, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args, skip_check=True)
-                    print(f"[register_remaining_frames] After depth-mesh alignment, reprojection error for frame {next_frame_idx}: {mean_error:.2f}")
+                    logger.info(f"[register_remaining_frames] After depth-mesh alignment, reprojection error for frame {next_frame_idx}: {mean_error:.2f}")
                     _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_align_mesh")
 
 
@@ -2405,7 +2408,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
 
         image_info_work["registered"][next_frame_idx] = True
-        print(f"Successfully registered frame {image_info['frame_indices'][next_frame_idx]}")
+        logger.info(f"Successfully registered frame {image_info['frame_indices'][next_frame_idx]}")
         key_frame_min_reproj_thresh = 2.0
         # if mean_error <= key_frame_min_reproj_thresh:
         if 1:
@@ -2420,9 +2423,9 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 try:
                     image_info_work = process_key_frame(image_info_work, next_frame_idx, args)
                 except Exception as exc:
-                    print(f"[register_remaining_frames] process_key_frame failed: {exc}")
+                    logger.warning(f"[register_remaining_frames] process_key_frame failed: {exc}")
         else:
-            print(f"Frame {image_info['frame_indices'][next_frame_idx]} not marked as keyframe due to high reprojection error ({mean_error:.2f} > {key_frame_min_reproj_thresh})")     
+            logger.warning(f"Frame {image_info['frame_indices'][next_frame_idx]} not marked as keyframe due to high reprojection error ({mean_error:.2f} > {key_frame_min_reproj_thresh})")     
 
         key_frame_num =  image_info_work["keyframe"].sum()
         # Joint optimize keyframe poses + 3D points
@@ -2442,7 +2445,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                                            min_track_number=args.min_track_number)
                 _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_keyframes_opt")
             except Exception as exc:
-                print(f"[register_remaining_frames] joint optimization failed: {exc}")
+                logger.warning(f"[register_remaining_frames] joint optimization failed: {exc}")
 
         if image_info_work['keyframe'][next_frame_idx] and (key_frame_num >= 5) and (key_frame_num % 5 == 0) and args.optimize_3D_prior:
             neus_data_dir = output_dir / "pipeline_joint_opt" / "neus_data" / f"{image_info_work['frame_indices'][next_frame_idx]:04d}"
@@ -2492,7 +2495,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                     neus_mesh_trimesh = trimesh.load(str(neus_mesh_path), process=False)
                     if isinstance(neus_mesh_trimesh, trimesh.Scene):
                         neus_mesh_trimesh = neus_mesh_trimesh.dump(concatenate=True)
-                    print(f"Reloaded NeuS mesh: {len(neus_mesh_trimesh.vertices)} vertices")
+                    logger.info(f"Reloaded NeuS mesh: {len(neus_mesh_trimesh.vertices)} vertices")
 
         image_info["register"] = image_info_work["registered"].tolist()
         image_info["invalid"] = image_info_work["invalid"].tolist()
@@ -2521,7 +2524,14 @@ def main(args):
         log_file = open(log_path, "a", buffering=1)
         sys.stdout = TeeStream(orig_stdout, log_file)
         sys.stderr = TeeStream(orig_stderr, log_file)
-        print(f"[logging] Writing console output to {log_path}")
+        # Add file handler so logger output also goes to log.txt
+        from utils_simba.logger import ColoredFormatter
+        import logging as _logging
+        _file_handler = _logging.FileHandler(log_path, mode="a")
+        _file_handler.setLevel(_logging.DEBUG)
+        _file_handler.setFormatter(ColoredFormatter())
+        logger.addHandler(_file_handler)
+        logger.info(f"[logging] Writing console output to {log_path}")
 
         data_dir = Path(args.data_dir)
         out_dir = Path(args.output_dir)
@@ -2584,7 +2594,7 @@ def main(args):
         }
 
         # 6. Save image info
-        print("Building and saving image info...")
+        logger.info("Building and saving image info...")
         save_results(image_info=image_info, register_idx=cond_idx, preprocessed_data=preprocessed_data, results_dir=out_dir / "pipeline_joint_opt")
 
         # 7. Load NeuS checkpoint from pipeline_neus_init.py output

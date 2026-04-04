@@ -12,6 +12,9 @@
       "**/output_server": true,
       "**/output*": true,
   },
+  "files.associations": {                                                                                     
+      "*.txt": "ansi"                                                                                         
+  },  
   "python-envs.defaultEnvManager": "ms-python.python:conda",
   "python-envs.defaultPackageManager": "ms-python.python:conda",
   "python.condaPath": "~/miniconda3/bin/conda",
