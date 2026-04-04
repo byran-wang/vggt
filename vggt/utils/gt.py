@@ -172,6 +172,10 @@ def load_data(seq_name, get_selected_fids_fn=None):
     fnames = np.array(fnames)[selected_fids]
     is_valid = is_valid[selected_fids]
 
+    # ABF12/ABF14: frames beyond 1135 have bad GT annotations
+    if seq_name in ("ABF12", "ABF14"):
+        invalid_mask = np.array(selected_fids) > 1135
+        is_valid[invalid_mask] = 0
 
     hand_rot[...] = 0.0
     hand_pose[...] = 0.0
