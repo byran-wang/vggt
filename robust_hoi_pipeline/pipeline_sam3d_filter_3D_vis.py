@@ -45,7 +45,7 @@ def load_camera_pose(camera_json_path):
     K = np.array(camera["K"], dtype=np.float64)           # (3, 3)
     o2c = np.array(camera["blw2cvc"], dtype=np.float64)   # (4, 4)
     R = o2c[:3, :3]
-    scale = np.linalg.norm(R, axis=0)  # per-column scale
+    scale = np.linalg.norm(R, axis=0)[0]  # per-column scale
     o2c_rigid = o2c.copy()
     o2c_rigid[:3, :3] = R / scale
     c2o = np.linalg.inv(o2c_rigid)
@@ -86,10 +86,10 @@ def log_image(rgb_dir, fid, frame_idx, K, c2o, jpeg_quality=85):
     return True
 
 
-def log_depth_points(dataset_dir, scene_name, fid, c2o):
+def log_depth_points(dataset_dir, scene_name, fid, c2o, scale):
     """Back-project filtered depth to 3D in SAM3D object space and log. Returns True if logged."""
     preprocess_dir = Path(f"{dataset_dir}/{scene_name}/pipeline_preprocess")
-    depth_path = preprocess_dir / "depth_filtered" / f"{fid}.png"
+    depth_path = preprocess_dir / "../depth" / f"{fid}.png"
     mask_path = preprocess_dir / "mask_obj" / f"{fid}.png"
     meta_path = preprocess_dir / "meta" / f"{fid}.pkl"
 
@@ -100,6 +100,7 @@ def log_depth_points(dataset_dir, scene_name, fid, c2o):
         meta = pickle.load(f)
     K_meta = np.array(meta["intrinsics"], dtype=np.float64)
     depth = get_depth(str(depth_path))
+    depth /= scale
     mask_obj = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
 
     xyz_cam = depth2xyzmap(depth, K_meta)  # (H, W, 3)
@@ -145,7 +146,7 @@ def main(args):
 
         mesh = log_mesh(frame_dir)
         has_img = log_image(rgb_dir, fid, frame_idx, K, c2o, args.jpeg_quality)
-        has_pts = log_depth_points(args.dataset_dir, args.scene_name, fid, c2o)
+        has_pts = log_depth_points(args.dataset_dir, args.scene_name, fid, c2o, scale)
 
         print(f"  Frame {fid}: mesh={'yes' if mesh else 'no'}, image={'yes' if has_img else 'no'}, depth_pts={'yes' if has_pts else 'no'}")
 

@@ -25,7 +25,7 @@ def main(args):
         return
 
     # Load frame list after 3D filter
-    frame_list_file = dataset_dir / args.scene_name / "SAM3D_aligned_pts" / "frame_list.txt"
+    frame_list_file = dataset_dir / args.scene_name / "SAM3D_aligned_pts" / "frame_list_after_aligned_pts.txt"
     if not frame_list_file.exists():
         logger.error(f"{frame_list_file} not found. Run ho3d_obj_SAM3D_filter_3D first.")
         return
@@ -54,7 +54,7 @@ def main(args):
         # Log mesh from original SAM3D directory
         mesh = log_mesh(sam3d_dir / fid)
         has_img = log_image(rgb_dir, fid, frame_idx, K, c2o, args.jpeg_quality)
-        has_pts = log_depth_points(args.dataset_dir, args.scene_name, fid, c2o)
+        has_pts = log_depth_points(args.dataset_dir, args.scene_name, fid, c2o, scale)
 
         logger.info(f"  Frame {fid}: mesh={'yes' if mesh else 'no'}, image={'yes' if has_img else 'no'}, depth_pts={'yes' if has_pts else 'no'}")
 

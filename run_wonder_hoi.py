@@ -1017,7 +1017,7 @@ class run_wonder_hoi:
             print(f"Saved scores to {scores_path}")
 
             # Save sorted frame list
-            frame_list_path = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/frame_list.txt"
+            frame_list_path = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/frame_list_after_aligned_pts.txt"
             with open(frame_list_path, "w") as f:
                 for sid in sorted_scores:
                     f.write(f"{sid}\n")
