@@ -1007,24 +1007,33 @@ class run_wonder_hoi:
                 print(f"  id={id} alignment.json not found, score=inf")
 
         if self.seq_config["cond_select_strategy"] == "auto":
-            # Save scores
+            # Sort scores in increasing order
+            sorted_scores = dict(sorted(scores.items(), key=lambda item: item[1]))
+
+            # Save sorted scores
             scores_path = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/scores.json"
             with open(scores_path, "w") as f:
-                json.dump(scores, f, indent=2)
+                json.dump(sorted_scores, f, indent=2)
             print(f"Saved scores to {scores_path}")
 
+            # Save sorted frame list
+            frame_list_path = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/frame_list.txt"
+            with open(frame_list_path, "w") as f:
+                for sid in sorted_scores:
+                    f.write(f"{sid}\n")
+            print(f"Saved sorted frame list to {frame_list_path}")
+
             # Select best image_id (lowest mean_error)
-            best_id = min(scores, key=lambda k: scores[k])
+            best_id = next(iter(sorted_scores))
             best_id_path = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/best_id.txt"
             with open(best_id_path, "w") as f:
                 f.write(best_id)
-            print(f"Best image_id: {best_id} (mean_error={scores[best_id]:.4f}), saved to {best_id_path}")
+            print(f"Best image_id: {best_id} (mean_error={sorted_scores[best_id]:.4f}), saved to {best_id_path}")
 
             # Print sorted ranking
-            sorted_ids = sorted(scores, key=lambda k: scores[k])
             print("Ranking (best to worst):")
-            for rank, sid in enumerate(sorted_ids):
-                print(f"  {rank+1}. id={sid} mean_error={scores[sid]:.4f}")
+            for rank, (sid, err) in enumerate(sorted_scores.items()):
+                print(f"  {rank+1}. id={sid} mean_error={err:.4f}")
 
     def ho3d_SAM3D_post_process(self, scene_name, **kwargs):
         self.print_header(f"Copy SAM3D results for {scene_name}")
