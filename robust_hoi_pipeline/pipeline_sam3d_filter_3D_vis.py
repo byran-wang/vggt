@@ -1,17 +1,16 @@
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 import rerun as rr
 
-from utils_simba.rerun import (
-    load_mesh_as_trimesh,
-    get_vertex_colors,
-    stamp_frame_text,
-    log_camera_frame,
-)
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
+from utils_simba.rerun import load_mesh_as_trimesh, get_vertex_colors, stamp_frame_text, log_camera_frame
 
 def main(args):
     sam3d_dir = Path(f"{args.dataset_dir}/{args.scene_name}/SAM3D")
