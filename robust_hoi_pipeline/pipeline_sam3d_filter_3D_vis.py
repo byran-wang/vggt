@@ -1,8 +1,10 @@
 import argparse
 import json
+import pickle
 import sys
 from pathlib import Path
 
+import cv2
 import numpy as np
 import rerun as rr
 
@@ -10,6 +12,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
+from utils_simba.depth import depth2xyzmap, get_depth
 from utils_simba.rerun import load_mesh_as_trimesh, get_vertex_colors, stamp_frame_text, log_camera_frame
 
 def main(args):
@@ -93,7 +96,32 @@ def main(args):
                 static=False,
             )
 
-        print(f"  Frame {fid}: logged mesh={'yes' if mesh else 'no'}, image={'yes' if img_path.exists() else 'no'}")
+        # Back-project filtered depth to 3D points in SAM3D object space
+        preprocess_dir = Path(f"{args.dataset_dir}/{args.scene_name}/pipeline_preprocess")
+        depth_path = preprocess_dir / "depth_filtered" / f"{fid}.png"
+        mask_path = preprocess_dir / "mask_obj" / f"{fid}.png"
+        meta_path = preprocess_dir / "meta" / f"{fid}.pkl"
+
+        has_pts = False
+        if depth_path.exists() and mask_path.exists() and meta_path.exists():
+            with open(meta_path, "rb") as f:
+                meta = pickle.load(f)
+            K_meta = np.array(meta["intrinsics"], dtype=np.float64)
+            depth = get_depth(str(depth_path))
+            mask_obj = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+
+            xyz_cam = depth2xyzmap(depth, K_meta)  # (H, W, 3)
+            valid = (mask_obj > 0) & (depth > 0.01)
+            pts_cam = xyz_cam[valid]  # (N, 3)
+
+            if len(pts_cam) > 0:
+                # Transform to SAM3D object space
+                pts_cam_h = np.hstack([pts_cam, np.ones((len(pts_cam), 1))])
+                pts_obj = (c2o @ pts_cam_h.T).T[:, :3]
+                rr.log("world/depth_points", rr.Points3D(pts_obj, radii=0.001), static=False)
+                has_pts = True
+
+        print(f"  Frame {fid}: mesh={'yes' if mesh else 'no'}, image={'yes' if img_path.exists() else 'no'}, depth_pts={'yes' if has_pts else 'no'}")
 
     print(f"Done. Visualized {len(frame_indices)} frames in rerun.")
 
