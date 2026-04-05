@@ -32,12 +32,12 @@ def _geometry_quality(depth: np.ndarray, K: np.ndarray, mask: np.ndarray) -> flo
     valid = (mask > 0) & (depth > 0.01)
     pts = xyz[valid]  # (N, 3)
     if len(pts) < 10:
-        return 0.0
+        return 0.0, np.zeros(3)
     pts_centered = pts - pts.mean(axis=0)
     _, s, _ = np.linalg.svd(pts_centered, full_matrices=False)
     if s[0] < 1e-8:
-        return 0.0
-    return float(s[2] / s[0])  # min / max singular value
+        return 0.0, s
+    return float(s[2] / s[0]), s  # min / max singular value, singular values
 
 
 def main(args):
@@ -72,7 +72,7 @@ def main(args):
     sorted_by_mask = sorted(mask_pixel_counts.keys(), key=lambda i: mask_pixel_counts[i], reverse=True)
     mask_filtered = set(sorted_by_mask[:args.max_mask_filtered_frames])
 
-    mask_filtered_ordered = [i for i in frame_indices if i in mask_filtered]
+    mask_filtered_ordered = sorted_by_mask[:args.max_mask_filtered_frames]
     mask_out_path = out_dir / "frame_list_after_mask_filtered.txt"
     with open(mask_out_path, "w") as f:
         for idx in mask_filtered_ordered:
@@ -91,20 +91,20 @@ def main(args):
             try:
                 K = _load_intrinsics(str(meta_path))
                 depth = get_depth(str(depth_path))
-                quality = _geometry_quality(depth, K, mask)
+                quality, svs = _geometry_quality(depth, K, mask)
             except Exception as e:
                 print(f"  Frame {fid}: geometry quality failed: {e}")
-                quality = 0.0
+                quality, svs = 0.0, np.zeros(3)
         else:
-            quality = 0.0
+            quality, svs = 0.0, np.zeros(3)
         geometry_qualities[frame_idx] = quality
-        print(f"  Frame {fid}: geometry_quality={quality:.4f}")
+        print(f"  Frame {fid}: geometry_quality={quality:.4f}, singular_values=({svs[0]:.4f}, {svs[1]:.4f}, {svs[2]:.4f})")
 
     # Filter frames: sort by geometry quality, keep top 100
     sorted_by_geom = sorted(geometry_qualities.keys(), key=lambda i: geometry_qualities[i], reverse=True)
     geom_filtered = set(sorted_by_geom[:args.max_geometry_filtered_frames])
 
-    depth_filtered_ordered = [i for i in frame_indices if i in geom_filtered]
+    depth_filtered_ordered = sorted_by_geom[:args.max_geometry_filtered_frames]
     depth_out_path = out_dir / "frame_list_after_depth_filtered.txt"
     with open(depth_out_path, "w") as f:
         for idx in depth_filtered_ordered:
@@ -112,7 +112,7 @@ def main(args):
     print(f"Saved depth-filtered frame list to {depth_out_path}")
 
     # Keep only frames that pass both filters, preserving original order
-    filtered = [i for i in frame_indices if i in mask_filtered and i in geom_filtered]
+    filtered = [i for i in depth_filtered_ordered if i in mask_filtered]
 
 
     # Write filtered frame list
