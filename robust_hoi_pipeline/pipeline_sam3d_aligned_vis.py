@@ -1,0 +1,73 @@
+import argparse
+import sys
+from pathlib import Path
+
+import rerun as rr
+
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
+
+from utils_simba.logger import get_logger
+from pipeline_sam3d_filter_3D_vis import init_rerun, load_camera_pose, log_mesh, log_image, log_depth_points
+
+logger = get_logger(__name__)
+
+
+def main(args):
+    dataset_dir = Path(args.dataset_dir)
+    sam3d_dir = dataset_dir / args.scene_name / "SAM3D"
+
+    # Aligned camera source: SAM3D_aligned_mask or SAM3D_aligned_pts
+    aligned_dir = dataset_dir / args.scene_name / f"SAM3D_aligned_{args.align_method}"
+    if not aligned_dir.exists():
+        logger.error(f"{aligned_dir} not found. Run ho3d_align_SAM3D_{args.align_method} first.")
+        return
+
+    # Load frame list after 3D filter
+    frame_list_file = dataset_dir / args.scene_name / "SAM3D_aligned_pts" / "frame_list.txt"
+    if not frame_list_file.exists():
+        logger.error(f"{frame_list_file} not found. Run ho3d_obj_SAM3D_filter_3D first.")
+        return
+    with open(frame_list_file, "r") as f:
+        frame_indices = [int(line.strip()) for line in f if line.strip()]
+    logger.info(f"Loaded {len(frame_indices)} frames from {frame_list_file}")
+
+    # init_rerun(f"sam3d_aligned_{args.align_method}_vis")
+    init_rerun(f"sam3d_aligned_vis")
+
+    rgb_dir = dataset_dir / args.scene_name / "rgb"
+
+    for seq_i, frame_idx in enumerate(frame_indices):
+        fid = f"{frame_idx:04d}"
+
+        # Load camera pose from the aligned directory
+        camera_json = aligned_dir / fid / "camera.json"
+        cam = load_camera_pose(camera_json)
+        if cam is None:
+            logger.warning(f"  Frame {fid}: camera.json not found in {aligned_dir / fid}, skipping")
+            continue
+        K, c2o, scale = cam
+
+        rr.set_time_sequence("frame", seq_i)
+
+        # Log mesh from original SAM3D directory
+        mesh = log_mesh(sam3d_dir / fid)
+        has_img = log_image(rgb_dir, fid, frame_idx, K, c2o, args.jpeg_quality)
+        has_pts = log_depth_points(args.dataset_dir, args.scene_name, fid, c2o)
+
+        logger.info(f"  Frame {fid}: mesh={'yes' if mesh else 'no'}, image={'yes' if has_img else 'no'}, depth_pts={'yes' if has_pts else 'no'}")
+
+    logger.info(f"Done. Visualized {len(frame_indices)} frames with {args.align_method} alignment.")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Visualize SAM3D aligned frames in Rerun")
+    parser.add_argument("--dataset_dir", type=str, required=True)
+    parser.add_argument("--scene_name", type=str, required=True)
+    parser.add_argument("--align_method", type=str, default="pts", choices=["mask", "pts"],
+                        help="Alignment method: 'mask' for SAM3D_aligned_mask, 'pts' for SAM3D_aligned_pts")
+    parser.add_argument("--jpeg_quality", type=int, default=85)
+
+    args = parser.parse_args()
+    main(args)

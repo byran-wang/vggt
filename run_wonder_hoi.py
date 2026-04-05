@@ -88,6 +88,8 @@ class run_wonder_hoi:
                 "ho3d_align_SAM3D_mask": self.ho3d_align_SAM3D_mask,
                 "ho3d_align_by_foundation_pose": self.ho3d_align_by_foundation_pose,
                 "ho3d_align_SAM3D_pts": self.ho3d_align_SAM3D_pts,
+                "ho3d_SAM3D_aligned_mask_vis": self.ho3d_SAM3D_aligned_mask_vis,
+                "ho3d_SAM3D_aligned_pts_vis": self.ho3d_SAM3D_aligned_pts_vis,
                 "ho3d_SAM3D_post_process": self.ho3d_SAM3D_post_process,
                 "ho3d_keyframe_optimization": self.ho3d_keyframe_optimization,
                 "ho3d_align_gen_3d": self.ho3d_align_gen_3d,
@@ -845,6 +847,25 @@ class run_wonder_hoi:
         cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_filter_3D_vis.py "
         cmd += f"--dataset_dir {self.dataset_dir} "
         cmd += f"--scene_name {scene_name} "
+        print(cmd)
+        os.system(cmd)
+
+
+    def ho3d_SAM3D_aligned_mask_vis(self, scene_name, **kwargs):
+        self.print_header(f"Visualize SAM3D mask-aligned frames in Rerun for {scene_name}")
+        cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_aligned_vis.py "
+        cmd += f"--dataset_dir {self.dataset_dir} "
+        cmd += f"--scene_name {scene_name} "
+        cmd += f"--align_method mask "
+        print(cmd)
+        os.system(cmd)
+
+    def ho3d_SAM3D_aligned_pts_vis(self, scene_name, **kwargs):
+        self.print_header(f"Visualize SAM3D pts-aligned frames in Rerun for {scene_name}")
+        cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_aligned_vis.py "
+        cmd += f"--dataset_dir {self.dataset_dir} "
+        cmd += f"--scene_name {scene_name} "
+        cmd += f"--align_method pts "
         print(cmd)
         os.system(cmd)
 
@@ -2365,6 +2386,8 @@ if __name__ == "__main__":
                 "ho3d_align_SAM3D_mask",
                 "ho3d_align_by_foundation_pose",
                 "ho3d_align_SAM3D_pts",
+                "ho3d_SAM3D_aligned_mask_vis",
+                "ho3d_SAM3D_aligned_pts_vis",
                 "ho3d_SAM3D_post_process",
                 "ho3d_keyframe_optimization",
                 "ho3d_align_gen_3d",
