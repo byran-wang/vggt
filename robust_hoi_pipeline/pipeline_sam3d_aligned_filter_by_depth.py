@@ -61,23 +61,65 @@ def _filter_outliers_by_mesh(mesh, pts_obj, dist_threshold):
     return pts_obj[inlier_mask]
 
 
-def _check_3axis_coverage(pts, mesh, extent_ratio):
-    """Check if points cover at least 3 axes with significant extent.
 
-    Compares point cloud extent to mesh bounding box along each axis.
-    Returns (num_axes_covered, extents, mesh_extents).
+def _rasterize_to_grid(points_2d, global_min, global_max, resolution=128):
+    """Rasterize 2D points into a boolean grid using shared global bounds."""
+    span = global_max - global_min
+    span[span < 1e-8] = 1e-8
+    normed = ((points_2d - global_min) / span * (resolution - 1)).astype(int)
+    normed = np.clip(normed, 0, resolution - 1)
+    grid = np.zeros((resolution, resolution), dtype=bool)
+    grid[normed[:, 0], normed[:, 1]] = True
+    return grid
+
+
+def _check_3face_coverage(pts, mesh, ratio_threshold, debug_dir=None):
+    """Check coverage by projecting points and mesh onto XY, XZ, YZ planes.
+
+    For each plane, computes the ratio of projected point cloud area to
+    projected mesh area. A face is covered if the ratio >= ratio_threshold.
+
+    Returns (num_faces_covered, face_names_covered).
     """
-    mesh_bbox = mesh.bounding_box.extents  # (3,) extent along X, Y, Z
-    pts_min = pts.min(axis=0)
-    pts_max = pts.max(axis=0)
-    pts_extents = pts_max - pts_min
+    mesh_verts = mesh.vertices  # (V, 3)
+    planes = [
+        ((0, 1), "XY"),
+        ((0, 2), "XZ"),
+        ((1, 2), "YZ"),
+    ]
 
-    axes_covered = 0
-    for i in range(3):
-        if mesh_bbox[i] > 1e-8 and pts_extents[i] / mesh_bbox[i] >= extent_ratio:
-            axes_covered += 1
+    faces_covered = []
+    for (a0, a1), name in planes:
+        mesh_2d = mesh_verts[:, [a0, a1]]
+        pts_2d = pts[:, [a0, a1]]
+        # Shared bounds for consistent rasterization
+        # global_min = np.minimum(mesh_2d.min(axis=0), pts_2d.min(axis=0))
+        # global_max = np.maximum(mesh_2d.max(axis=0), pts_2d.max(axis=0))
+        global_min = np.array([-0.5, -0.5])
+        global_max = np.array([0.5, 0.5])
 
-    return axes_covered, pts_extents, mesh_bbox
+        mesh_grid = _rasterize_to_grid(mesh_2d, global_min, global_max)
+        pts_grid = _rasterize_to_grid(pts_2d, global_min, global_max)
+
+        mesh_cells = mesh_grid.sum()
+        if mesh_cells == 0:
+            continue
+        pts_cells = pts_grid.sum()
+        ratio = pts_cells / mesh_cells
+        logger.info(f"    Plane {name}: pts_cells={pts_cells}, mesh_cells={mesh_cells}, ratio={ratio:.2f}")
+
+        if debug_dir is not None:
+            # Red=mesh only, Green=pts only, Yellow=overlap
+            img = np.zeros((128, 128, 3), dtype=np.uint8)
+            img[mesh_grid, 0] = 255  # red channel for mesh
+            img[pts_grid, 1] = 255   # green channel for pts
+            img_bgr = cv2.flip(img, 0)  # flip Y for image convention
+            cv2.imwrite(str(Path(debug_dir) / f"coverage_{name}.png"), img_bgr)
+
+        if ratio >= ratio_threshold:
+            faces_covered.append(name)
+
+    return len(faces_covered), faces_covered
 
 
 def main(args):
@@ -133,22 +175,19 @@ def main(args):
             filtered_out.append(frame_idx)
             continue
 
-        # Check 3-axis coverage
-        axes_covered, pts_ext, mesh_ext = _check_3axis_coverage(
-            pts_inlier, mesh, args.extent_ratio
+        # Check 3-face coverage
+        debug_dir = aligned_dir / fid / "coverage_debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        faces_covered, face_names = _check_3face_coverage(
+            pts_inlier, mesh, args.face_ratio, debug_dir=str(debug_dir)
         )
-        axis_names = ["X", "Y", "Z"]
-        ratios = [pts_ext[i] / mesh_ext[i] if mesh_ext[i] > 1e-8 else 0 for i in range(3)]
         logger.info(
-            f"  Frame {fid}: axes_covered={axes_covered}/3, "
-            f"extents=({pts_ext[0]:.4f}, {pts_ext[1]:.4f}, {pts_ext[2]:.4f}), "
-            f"mesh=({mesh_ext[0]:.4f}, {mesh_ext[1]:.4f}, {mesh_ext[2]:.4f}), "
-            f"ratios=({ratios[0]:.2f}, {ratios[1]:.2f}, {ratios[2]:.2f})"
+            f"  Frame {fid}: faces_covered={faces_covered}/3, "
+            f"covered_faces={face_names}"
         )
 
-        if axes_covered < 3:
-            missing = [axis_names[i] for i in range(3) if ratios[i] < args.extent_ratio]
-            logger.info(f"  Frame {fid}: insufficient coverage (missing {missing}), filtering out")
+        if faces_covered < 3:
+            logger.info(f"  Frame {fid}: insufficient face coverage ({face_names}), filtering out")
             filtered_out.append(frame_idx)
         else:
             filtered.append(frame_idx)
@@ -169,8 +208,8 @@ if __name__ == "__main__":
     parser.add_argument("--scene_name", type=str, required=True)
     parser.add_argument("--dist_threshold", type=float, default=0.05,
                         help="Max distance from mesh surface to keep a depth point")
-    parser.add_argument("--extent_ratio", type=float, default=0.1,
-                        help="Min ratio of point extent to mesh extent per axis")
+    parser.add_argument("--face_ratio", type=float, default=0.2,
+                        help="Min fraction of points near a bbox face to consider it covered")
 
     args = parser.parse_args()
     main(args)
