@@ -43,6 +43,8 @@ python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_SA
 # Visualize SAM3D aligned frames in Rerun
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_aligned_mask_vis --seq_list $seq_list
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_aligned_pts_vis --seq_list $seq_list
+# Filter aligned frames by depth 3-axis coverage
+python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_aligned_filter_by_depth --seq_list $seq_list
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_by_foundation_pose --seq_list $seq_list --rebuild #--vis
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_post_process  --seq_list $seq_list --rebuild
 # python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_keyframe_optimization --seq_list $seq_list --rebuild #--vis

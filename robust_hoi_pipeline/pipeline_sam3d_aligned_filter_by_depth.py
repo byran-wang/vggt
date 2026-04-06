@@ -1,0 +1,176 @@
+import argparse
+import pickle
+import sys
+from pathlib import Path
+
+import cv2
+import numpy as np
+import trimesh
+
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
+
+from utils_simba.depth import depth2xyzmap, get_depth
+from utils_simba.logger import get_logger
+from utils_simba.rerun import load_mesh_as_trimesh
+from pipeline_sam3d_filter_3D_vis import load_camera_pose
+
+logger = get_logger(__name__)
+
+
+def _backproject_depth_to_object_space(fid, dataset_dir, scene_name, c2o, scale):
+    """Back-project filtered depth to 3D points in SAM3D object space.
+
+    Returns pts_obj (N, 3) or None if data is missing.
+    """
+    preprocess_dir = Path(f"{dataset_dir}/{scene_name}/pipeline_preprocess")
+    depth_path = preprocess_dir / "../depth" / f"{fid}.png"
+    mask_path = preprocess_dir / "mask_obj" / f"{fid}.png"
+    meta_path = preprocess_dir / "meta" / f"{fid}.pkl"
+
+    if not all(p.exists() for p in [depth_path, mask_path, meta_path]):
+        return None
+
+    with open(meta_path, "rb") as f:
+        meta = pickle.load(f)
+    K = np.array(meta["intrinsics"], dtype=np.float64)
+    depth = get_depth(str(depth_path))
+    depth /= scale
+    mask_obj = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+
+    xyz_cam = depth2xyzmap(depth, K)  # (H, W, 3)
+    valid = (mask_obj > 0) & (depth > 0.01)
+    pts_cam = xyz_cam[valid]  # (N, 3)
+
+    if len(pts_cam) < 10:
+        return None
+
+    pts_cam_h = np.hstack([pts_cam, np.ones((len(pts_cam), 1))])
+    pts_obj = (c2o @ pts_cam_h.T).T[:, :3]
+    return pts_obj
+
+
+def _filter_outliers_by_mesh(mesh, pts_obj, dist_threshold):
+    """Remove points that are far from the mesh surface.
+
+    Returns inlier points (M, 3).
+    """
+    _, distances, _ = trimesh.proximity.closest_point(mesh, pts_obj)
+    inlier_mask = distances < dist_threshold
+    return pts_obj[inlier_mask]
+
+
+def _check_3axis_coverage(pts, mesh, extent_ratio):
+    """Check if points cover at least 3 axes with significant extent.
+
+    Compares point cloud extent to mesh bounding box along each axis.
+    Returns (num_axes_covered, extents, mesh_extents).
+    """
+    mesh_bbox = mesh.bounding_box.extents  # (3,) extent along X, Y, Z
+    pts_min = pts.min(axis=0)
+    pts_max = pts.max(axis=0)
+    pts_extents = pts_max - pts_min
+
+    axes_covered = 0
+    for i in range(3):
+        if mesh_bbox[i] > 1e-8 and pts_extents[i] / mesh_bbox[i] >= extent_ratio:
+            axes_covered += 1
+
+    return axes_covered, pts_extents, mesh_bbox
+
+
+def main(args):
+    dataset_dir = Path(args.dataset_dir)
+    sam3d_dir = dataset_dir / args.scene_name / "SAM3D"
+    aligned_dir = dataset_dir / args.scene_name / "SAM3D_aligned_pts"
+
+    # Load frame list from SAM3D_aligned_pts/frame_list_after_aligned_pts.txt
+    frame_list_file = aligned_dir / "frame_list_after_aligned_pts.txt"
+    if not frame_list_file.exists():
+        logger.error(f"{frame_list_file} not found. Run ho3d_align_SAM3D_pts first.")
+        return
+    with open(frame_list_file, "r") as f:
+        frame_indices = [int(line.strip()) for line in f if line.strip()]
+    logger.info(f"Loaded {len(frame_indices)} frames from {frame_list_file}")
+
+    filtered = []
+    filtered_out = []
+
+    for frame_idx in frame_indices:
+        fid = f"{frame_idx:04d}"
+
+        # Load SAM3D mesh
+        mesh = load_mesh_as_trimesh(sam3d_dir / fid)
+        if mesh is None:
+            logger.warning(f"  Frame {fid}: no mesh found, skipping")
+            continue
+
+        # Load aligned camera pose
+        camera_json = aligned_dir / fid / "camera.json"
+        cam = load_camera_pose(camera_json)
+        if cam is None:
+            logger.warning(f"  Frame {fid}: camera.json not found in aligned dir, skipping")
+            continue
+        K, c2o, scale = cam
+
+        # Back-project depth to object space
+        pts_obj = _backproject_depth_to_object_space(
+            fid, args.dataset_dir, args.scene_name, c2o, scale
+        )
+        if pts_obj is None:
+            logger.warning(f"  Frame {fid}: depth back-projection failed, skipping")
+            continue
+
+        logger.info(f"  Frame {fid}: {len(pts_obj)} depth points in object space")
+
+        # Remove outlier points far from mesh surface
+        pts_inlier = _filter_outliers_by_mesh(mesh, pts_obj, args.dist_threshold)
+        logger.info(f"  Frame {fid}: {len(pts_inlier)} inlier points (threshold={args.dist_threshold})")
+
+        if len(pts_inlier) < 10:
+            logger.warning(f"  Frame {fid}: too few inlier points, filtering out")
+            filtered_out.append(frame_idx)
+            continue
+
+        # Check 3-axis coverage
+        axes_covered, pts_ext, mesh_ext = _check_3axis_coverage(
+            pts_inlier, mesh, args.extent_ratio
+        )
+        axis_names = ["X", "Y", "Z"]
+        ratios = [pts_ext[i] / mesh_ext[i] if mesh_ext[i] > 1e-8 else 0 for i in range(3)]
+        logger.info(
+            f"  Frame {fid}: axes_covered={axes_covered}/3, "
+            f"extents=({pts_ext[0]:.4f}, {pts_ext[1]:.4f}, {pts_ext[2]:.4f}), "
+            f"mesh=({mesh_ext[0]:.4f}, {mesh_ext[1]:.4f}, {mesh_ext[2]:.4f}), "
+            f"ratios=({ratios[0]:.2f}, {ratios[1]:.2f}, {ratios[2]:.2f})"
+        )
+
+        if axes_covered < 3:
+            missing = [axis_names[i] for i in range(3) if ratios[i] < args.extent_ratio]
+            logger.info(f"  Frame {fid}: insufficient coverage (missing {missing}), filtering out")
+            filtered_out.append(frame_idx)
+        else:
+            filtered.append(frame_idx)
+
+    logger.info(f"Kept {len(filtered)} frames, filtered out {len(filtered_out)}: {filtered_out}")
+
+    # Save filtered frame list
+    out_path = aligned_dir / "frame_list_after_depth_filtered.txt"
+    with open(out_path, "w") as f:
+        for idx in filtered:
+            f.write(f"{idx}\n")
+    logger.info(f"Saved depth-filtered frame list ({len(filtered)} frames) to {out_path}")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Filter SAM3D aligned frames by depth coverage")
+    parser.add_argument("--dataset_dir", type=str, required=True)
+    parser.add_argument("--scene_name", type=str, required=True)
+    parser.add_argument("--dist_threshold", type=float, default=0.05,
+                        help="Max distance from mesh surface to keep a depth point")
+    parser.add_argument("--extent_ratio", type=float, default=0.1,
+                        help="Min ratio of point extent to mesh extent per axis")
+
+    args = parser.parse_args()
+    main(args)
