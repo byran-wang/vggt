@@ -8,6 +8,7 @@ import argparse
 import trimesh
 from PIL import Image
 import pickle
+import cv2
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -180,6 +181,26 @@ def get_correspondences(
     return kpts0_matched, kpts1_matched
 
 
+def filter_correspondences_by_masks(
+    kpts1: np.ndarray, kpts2: np.ndarray,
+    mask1: np.ndarray, mask2: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Keep only correspondences where both keypoints fall within their mask."""
+    kpts1_int = kpts1.astype(int)
+    kpts2_int = kpts2.astype(int)
+    in_mask1 = mask1[
+        np.clip(kpts1_int[:, 1], 0, mask1.shape[0] - 1),
+        np.clip(kpts1_int[:, 0], 0, mask1.shape[1] - 1),
+    ]
+    in_mask2 = mask2[
+        np.clip(kpts2_int[:, 1], 0, mask2.shape[0] - 1),
+        np.clip(kpts2_int[:, 0], 0, mask2.shape[1] - 1),
+    ]
+    valid = in_mask1 & in_mask2
+    print(f"Found {len(kpts1)} correspondences, {valid.sum()} within object masks")
+    return kpts1[valid], kpts2[valid]
+
+
 def rigid_transform_3d(A: np.ndarray, B: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """Compute rigid transform (rotation + translation) from A to B using SVD.
 
@@ -334,13 +355,36 @@ def save_points_to_ply(
     print(f"Saved {len(points)} points to {output_path}")
 
 
+def save_correspondences_image(
+    img1: np.ndarray, img2: np.ndarray,
+    kpts1: np.ndarray, kpts2: np.ndarray,
+    output_path: str,
+) -> None:
+    """Save a side-by-side correspondence visualization to disk."""
+    h1, w1 = img1.shape[:2]
+    h2, w2 = img2.shape[:2]
+    canvas = np.zeros((max(h1, h2), w1 + w2, 3), dtype=np.uint8)
+    canvas[:h1, :w1] = img1
+    canvas[:h2, w1:] = img2
+    for pt1, pt2 in zip(kpts1, kpts2):
+        color = tuple(np.random.randint(0, 255, 3).tolist())
+        p1 = (int(pt1[0]), int(pt1[1]))
+        p2 = (int(pt2[0]) + w1, int(pt2[1]))
+        cv2.circle(canvas, p1, 3, color, -1)
+        cv2.circle(canvas, p2, 3, color, -1)
+        cv2.line(canvas, p1, p2, color, 1)
+    cv2.imwrite(output_path, canvas[..., ::-1])
+
+
 def save_alignment_results(
     out_dir: str,
     s: float,
     t: np.ndarray,
     o2c_sam3d: np.ndarray,
     K_cond: np.ndarray,
-    sam3d_pts_3d: np.ndarray,
+    cond_depth_3d: np.ndarray,
+    cond_kpt_3d: np.ndarray,
+    sam3d_kpt_3d: np.ndarray,
     cond_kpts: np.ndarray,
     valid_mask: np.ndarray,
     inlier_mask: np.ndarray,
@@ -371,8 +415,9 @@ def save_alignment_results(
     T[:3, 3] = t
 
     # Save transformed points
-    transformed_sam3d_pts = s * sam3d_pts_3d + t
-    save_points_to_ply(transformed_sam3d_pts, os.path.join(out_dir, "sam3d_pts_3d_transformed.ply"), color=(0, 0, 255, 255))
+    transformed_sam3d_kpt_condition_camera_space = s * sam3d_kpt_3d + t
+    save_points_to_ply(transformed_sam3d_kpt_condition_camera_space, os.path.join(out_dir, "input_sam3d_pts_3d_in_condition_camera_space.ply"), color=(0, 0, 255, 255))
+
 
     # Save alignment results
     results = {
@@ -393,7 +438,19 @@ def save_alignment_results(
     # The transformation chain is:
     # p_cond = T @ p_sam3d = T @ o2c_sam3d @ p_obj
     # So new_o2c = T @ o2c_sam3d
-    new_o2c = T @ o2c_sam3d
+    new_o2c = T @ o2c_sam3d # from SAM3D space to condition camera space
+
+    # Save points in SAM3D object space
+    c2o_sam3d = np.linalg.inv(new_o2c)  # condition camera space → SAM3D object space
+
+    sam3d_kpt_in_sam3d_object_space = (c2o_sam3d[:3, :3] @ transformed_sam3d_kpt_condition_camera_space.T + c2o_sam3d[:3, 3:4]).T
+    save_points_to_ply(sam3d_kpt_in_sam3d_object_space, os.path.join(out_dir, "output_sam3d_kpt_in_sam3d_object_space.ply"), color=(255, 0, 0, 255))
+    
+    cond_kpt_in_sam3d_object_space = (c2o_sam3d[:3, :3] @ cond_kpt_3d.T + c2o_sam3d[:3, 3:4]).T
+    save_points_to_ply(cond_kpt_in_sam3d_object_space, os.path.join(out_dir, "output_cond_kpt_in_sam3d_object_space.ply"), color=(0, 255, 0, 255))    
+
+    cond_depth_in_sam3d_object_space = (c2o_sam3d[:3, :3] @ cond_depth_3d.T + c2o_sam3d[:3, 3:4]).T
+    save_points_to_ply(cond_depth_in_sam3d_object_space, os.path.join(out_dir, "output_cond_depth_in_sam3d_object_space.ply"), color=(0, 0, 255, 255))    
 
     # Save to camera.json with K_cond (since we're now in condition camera space)
     camera_data = {
@@ -405,16 +462,16 @@ def save_alignment_results(
     print(f"Saved camera to {out_dir}/camera.json")
 
     # Transform SAM3D mesh with new_o2c and save to mesh_aligned.ply
-    if os.path.exists(SAM3D_mesh_file):
-        sam3d_mesh = load_mesh_from_glb(SAM3D_mesh_file)
-        # Apply new_o2c transform to mesh vertices: p_cond = new_o2c @ p_obj
-        verts_homogeneous = np.hstack([sam3d_mesh.vertices, np.ones((len(sam3d_mesh.vertices), 1))])
-        verts_transformed = (new_o2c @ verts_homogeneous.T).T[:, :3]
-        sam3d_mesh.vertices = verts_transformed
-        sam3d_mesh.export(os.path.join(out_dir, "mesh_aligned.ply"))
-        print(f"Saved transformed mesh to {out_dir}/mesh_aligned.ply")
-    else:
-        print(f"SAM3D mesh file not found: {SAM3D_mesh_file}")
+    # if os.path.exists(SAM3D_mesh_file):
+    #     sam3d_mesh = load_mesh_from_glb(SAM3D_mesh_file)
+    #     # Apply new_o2c transform to mesh vertices: p_cond = new_o2c @ p_obj
+    #     verts_homogeneous = np.hstack([sam3d_mesh.vertices, np.ones((len(sam3d_mesh.vertices), 1))])
+    #     verts_transformed = (new_o2c @ verts_homogeneous.T).T[:, :3]
+    #     sam3d_mesh.vertices = verts_transformed
+    #     sam3d_mesh.export(os.path.join(out_dir, "mesh_aligned.ply"))
+    #     print(f"Saved transformed mesh to {out_dir}/mesh_aligned.ply")
+    # else:
+    #     print(f"SAM3D mesh file not found: {SAM3D_mesh_file}")
 
     return new_o2c
 
@@ -516,8 +573,8 @@ def visualize_correspondences_rerun(
     sam3d_image: np.ndarray,
     cond_kpts: np.ndarray,
     sam3d_kpts: np.ndarray,
-    cond_pts_3d: np.ndarray,
-    sam3d_pts_3d: np.ndarray,
+    cond_kpt_3d: np.ndarray,
+    sam3d_kpt_3d: np.ndarray,
     valid_mask: np.ndarray,
     K_cond: np.ndarray,
     K_sam3d: np.ndarray,
@@ -587,8 +644,8 @@ def visualize_correspondences_rerun(
     ))
 
     # Log 3D points
-    valid_cond_pts = cond_pts_3d[valid_mask]
-    valid_sam3d_pts = sam3d_pts_3d[valid_mask]
+    valid_cond_pts = cond_kpt_3d[valid_mask]
+    valid_sam3d_pts = sam3d_kpt_3d[valid_mask]
 
     # Color by match index
     N_valid = valid_mask.sum()
@@ -663,6 +720,7 @@ def main(args):
     cond_image = load_image(cond_image_path)
     cond_mask = load_mask(cond_mask_path) if os.path.exists(cond_mask_path) else np.ones(cond_image.shape[:2], dtype=bool)
     cond_depth = load_filtered_depth(cond_depth_file)
+    cond_depth[~cond_mask] = 0
     K_cond = load_intrinsics_from_meta(cond_meta_file)
     if K_cond.shape != (3, 3):
         K_cond = load_intrinsics_from_meta(Path(cond_meta_file).parent / "0000.pkl")
@@ -683,15 +741,21 @@ def main(args):
     print("=" * 50)
     print("Finding correspondences with SuperPoint + LightGlue...")
     print("=" * 50)
+
     cond_kpts, sam3d_kpts = get_correspondences(cond_image, sam3d_image, device=device)
-    print(f"Found {len(cond_kpts)} correspondences")
+
+    # Filter correspondences by object masks
+    sam3d_mask = load_mask(SAM3D_mask_file) if os.path.exists(SAM3D_mask_file) else np.ones(sam3d_image.shape[:2], dtype=bool)
+    cond_kpts, sam3d_kpts = filter_correspondences_by_masks(
+        cond_kpts, sam3d_kpts, cond_mask, sam3d_mask,
+    )
 
     # Get 3D corresponding points from depth maps
     print("=" * 50)
     print("Back-projecting to 3D...")
     print("=" * 50)
-    cond_pts_3d, cond_valid = backproject_points(cond_kpts, cond_depth, K_cond)
-    sam3d_pts_3d, sam3d_valid = backproject_points(sam3d_kpts, sam3d_depth, K_sam3d)
+    cond_kpt_3d, cond_valid = backproject_points(cond_kpts, cond_depth, K_cond)
+    sam3d_kpt_3d, sam3d_valid = backproject_points(sam3d_kpts, sam3d_depth, K_sam3d)
     
 
     # Combined valid mask (valid in both views)
@@ -701,23 +765,29 @@ def main(args):
     # Save the valid 3D points to PLY files for debugging
     if args.out_dir:
         os.makedirs(args.out_dir, exist_ok=True)
-        valid_cond_pts = cond_pts_3d[valid_mask]
-        valid_sam3d_pts = sam3d_pts_3d[valid_mask]
-        save_points_to_ply(valid_cond_pts, os.path.join(args.out_dir, "cond_pts_3d.ply"), color=(0, 255, 0, 255))
-        save_points_to_ply(valid_sam3d_pts, os.path.join(args.out_dir, "sam3d_pts_3d.ply"), color=(255, 0, 0, 255))
+        valid_cond_kpt = cond_kpt_3d[valid_mask]
+        valid_sam3d_kpt = sam3d_kpt_3d[valid_mask]
+        corr_colors = np.random.randint(0, 255, (len(valid_cond_kpt), 3), dtype=np.uint8)
+        save_points_to_ply(valid_cond_kpt, os.path.join(args.out_dir, "input_cond_kpt.ply"), colors=corr_colors)
+        save_points_to_ply(valid_sam3d_kpt, os.path.join(args.out_dir, "input_sam3d_kpt.ply"), colors=corr_colors)
+
+        save_correspondences_image(
+            cond_image, sam3d_image, cond_kpts[valid_mask], sam3d_kpts[valid_mask],
+            os.path.join(args.out_dir, "input_correspondences.png"),
+        )
 
         # Save full depth point clouds
-        cond_xyz = depth2xyzmap(cond_depth, K_cond)  # (H, W, 3)
+        cond_depth_3d = depth2xyzmap(cond_depth, K_cond)  # (H, W, 3)
         cond_valid_depth = cond_depth > 0.01
-        cond_depth_pts = cond_xyz[cond_valid_depth]
+        cond_depth_3d = cond_depth_3d[cond_valid_depth]
         cond_depth_colors = cond_image[cond_valid_depth]  # RGB from image
-        save_points_to_ply(cond_depth_pts, os.path.join(args.out_dir, "cond_depth_pcd.ply"), colors=cond_depth_colors)
+        save_points_to_ply(cond_depth_3d, os.path.join(args.out_dir, "input_cond_depth.ply"), colors=cond_depth_colors)
 
-        sam3d_xyz = depth2xyzmap(sam3d_depth, K_sam3d)  # (H, W, 3)
+        sam3d_depth_3d = depth2xyzmap(sam3d_depth, K_sam3d)  # (H, W, 3)
         sam3d_valid_depth = sam3d_depth > 0.01
-        sam3d_depth_pts = sam3d_xyz[sam3d_valid_depth]
+        sam3d_depth_3d = sam3d_depth_3d[sam3d_valid_depth]
         sam3d_depth_colors = sam3d_image[sam3d_valid_depth]  # RGB from image
-        save_points_to_ply(sam3d_depth_pts, os.path.join(args.out_dir, "sam3d_depth_pcd.ply"), colors=sam3d_depth_colors)
+        save_points_to_ply(sam3d_depth_3d, os.path.join(args.out_dir, "input_sam3d_depth.ply"), colors=sam3d_depth_colors)
     
     if valid_mask.sum() < 20:
         print("Not enough valid correspondences for alignment")
@@ -731,7 +801,7 @@ def main(args):
         visualize_correspondences_rerun(
             cond_image, sam3d_image,
             cond_kpts, sam3d_kpts,
-            cond_pts_3d, sam3d_pts_3d,
+            cond_kpt_3d, sam3d_kpt_3d,
             valid_mask,
             K_cond, K_sam3d,
             app_name="align_SAM3D_corres_before"
@@ -740,11 +810,11 @@ def main(args):
     print("=" * 50)
     print("Optimizing scale + translation alignment (RANSAC)...")
     print("=" * 50)
-    valid_cond_pts = cond_pts_3d[valid_mask]
-    valid_sam3d_pts = sam3d_pts_3d[valid_mask]
+    valid_cond_kpt = cond_kpt_3d[valid_mask]
+    valid_sam3d_kpt = sam3d_kpt_3d[valid_mask]
 
     s, t, inlier_mask_valid = optimize_rigid_transform(
-        valid_sam3d_pts, valid_cond_pts,
+        valid_sam3d_kpt, valid_cond_kpt,
         num_iters=1000,
         inlier_thresh=0.01,
     )
@@ -754,8 +824,8 @@ def main(args):
     inlier_mask[valid_mask] = inlier_mask_valid
 
     # Compute alignment error
-    aligned_pts = s * valid_sam3d_pts + t
-    errors = np.linalg.norm(aligned_pts - valid_cond_pts, axis=1)
+    aligned_pts = s * valid_sam3d_kpt + t
+    errors = np.linalg.norm(aligned_pts - valid_cond_kpt, axis=1)
     print(f"Mean alignment error: {errors.mean():.4f} m")
     print(f"Median alignment error: {np.median(errors):.4f} m")
     print(f"Max alignment error: {errors.max():.4f} m")
@@ -768,7 +838,7 @@ def main(args):
         visualize_correspondences_rerun(
             cond_image, sam3d_image,
             cond_kpts, sam3d_kpts,
-            cond_pts_3d, sam3d_pts_3d,
+            cond_kpt_3d, sam3d_kpt_3d,
             valid_mask,
             K_cond, K_sam3d,
             s=s, t=t,
@@ -784,7 +854,9 @@ def main(args):
             t=t,
             o2c_sam3d=o2c_sam3d,
             K_cond=K_cond,
-            sam3d_pts_3d=sam3d_pts_3d,
+            cond_depth_3d=cond_depth_3d,
+            cond_kpt_3d=cond_kpt_3d,
+            sam3d_kpt_3d=sam3d_kpt_3d,
             cond_kpts=cond_kpts,
             valid_mask=valid_mask,
             inlier_mask=inlier_mask,
