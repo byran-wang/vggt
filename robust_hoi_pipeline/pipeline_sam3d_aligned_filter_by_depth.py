@@ -73,7 +73,7 @@ def _rasterize_to_grid(points_2d, global_min, global_max, resolution=128):
     return grid
 
 
-def _check_3face_coverage(pts, mesh, ratio_threshold, debug_dir=None):
+def _check_faces_coverage(pts, mesh, ratio_threshold, debug_dir=None):
     """Check coverage by projecting points and mesh onto XY, XZ, YZ planes.
 
     For each plane, computes the ratio of projected point cloud area to
@@ -82,42 +82,69 @@ def _check_3face_coverage(pts, mesh, ratio_threshold, debug_dir=None):
     Returns (num_faces_covered, face_names_covered).
     """
     mesh_verts = mesh.vertices  # (V, 3)
-    planes = [
-        ((0, 1), "XY"),
-        ((0, 2), "XZ"),
-        ((1, 2), "YZ"),
+    # 6 faces: filter by sign of the normal axis, then project onto the other two
+    # (proj_axes, filter_axis, sign, name)
+    faces = [
+        ((0, 1), 2, +1, "XY_Z+"),
+        ((0, 1), 2, -1, "XY_Z-"),
+        ((0, 2), 1, +1, "XZ_Y+"),
+        ((0, 2), 1, -1, "XZ_Y-"),
+        ((1, 2), 0, +1, "YZ_X+"),
+        ((1, 2), 0, -1, "YZ_X-"),
     ]
 
-    faces_covered = []
-    for (a0, a1), name in planes:
-        mesh_2d = mesh_verts[:, [a0, a1]]
-        pts_2d = pts[:, [a0, a1]]
-        # Shared bounds for consistent rasterization
-        # global_min = np.minimum(mesh_2d.min(axis=0), pts_2d.min(axis=0))
-        # global_max = np.maximum(mesh_2d.max(axis=0), pts_2d.max(axis=0))
+    # Compute ratio for each of the 6 faces
+    face_ratios = {}
+    for (a0, a1), filt_axis, sign, name in faces:
+        if sign > 0:
+            mesh_sel = mesh_verts[mesh_verts[:, filt_axis] >= 0]
+            pts_sel = pts[pts[:, filt_axis] >= 0]
+        else:
+            mesh_sel = mesh_verts[mesh_verts[:, filt_axis] <= 0]
+            pts_sel = pts[pts[:, filt_axis] <= 0]
+
+        if len(mesh_sel) == 0:
+            face_ratios[name] = 0.0
+            continue
+
+        mesh_2d = mesh_sel[:, [a0, a1]]
+        pts_2d = pts_sel[:, [a0, a1]] if len(pts_sel) > 0 else np.empty((0, 2))
+
         global_min = np.array([-0.5, -0.5])
         global_max = np.array([0.5, 0.5])
 
         mesh_grid = _rasterize_to_grid(mesh_2d, global_min, global_max)
-        pts_grid = _rasterize_to_grid(pts_2d, global_min, global_max)
+        pts_grid = _rasterize_to_grid(pts_2d, global_min, global_max) if len(pts_2d) > 0 else np.zeros_like(mesh_grid)
 
         mesh_cells = mesh_grid.sum()
         if mesh_cells == 0:
+            face_ratios[name] = 0.0
             continue
         pts_cells = pts_grid.sum()
         ratio = pts_cells / mesh_cells
-        logger.info(f"    Plane {name}: pts_cells={pts_cells}, mesh_cells={mesh_cells}, ratio={ratio:.2f}")
+        face_ratios[name] = ratio
+        logger.info(f"    Face {name}: pts_cells={pts_cells}, mesh_cells={mesh_cells}, ratio={ratio:.2f}")
 
         if debug_dir is not None:
-            # Red=mesh only, Green=pts only, Yellow=overlap
             img = np.zeros((128, 128, 3), dtype=np.uint8)
-            img[mesh_grid, 0] = 255  # red channel for mesh
-            img[pts_grid, 1] = 255   # green channel for pts
-            img_bgr = cv2.flip(img, 0)  # flip Y for image convention
+            img[mesh_grid, 0] = 255
+            img[pts_grid, 1] = 255
+            img_bgr = cv2.flip(img, 0)
             cv2.imwrite(str(Path(debug_dir) / f"coverage_{name}.png"), img_bgr)
 
-        if ratio >= ratio_threshold:
-            faces_covered.append(name)
+    # For each plane pair, keep only the side with the higher ratio
+    plane_pairs = [
+        ("XY_Z+", "XY_Z-", "XY"),
+        ("XZ_Y+", "XZ_Y-", "XZ"),
+        ("YZ_X+", "YZ_X-", "YZ"),
+    ]
+    faces_covered = []
+    for pos_name, neg_name, plane_name in plane_pairs:
+        best_name = pos_name if face_ratios.get(pos_name, 0) >= face_ratios.get(neg_name, 0) else neg_name
+        best_ratio = face_ratios.get(best_name, 0)
+        logger.info(f"    Plane {plane_name}: best={best_name}, ratio={best_ratio:.2f}")
+        if best_ratio >= ratio_threshold:
+            faces_covered.append(best_name)
 
     return len(faces_covered), faces_covered
 
@@ -138,7 +165,7 @@ def main(args):
 
     filtered = []
     filtered_out = []
-
+    coverage_info = []
     for frame_idx in frame_indices:
         fid = f"{frame_idx:04d}"
 
@@ -178,13 +205,15 @@ def main(args):
         # Check 3-face coverage
         debug_dir = aligned_dir / fid / "coverage_debug"
         debug_dir.mkdir(parents=True, exist_ok=True)
-        faces_covered, face_names = _check_3face_coverage(
+        faces_covered, face_names = _check_faces_coverage(
             pts_inlier, mesh, args.face_ratio, debug_dir=str(debug_dir)
         )
         logger.info(
             f"  Frame {fid}: faces_covered={faces_covered}/3, "
             f"covered_faces={face_names}"
         )
+
+        coverage_info.append((frame_idx, faces_covered, face_names))
 
         if faces_covered < 3:
             logger.info(f"  Frame {fid}: insufficient face coverage ({face_names}), filtering out")
@@ -193,6 +222,14 @@ def main(args):
             filtered.append(frame_idx)
 
     logger.info(f"Kept {len(filtered)} frames, filtered out {len(filtered_out)}: {filtered_out}")
+
+    # Save coverage info sorted by number of covered faces (descending)
+    coverage_info.sort(key=lambda x: x[1], reverse=True)
+    coverage_path = aligned_dir / "frame_list_faces_coverage.txt"
+    with open(coverage_path, "w") as f:
+        for frame_idx, num_covered, names in coverage_info:
+            f.write(f"{frame_idx:04d} {num_covered}/3 {','.join(names)}\n")
+    logger.info(f"Saved faces coverage info ({len(coverage_info)} frames) to {coverage_path}")
 
     # Save filtered frame list
     out_path = aligned_dir / "frame_list_after_depth_filtered.txt"
