@@ -12,7 +12,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
-from utils_simba.depth import depth2xyzmap, get_depth
+from utils_simba.depth import depth2xyzmap, get_depth, load_filtered_depth
 from utils_simba.rerun import load_mesh_as_trimesh, get_vertex_colors, stamp_frame_text, log_camera_frame
 
 
@@ -99,7 +99,7 @@ def log_depth_points(dataset_dir, scene_name, fid, c2o, scale):
     with open(meta_path, "rb") as f:
         meta = pickle.load(f)
     K_meta = np.array(meta["intrinsics"], dtype=np.float64)
-    depth = get_depth(str(depth_path))
+    depth = load_filtered_depth(str(depth_path))
     depth /= scale
     mask_obj = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
 
