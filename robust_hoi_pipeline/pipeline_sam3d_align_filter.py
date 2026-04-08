@@ -17,7 +17,7 @@ from utils_simba.depth import depth2xyzmap, get_depth
 from utils_simba.logger import get_logger
 from utils_simba.rerun import load_mesh_as_trimesh
 from utils_simba.render import nvdiffrast_render
-from utils_simba.visibility_mesh import get_visibility_mesh
+from utils_simba.visibility_mesh import get_visibility_mesh, get_visibility_occ
 from utils_simba.visibility_test import (
     mesh_to_voxel_grid, voxel_centers, get_camera_pose,
 )
@@ -105,87 +105,6 @@ def _make_six_cameras(mesh):
         cameras.append((name, c2w))
     return cameras
 
-
-def get_visibility_occ(mesh, c2o, debug_dir=None, voxel_size=0.01, render_size=512, depth_threshold=0.01):
-    """Get visible occupancy voxels of a mesh from a given camera pose.
-
-    Args:
-        mesh: trimesh.Trimesh mesh in object space
-        c2o: (4,4) camera-to-object transform
-        debug_dir: directory to save debug outputs (None to skip saving)
-        voxel_size: size of each voxel
-        render_size: resolution for rendering
-        depth_threshold: tolerance for depth comparison
-
-    Returns:
-        visible_voxel_mesh: trimesh with visible voxels (red) for rendering
-    """
-    if debug_dir is not None:
-        debug_path = Path(debug_dir)
-        debug_path.mkdir(parents=True, exist_ok=True)
-
-    # Fake intrinsics for rendering
-    focal = render_size * 0.8
-    K_fake = np.array([
-        [focal, 0, render_size / 2],
-        [0, focal, render_size / 2],
-        [0, 0, 1],
-    ], dtype=np.float64)
-
-    # Render mesh depth from c2o pose (o2c = inv(c2o))
-    o2c = np.linalg.inv(c2o)
-    ob_in_cvcams = torch.tensor(o2c, dtype=torch.float32, device="cuda")[None]
-    _, depth_render, _ = nvdiffrast_render(
-        K=K_fake, H=render_size, W=render_size,
-        ob_in_cvcams=ob_in_cvcams, mesh=mesh,
-    )
-    depth_map = depth_render[0].cpu().numpy()  # (H, W)
-
-    # Convert mesh to occupancy grid
-    voxels, voxel_origin, grid_size = mesh_to_voxel_grid(mesh, voxel_size)
-    occupied = np.argwhere(voxels)  # (N, 3)
-    voxel_centers_np = voxel_origin + (occupied + 0.5) * voxel_size  # (N, 3) in object space
-
-    # Project each voxel center into the camera
-    pts_h = np.hstack([voxel_centers_np, np.ones((len(voxel_centers_np), 1))])  # (N, 4)
-    pts_cam = (o2c @ pts_h.T).T[:, :3]  # (N, 3) in camera space
-    voxel_z = pts_cam[:, 2]  # depth of each voxel in camera
-
-    # Project to pixel coordinates
-    px = (K_fake[0, 0] * pts_cam[:, 0] / pts_cam[:, 2] + K_fake[0, 2]).astype(int)
-    py = (K_fake[1, 1] * pts_cam[:, 1] / pts_cam[:, 2] + K_fake[1, 2]).astype(int)
-
-    # Determine visibility: voxel is visible if its depth <= rendered depth + threshold
-    in_bounds = (px >= 0) & (px < render_size) & (py >= 0) & (py < render_size) & (voxel_z > 0)
-    visible = np.zeros(len(voxel_centers_np), dtype=bool)
-    for i in np.where(in_bounds)[0]:
-        rendered_depth = depth_map[py[i], px[i]]
-        if rendered_depth > 0.01 and voxel_z[i] <= rendered_depth + depth_threshold:
-            visible[i] = True
-
-    logger.info(f"    Visibility: {visible.sum()}/{len(visible)} voxels visible")
-
-    # Build visible voxel mesh (red) and save debug
-    visible_centers = voxel_centers_np[visible]
-    occluded_centers = voxel_centers_np[~visible]
-
-
-    # Build a renderable mesh from all voxels (visible=red, occluded=black)
-    if len(voxel_centers_np) == 0:
-        return trimesh.Trimesh()
-    boxes = []
-    for center, is_visible in zip(voxel_centers_np, visible):
-        box = trimesh.creation.box(extents=[voxel_size] * 3)
-        box.apply_translation(center)
-        color = np.array([255, 0, 0, 255] if is_visible else [0, 0, 255, 255], dtype=np.uint8)
-        box.visual.face_colors = np.tile(color, (len(box.faces), 1))
-        boxes.append(box)
-    visible_voxel_mesh = trimesh.util.concatenate(boxes)
-
-    # Save the voxel mesh
-    if debug_dir is not None:
-        visible_voxel_mesh.export(str(debug_path / "visible_voxel_mesh.ply"))
-    return visible_voxel_mesh
 
 def _visualize_cameras_rerun(mesh, cameras, K):
     """Visualize mesh and cameras in rerun."""
