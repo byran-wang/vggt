@@ -106,13 +106,13 @@ def _make_six_cameras(mesh):
     return cameras
 
 
-def get_visibility_occ(mesh, c2o, debug_dir, voxel_size=0.01, render_size=512, depth_threshold=0.01):
+def get_visibility_occ(mesh, c2o, debug_dir=None, voxel_size=0.01, render_size=512, depth_threshold=0.01):
     """Get visible occupancy voxels of a mesh from a given camera pose.
 
     Args:
         mesh: trimesh.Trimesh mesh in object space
         c2o: (4,4) camera-to-object transform
-        debug_dir: directory to save debug outputs
+        debug_dir: directory to save debug outputs (None to skip saving)
         voxel_size: size of each voxel
         render_size: resolution for rendering
         depth_threshold: tolerance for depth comparison
@@ -120,8 +120,9 @@ def get_visibility_occ(mesh, c2o, debug_dir, voxel_size=0.01, render_size=512, d
     Returns:
         visible_voxel_mesh: trimesh with visible voxels (red) for rendering
     """
-    debug_path = Path(debug_dir)
-    debug_path.mkdir(parents=True, exist_ok=True)
+    if debug_dir is not None:
+        debug_path = Path(debug_dir)
+        debug_path.mkdir(parents=True, exist_ok=True)
 
     # Fake intrinsics for rendering
     focal = render_size * 0.8
@@ -168,13 +169,6 @@ def get_visibility_occ(mesh, c2o, debug_dir, voxel_size=0.01, render_size=512, d
     visible_centers = voxel_centers_np[visible]
     occluded_centers = voxel_centers_np[~visible]
 
-    # Save debug PLY: visible=red, occluded=black
-    all_colors = np.zeros((len(voxel_centers_np), 4), dtype=np.uint8)
-    all_colors[:, 3] = 255
-    all_colors[visible, 0] = 255   # red for visible
-    all_colors[~visible, 2] = 255  # blue for occluded
-    trimesh.PointCloud(voxel_centers_np, colors=all_colors).export(
-        str(debug_path / "visibility_voxels.ply"))
 
     # Build a renderable mesh from all voxels (visible=red, occluded=black)
     if len(voxel_centers_np) == 0:
@@ -189,10 +183,25 @@ def get_visibility_occ(mesh, c2o, debug_dir, voxel_size=0.01, render_size=512, d
     visible_voxel_mesh = trimesh.util.concatenate(boxes)
 
     # Save the voxel mesh
-    visible_voxel_mesh.export(str(debug_path / "visible_voxel_mesh.ply"))
+    if debug_dir is not None:
+        visible_voxel_mesh.export(str(debug_path / "visible_voxel_mesh.ply"))
     return visible_voxel_mesh
 
-def _check_faces_coverage(depth_3d, mesh, c2o, ratio_threshold, debug_dir=None):
+def _visualize_cameras_rerun(mesh, cameras, K):
+    """Visualize mesh and cameras in rerun."""
+    import rerun as rr
+    from utils_simba.rerun import log_camera_frame
+    rr.init("faces_coverage", spawn=True)
+    rr.log("mesh", rr.Mesh3D(
+        vertex_positions=mesh.vertices,
+        triangle_indices=mesh.faces,
+        vertex_colors=mesh.visual.vertex_colors[:, :3] if hasattr(mesh.visual, 'vertex_colors') else None,
+    ), static=True)
+    for name, c2w in cameras:
+        log_camera_frame(f"cameras/{name}", K=K, c2w=c2w, image_plane_distance=0.05, static=True)
+
+
+def _check_faces_coverage(mesh, c2o, ratio_threshold, debug_dir=None, vis_cam_in_rerun=False):
     """Check face coverage by rendering mesh and depth occupancy from 6 views.
 
 
@@ -218,18 +227,8 @@ def _check_faces_coverage(depth_3d, mesh, c2o, ratio_threshold, debug_dir=None):
 
     # Render visibility_mesh (red=visible, blue=occluded) from each of the 6 cameras
     faces_covered = []
-
-    # Visualize cameras and mesh in rerun
-    import rerun as rr
-    from utils_simba.rerun import log_camera_frame
-    rr.init("faces_coverage", spawn=True)
-    rr.log("mesh", rr.Mesh3D(
-        vertex_positions=visibility_mesh.vertices,
-        triangle_indices=visibility_mesh.faces,
-        vertex_colors=visibility_mesh.visual.vertex_colors[:, :3] if hasattr(visibility_mesh.visual, 'vertex_colors') else None,
-    ), static=True)
-    for name, c2w in cameras:
-        log_camera_frame(f"cameras/{name}", K=K_synth, c2w=c2w, image_plane_distance=0.05, static=True)
+    if vis_cam_in_rerun:
+        _visualize_cameras_rerun(visibility_mesh, cameras, K_synth)
 
     for name, c2w in cameras:
         o2c = np.linalg.inv(c2w)
@@ -271,6 +270,7 @@ def _check_faces_coverage(depth_3d, mesh, c2o, ratio_threshold, debug_dir=None):
 
 def main(args):
     dataset_dir = Path(args.dataset_dir)
+    out_dir = Path(args.out_dir)
     sam3d_dir = dataset_dir / args.scene_name / "SAM3D"
     aligned_dir = dataset_dir / args.scene_name / "SAM3D_aligned_pts"
 
@@ -286,6 +286,7 @@ def main(args):
     filtered = []
     filtered_out = []
     coverage_info = []
+
     for frame_idx in frame_indices:
         fid = f"{frame_idx:04d}"
 
@@ -313,20 +314,12 @@ def main(args):
 
         logger.info(f"  Frame {fid}: {len(pts_obj)} depth points in object space")
 
-        # Remove outlier points far from mesh surface
-        pts_inlier = _filter_outliers_by_mesh(mesh, pts_obj, args.dist_threshold)
-        logger.info(f"  Frame {fid}: {len(pts_inlier)} inlier points (threshold={args.dist_threshold})")
-
-        if len(pts_inlier) < 10:
-            logger.warning(f"  Frame {fid}: too few inlier points, filtering out")
-            filtered_out.append(frame_idx)
-            continue
 
         # Check 3-face coverage
-        debug_dir = aligned_dir / fid / "coverage_debug"
+        debug_dir = out_dir / fid / "coverage_debug"
         debug_dir.mkdir(parents=True, exist_ok=True)
         faces_covered, face_names = _check_faces_coverage(
-            pts_inlier, mesh, c2o, args.face_ratio, debug_dir=str(debug_dir)
+            mesh, c2o, args.face_ratio, debug_dir=str(debug_dir)
         )
         logger.info(
             f"  Frame {fid}: faces_covered={faces_covered}/6, "
@@ -334,6 +327,13 @@ def main(args):
         )
 
         coverage_info.append((frame_idx, faces_covered, face_names))
+
+        # Save per-frame coverage info
+        frame_coverage_path = out_dir / fid / "coverage_info.txt"
+        frame_coverage_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(frame_coverage_path, "w") as f:
+            f.write(f"faces_covered: {faces_covered}/6\n")
+            f.write(f"covered_faces: {','.join(face_names)}\n")
 
         if faces_covered < 3:
             logger.info(f"  Frame {fid}: insufficient face coverage ({face_names}), filtering out")
@@ -345,14 +345,14 @@ def main(args):
 
     # Save coverage info sorted by number of covered faces (descending)
     coverage_info.sort(key=lambda x: x[1], reverse=True)
-    coverage_path = aligned_dir / "frame_list_faces_coverage.txt"
+    coverage_path = out_dir / "frame_list_faces_coverage.txt"
     with open(coverage_path, "w") as f:
         for frame_idx, num_covered, names in coverage_info:
             f.write(f"{frame_idx:04d} {num_covered}/6 {','.join(names)}\n")
     logger.info(f"Saved faces coverage info ({len(coverage_info)} frames) to {coverage_path}")
 
     # Save filtered frame list
-    out_path = aligned_dir / "frame_list_after_depth_filtered.txt"
+    out_path = out_dir / "frame_list_after_depth_filtered.txt"
     with open(out_path, "w") as f:
         for idx in filtered:
             f.write(f"{idx}\n")
@@ -362,11 +362,14 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Filter SAM3D aligned frames by depth coverage")
     parser.add_argument("--dataset_dir", type=str, required=True)
+    parser.add_argument("--out_dir", type=str, required=True,
+                        help="Output directory for filtered frames and coverage info")    
     parser.add_argument("--scene_name", type=str, required=True)
     parser.add_argument("--dist_threshold", type=float, default=0.05,
                         help="Max distance from mesh surface to keep a depth point")
     parser.add_argument("--face_ratio", type=float, default=0.2,
                         help="Min fraction of points near a bbox face to consider it covered")
+
 
     args = parser.parse_args()
     main(args)
