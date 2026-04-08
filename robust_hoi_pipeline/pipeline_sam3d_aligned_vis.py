@@ -14,6 +14,26 @@ from pipeline_sam3d_filter_3D_vis import init_rerun, load_camera_pose, log_mesh,
 logger = get_logger(__name__)
 
 
+def load_frame_indices(frame_list_file):
+    """Load frame indices from a file. Each line may be just an index
+    (e.g. "0123") or "{idx} {n}/6 {names}" — only the first token is parsed.
+    Returns list of ints, or None if the file is missing.
+    """
+    frame_list_file = Path(frame_list_file)
+    if not frame_list_file.exists():
+        logger.error(f"{frame_list_file} not found.")
+        return None
+    indices = []
+    with open(frame_list_file, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            indices.append(int(line.split()[0]))
+    logger.info(f"Loaded {len(indices)} frames from {frame_list_file}")
+    return indices
+
+
 def main(args):
     dataset_dir = Path(args.dataset_dir)
     sam3d_dir = dataset_dir / args.scene_name / "SAM3D"
@@ -24,14 +44,12 @@ def main(args):
         logger.error(f"{aligned_dir} not found. Run ho3d_align_SAM3D_{args.align_method} first.")
         return
 
-    # Load frame list after 3D filter
-    frame_list_file = dataset_dir / args.scene_name / "SAM3D_aligned_pts" / "frame_list_after_aligned_pts.txt"
-    if not frame_list_file.exists():
-        logger.error(f"{frame_list_file} not found. Run ho3d_obj_SAM3D_filter_3D first.")
+    # Load frame list — either after 3D filter or after depth-coverage filter
+    frame_list_file = (Path(args.frame_list_file) if args.frame_list_file is not None
+                       else dataset_dir / args.scene_name / "SAM3D_aligned_pts" / "frame_list_after_aligned_pts.txt")
+    frame_indices = load_frame_indices(frame_list_file)
+    if frame_indices is None:
         return
-    with open(frame_list_file, "r") as f:
-        frame_indices = [int(line.strip()) for line in f if line.strip()]
-    logger.info(f"Loaded {len(frame_indices)} frames from {frame_list_file}")
 
     # init_rerun(f"sam3d_aligned_{args.align_method}_vis")
     init_rerun(f"sam3d_aligned_vis")
@@ -68,6 +86,8 @@ if __name__ == "__main__":
     parser.add_argument("--align_method", type=str, default="pts", choices=["mask", "pts"],
                         help="Alignment method: 'mask' for SAM3D_aligned_mask, 'pts' for SAM3D_aligned_pts")
     parser.add_argument("--jpeg_quality", type=int, default=85)
+    parser.add_argument("--frame_list_file", type=str, default=None,
+                        help="Optional explicit path to a frame list file (e.g. frame_list_faces_coverage.txt)")
 
     args = parser.parse_args()
     main(args)
