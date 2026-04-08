@@ -791,7 +791,7 @@ class run_wonder_hoi:
 
     def ho3d_obj_SAM3D_gen(self, scene_name, **kwargs):
         self.print_header(f"Generate object 3D model from SAM3D for {scene_name}")
-        frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D/frame_list_after_depth_filtered.txt"
+        frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D/frame_list_after_ftp_filtered.txt"
         image_ids = self._get_cond_ids(frame_list_file)
             
         print(f"image_ids for SAM3D generation: {image_ids}")
