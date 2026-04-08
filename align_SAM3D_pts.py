@@ -462,16 +462,16 @@ def save_alignment_results(
     print(f"Saved camera to {out_dir}/camera.json")
 
     # Transform SAM3D mesh with new_o2c and save to mesh_aligned.ply
-    # if os.path.exists(SAM3D_mesh_file):
-    #     sam3d_mesh = load_mesh_from_glb(SAM3D_mesh_file)
-    #     # Apply new_o2c transform to mesh vertices: p_cond = new_o2c @ p_obj
-    #     verts_homogeneous = np.hstack([sam3d_mesh.vertices, np.ones((len(sam3d_mesh.vertices), 1))])
-    #     verts_transformed = (new_o2c @ verts_homogeneous.T).T[:, :3]
-    #     sam3d_mesh.vertices = verts_transformed
-    #     sam3d_mesh.export(os.path.join(out_dir, "mesh_aligned.ply"))
-    #     print(f"Saved transformed mesh to {out_dir}/mesh_aligned.ply")
-    # else:
-    #     print(f"SAM3D mesh file not found: {SAM3D_mesh_file}")
+    if os.path.exists(SAM3D_mesh_file):
+        sam3d_mesh = load_mesh_from_glb(SAM3D_mesh_file)
+        # Apply new_o2c transform to mesh vertices: p_cond = new_o2c @ p_obj
+        verts_homogeneous = np.hstack([sam3d_mesh.vertices, np.ones((len(sam3d_mesh.vertices), 1))])
+        verts_transformed = (new_o2c @ verts_homogeneous.T).T[:, :3]
+        sam3d_mesh.vertices = verts_transformed
+        sam3d_mesh.export(os.path.join(out_dir, "mesh_aligned.ply"))
+        print(f"Saved transformed mesh to {out_dir}/mesh_aligned.ply")
+    else:
+        print(f"SAM3D mesh file not found: {SAM3D_mesh_file}")
 
     return new_o2c
 
