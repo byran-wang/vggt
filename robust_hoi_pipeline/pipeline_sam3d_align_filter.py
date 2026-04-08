@@ -272,7 +272,7 @@ def main(args):
     logger.info(f"Saved faces coverage info ({len(coverage_info)} frames) to {coverage_path}")
 
     # Save filtered frame list
-    out_path = out_dir / "frame_list_after_depth_filtered.txt"
+    out_path = out_dir / "frame_list_align_filter.txt"
     with open(out_path, "w") as f:
         for idx in filtered:
             f.write(f"{idx}\n")
