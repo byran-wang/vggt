@@ -31,17 +31,17 @@ def _backproject_depth_to_object_space(fid, dataset_dir, scene_name, c2o, scale)
 
     Returns pts_obj (N, 3) or None if data is missing.
     """
-    preprocess_dir = Path(f"{dataset_dir}/{scene_name}/pipeline_preprocess")
-    depth_path = preprocess_dir / "../depth" / f"{fid}.png"
-    mask_path = preprocess_dir / "mask_obj" / f"{fid}.png"
-    meta_path = preprocess_dir / "meta" / f"{fid}.pkl"
-
+    preprocess_dir = Path(f"{dataset_dir}/{scene_name}")
+    depth_path = preprocess_dir / "depth" / f"{fid}.png"
+    mask_path = preprocess_dir / "mask_object" / f"{fid}.png"
+    meta_path = preprocess_dir / "meta" / f"0000.pkl"
+    
     if not all(p.exists() for p in [depth_path, mask_path, meta_path]):
         return None
-
+    
     with open(meta_path, "rb") as f:
         meta = pickle.load(f)
-    K = np.array(meta["intrinsics"], dtype=np.float64)
+    K = np.array(meta["camMat"], dtype=np.float64)
     depth = get_depth(str(depth_path))
     depth /= scale
     mask_obj = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
@@ -190,6 +190,7 @@ def _check_faces_coverage(mesh, c2o, ratio_threshold, debug_dir=None, vis_cam_in
 def main(args):
     dataset_dir = Path(args.dataset_dir)
     out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     sam3d_dir = dataset_dir / args.scene_name / "SAM3D"
     aligned_dir = dataset_dir / args.scene_name / "SAM3D_aligned_pts"
 
