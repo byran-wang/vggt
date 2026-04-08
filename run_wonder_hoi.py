@@ -92,6 +92,7 @@ class run_wonder_hoi:
                 "ho3d_SAM3D_aligned_pts_vis": self.ho3d_SAM3D_aligned_pts_vis,
                 "pipeline_sam3d_align_filter": self.pipeline_sam3d_align_filter,
                 "pipeline_sam3d_align_filter_vis": self.pipeline_sam3d_align_filter_vis,
+                "pipeline_sam3d_best_id": self.pipeline_sam3d_best_id,
                 "ho3d_SAM3D_post_process": self.ho3d_SAM3D_post_process,
                 "ho3d_keyframe_optimization": self.ho3d_keyframe_optimization,
                 "ho3d_align_gen_3d": self.ho3d_align_gen_3d,
@@ -296,7 +297,7 @@ class run_wonder_hoi:
         if strategy == "manual":
             return f"{self.seq_config['cond_idx']:04d}"
         elif strategy == "auto":
-            best_id_path = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/best_id.txt"
+            best_id_path = f"{self.dataset_dir}/{scene_name}/SAM3D_align_filter/best_id.txt"
             with open(best_id_path, "r") as f:
                 return f.read().strip()
         else:
@@ -868,6 +869,14 @@ class run_wonder_hoi:
         cmd += f"--dataset_dir {self.dataset_dir} "
         cmd += f"--scene_name {scene_name} "
         cmd += f"--align_method pts "
+        print(cmd)
+        os.system(cmd)
+
+    def pipeline_sam3d_best_id(self, scene_name, **kwargs):
+        self.print_header(f"Find best id from filtered frames for {scene_name}")
+        scene_dir = f"{self.dataset_dir}/{scene_name}"
+        cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_best_id.py "
+        cmd += f"--scene_dir {scene_dir} "
         print(cmd)
         os.system(cmd)
 
