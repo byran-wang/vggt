@@ -824,6 +824,10 @@ class run_wonder_hoi:
         cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_filter_2D.py "
         cmd += f"--dataset_dir {self.dataset_dir} "
         cmd += f"--scene_name {scene_name} "
+        cmd += f"--frame_start {self.seq_config.get('frame_star', 0)} "
+        cmd += f"--frame_end {self.seq_config.get('frame_end', -1)} "
+        cmd += f"--frame_interval {self.seq_config.get('frame_interval', 5)} "
+        cmd += f"--cond_idx {self.seq_config.get('cond_idx', 0)} "
         print(cmd)
         os.system(cmd)
 
