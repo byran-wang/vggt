@@ -1073,13 +1073,6 @@ class run_wonder_hoi:
                     f.write(f"{sid}\n")
             print(f"Saved sorted frame list to {frame_list_path}")
 
-            # Select best image_id (lowest mean_error)
-            best_id = next(iter(sorted_scores))
-            best_id_path = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/best_id.txt"
-            with open(best_id_path, "w") as f:
-                f.write(best_id)
-            print(f"Best image_id: {best_id} (mean_error={sorted_scores[best_id]:.4f}), saved to {best_id_path}")
-
             # Print sorted ranking
             print("Ranking (best to worst):")
             for rank, (sid, err) in enumerate(sorted_scores.items()):
