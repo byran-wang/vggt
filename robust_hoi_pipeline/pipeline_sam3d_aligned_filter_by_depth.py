@@ -11,9 +11,16 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
+import torch
+
 from utils_simba.depth import depth2xyzmap, get_depth
 from utils_simba.logger import get_logger
 from utils_simba.rerun import load_mesh_as_trimesh
+from utils_simba.render import nvdiffrast_render
+from utils_simba.visibility_mesh import get_visibility_mesh
+from utils_simba.visibility_test import (
+    mesh_to_voxel_grid, voxel_centers, get_camera_pose,
+)
 from pipeline_sam3d_filter_3D_vis import load_camera_pose
 
 logger = get_logger(__name__)
@@ -73,79 +80,192 @@ def _rasterize_to_grid(points_2d, global_min, global_max, resolution=128):
     return grid
 
 
-def _check_faces_coverage(pts, mesh, ratio_threshold, debug_dir=None):
-    """Check coverage by projecting points and mesh onto XY, XZ, YZ planes.
+def _make_six_cameras(mesh):
+    """Create 6 axis-aligned cameras looking at mesh center.
 
-    For each plane, computes the ratio of projected point cloud area to
-    projected mesh area. A face is covered if the ratio >= ratio_threshold.
+    Returns list of (name, c2w_4x4) tuples.
+    """
+    radius = mesh.bounding_sphere.primitive.radius * 2
+    center = mesh.bounding_sphere.primitive.center
+    configs = [
+        ("X+", np.array([1.0, 0, 0]), np.array([0, 0, 1])),
+        ("X-", np.array([-1.0, 0, 0]), np.array([0, 0, 1])),
+        ("Y+", np.array([0, 1.0, 0]), np.array([0, 0, 1])),
+        ("Y-", np.array([0, -1.0, 0]), np.array([0, 0, 1])),
+        ("Z+", np.array([0, 0, 1.0]), np.array([0, 1, 0])),
+        ("Z-", np.array([0, 0, -1.0]), np.array([0, 1, 0])),
+    ]
+    cameras = []
+    for name, direction, up in configs:
+        eye = center + direction * radius
+        c2w = get_camera_pose(eye, center, up)
+        # flip Y and flip Z
+        c2w[:3, 1] = -c2w[:3, 1]
+        c2w[:3, 2] = -c2w[:3, 2]
+        cameras.append((name, c2w))
+    return cameras
+
+
+def get_visibility_occ(mesh, c2o, debug_dir, voxel_size=0.01, render_size=512, depth_threshold=0.01):
+    """Get visible occupancy voxels of a mesh from a given camera pose.
+
+    Args:
+        mesh: trimesh.Trimesh mesh in object space
+        c2o: (4,4) camera-to-object transform
+        debug_dir: directory to save debug outputs
+        voxel_size: size of each voxel
+        render_size: resolution for rendering
+        depth_threshold: tolerance for depth comparison
+
+    Returns:
+        visible_voxel_mesh: trimesh with visible voxels (red) for rendering
+    """
+    debug_path = Path(debug_dir)
+    debug_path.mkdir(parents=True, exist_ok=True)
+
+    # Fake intrinsics for rendering
+    focal = render_size * 0.8
+    K_fake = np.array([
+        [focal, 0, render_size / 2],
+        [0, focal, render_size / 2],
+        [0, 0, 1],
+    ], dtype=np.float64)
+
+    # Render mesh depth from c2o pose (o2c = inv(c2o))
+    o2c = np.linalg.inv(c2o)
+    ob_in_cvcams = torch.tensor(o2c, dtype=torch.float32, device="cuda")[None]
+    _, depth_render, _ = nvdiffrast_render(
+        K=K_fake, H=render_size, W=render_size,
+        ob_in_cvcams=ob_in_cvcams, mesh=mesh,
+    )
+    depth_map = depth_render[0].cpu().numpy()  # (H, W)
+
+    # Convert mesh to occupancy grid
+    voxels, voxel_origin, grid_size = mesh_to_voxel_grid(mesh, voxel_size)
+    occupied = np.argwhere(voxels)  # (N, 3)
+    voxel_centers_np = voxel_origin + (occupied + 0.5) * voxel_size  # (N, 3) in object space
+
+    # Project each voxel center into the camera
+    pts_h = np.hstack([voxel_centers_np, np.ones((len(voxel_centers_np), 1))])  # (N, 4)
+    pts_cam = (o2c @ pts_h.T).T[:, :3]  # (N, 3) in camera space
+    voxel_z = pts_cam[:, 2]  # depth of each voxel in camera
+
+    # Project to pixel coordinates
+    px = (K_fake[0, 0] * pts_cam[:, 0] / pts_cam[:, 2] + K_fake[0, 2]).astype(int)
+    py = (K_fake[1, 1] * pts_cam[:, 1] / pts_cam[:, 2] + K_fake[1, 2]).astype(int)
+
+    # Determine visibility: voxel is visible if its depth <= rendered depth + threshold
+    in_bounds = (px >= 0) & (px < render_size) & (py >= 0) & (py < render_size) & (voxel_z > 0)
+    visible = np.zeros(len(voxel_centers_np), dtype=bool)
+    for i in np.where(in_bounds)[0]:
+        rendered_depth = depth_map[py[i], px[i]]
+        if rendered_depth > 0.01 and voxel_z[i] <= rendered_depth + depth_threshold:
+            visible[i] = True
+
+    logger.info(f"    Visibility: {visible.sum()}/{len(visible)} voxels visible")
+
+    # Build visible voxel mesh (red) and save debug
+    visible_centers = voxel_centers_np[visible]
+    occluded_centers = voxel_centers_np[~visible]
+
+    # Save debug PLY: visible=red, occluded=black
+    all_colors = np.zeros((len(voxel_centers_np), 4), dtype=np.uint8)
+    all_colors[:, 3] = 255
+    all_colors[visible, 0] = 255   # red for visible
+    all_colors[~visible, 2] = 255  # blue for occluded
+    trimesh.PointCloud(voxel_centers_np, colors=all_colors).export(
+        str(debug_path / "visibility_voxels.ply"))
+
+    # Build a renderable mesh from all voxels (visible=red, occluded=black)
+    if len(voxel_centers_np) == 0:
+        return trimesh.Trimesh()
+    boxes = []
+    for center, is_visible in zip(voxel_centers_np, visible):
+        box = trimesh.creation.box(extents=[voxel_size] * 3)
+        box.apply_translation(center)
+        color = np.array([255, 0, 0, 255] if is_visible else [0, 0, 255, 255], dtype=np.uint8)
+        box.visual.face_colors = np.tile(color, (len(box.faces), 1))
+        boxes.append(box)
+    visible_voxel_mesh = trimesh.util.concatenate(boxes)
+
+    # Save the voxel mesh
+    visible_voxel_mesh.export(str(debug_path / "visible_voxel_mesh.ply"))
+    return visible_voxel_mesh
+
+def _check_faces_coverage(depth_3d, mesh, c2o, ratio_threshold, debug_dir=None):
+    """Check face coverage by rendering mesh and depth occupancy from 6 views.
+
 
     Returns (num_faces_covered, face_names_covered).
     """
-    mesh_verts = mesh.vertices  # (V, 3)
-    # 6 faces: filter by sign of the normal axis, then project onto the other two
-    # (proj_axes, filter_axis, sign, name)
-    faces = [
-        ((0, 1), 2, +1, "XY_Z+"),
-        ((0, 1), 2, -1, "XY_Z-"),
-        ((0, 2), 1, +1, "XZ_Y+"),
-        ((0, 2), 1, -1, "XZ_Y-"),
-        ((1, 2), 0, +1, "YZ_X+"),
-        ((1, 2), 0, -1, "YZ_X-"),
-    ]
+    # Get visibility mesh from the actual camera pose
+    if debug_dir is not None:
+        debug_path = Path(debug_dir)
+        # c2w = np.linalg.inv(np.linalg.inv(c2o))  # c2o is already c2w in object space
+        visibility_mesh = get_visibility_occ(mesh, c2o, str(debug_path))
 
-    # Compute ratio for each of the 6 faces
-    face_ratios = {}
-    for (a0, a1), filt_axis, sign, name in faces:
-        if sign > 0:
-            mesh_sel = mesh_verts[mesh_verts[:, filt_axis] >= 0]
-            pts_sel = pts[pts[:, filt_axis] >= 0]
-        else:
-            mesh_sel = mesh_verts[mesh_verts[:, filt_axis] <= 0]
-            pts_sel = pts[pts[:, filt_axis] <= 0]
+    # Create 6 axis-aligned cameras
+    cameras = _make_six_cameras(visibility_mesh)
 
-        if len(mesh_sel) == 0:
-            face_ratios[name] = 0.0
-            continue
+    # Synthetic intrinsics for rendering
+    render_size = 256
+    focal = render_size * 0.8
+    K_synth = np.array([
+        [focal, 0, render_size / 2],
+        [0, focal, render_size / 2],
+        [0, 0, 1],
+    ], dtype=np.float64)
 
-        mesh_2d = mesh_sel[:, [a0, a1]]
-        pts_2d = pts_sel[:, [a0, a1]] if len(pts_sel) > 0 else np.empty((0, 2))
-
-        global_min = np.array([-0.5, -0.5])
-        global_max = np.array([0.5, 0.5])
-
-        mesh_grid = _rasterize_to_grid(mesh_2d, global_min, global_max)
-        pts_grid = _rasterize_to_grid(pts_2d, global_min, global_max) if len(pts_2d) > 0 else np.zeros_like(mesh_grid)
-
-        mesh_cells = mesh_grid.sum()
-        if mesh_cells == 0:
-            face_ratios[name] = 0.0
-            continue
-        pts_cells = pts_grid.sum()
-        ratio = pts_cells / mesh_cells
-        face_ratios[name] = ratio
-        logger.info(f"    Face {name}: pts_cells={pts_cells}, mesh_cells={mesh_cells}, ratio={ratio:.2f}")
-
-        if debug_dir is not None:
-            img = np.zeros((128, 128, 3), dtype=np.uint8)
-            img[mesh_grid, 0] = 255
-            img[pts_grid, 1] = 255
-            img_bgr = cv2.flip(img, 0)
-            cv2.imwrite(str(Path(debug_dir) / f"coverage_{name}.png"), img_bgr)
-
-    # For each plane pair, keep only the side with the higher ratio
-    plane_pairs = [
-        ("XY_Z+", "XY_Z-", "XY"),
-        ("XZ_Y+", "XZ_Y-", "XZ"),
-        ("YZ_X+", "YZ_X-", "YZ"),
-    ]
+    # Render visibility_mesh (red=visible, blue=occluded) from each of the 6 cameras
     faces_covered = []
-    for pos_name, neg_name, plane_name in plane_pairs:
-        best_name = pos_name if face_ratios.get(pos_name, 0) >= face_ratios.get(neg_name, 0) else neg_name
-        best_ratio = face_ratios.get(best_name, 0)
-        logger.info(f"    Plane {plane_name}: best={best_name}, ratio={best_ratio:.2f}")
-        if best_ratio >= ratio_threshold:
-            faces_covered.append(best_name)
 
+    # Visualize cameras and mesh in rerun
+    import rerun as rr
+    from utils_simba.rerun import log_camera_frame
+    rr.init("faces_coverage", spawn=True)
+    rr.log("mesh", rr.Mesh3D(
+        vertex_positions=visibility_mesh.vertices,
+        triangle_indices=visibility_mesh.faces,
+        vertex_colors=visibility_mesh.visual.vertex_colors[:, :3] if hasattr(visibility_mesh.visual, 'vertex_colors') else None,
+    ), static=True)
+    for name, c2w in cameras:
+        log_camera_frame(f"cameras/{name}", K=K_synth, c2w=c2w, image_plane_distance=0.05, static=True)
+
+    for name, c2w in cameras:
+        o2c = np.linalg.inv(c2w)
+        ob_in_cvcams = torch.tensor(o2c, dtype=torch.float32, device="cuda")[None]
+        color_render, depth_render, _ = nvdiffrast_render(
+            K=K_synth, H=render_size, W=render_size,
+            ob_in_cvcams=ob_in_cvcams, mesh=visibility_mesh,
+        )
+        # color_render: (1, H, W, 3) float [0,1], depth_render: (1, H, W)
+        color_img = color_render[0].cpu().numpy()  # (H, W, 3) RGB float
+        depth_img = depth_render[0].cpu().numpy()   # (H, W)
+
+        # Save debug rendering
+        if debug_dir is not None:
+            debug_img = (color_img * 255).clip(0, 255).astype(np.uint8)
+            cv2.imwrite(str(debug_path / f"render_{name}.png"), debug_img[:, :, ::-1])
+
+        # Mask of rendered pixels (anything with depth > 0)
+        rendered = depth_img > 0.01
+
+        if rendered.sum() < 10:
+            logger.info(f"    Face {name}: not visible ({rendered.sum()} px), skipping")
+            continue
+
+        # Red channel > blue channel means visible (red voxels)
+        red_pixels = rendered & (color_img[:, :, 0] > color_img[:, :, 2])
+        num_red = red_pixels.sum()
+        num_total = rendered.sum()
+        ratio = num_red / num_total
+
+        logger.info(f"    Face {name}: visible_px={num_red}, total_px={num_total}, ratio={ratio:.2f}")
+
+
+
+        if ratio >= ratio_threshold:
+            faces_covered.append(name)
     return len(faces_covered), faces_covered
 
 
@@ -206,10 +326,10 @@ def main(args):
         debug_dir = aligned_dir / fid / "coverage_debug"
         debug_dir.mkdir(parents=True, exist_ok=True)
         faces_covered, face_names = _check_faces_coverage(
-            pts_inlier, mesh, args.face_ratio, debug_dir=str(debug_dir)
+            pts_inlier, mesh, c2o, args.face_ratio, debug_dir=str(debug_dir)
         )
         logger.info(
-            f"  Frame {fid}: faces_covered={faces_covered}/3, "
+            f"  Frame {fid}: faces_covered={faces_covered}/6, "
             f"covered_faces={face_names}"
         )
 
@@ -228,7 +348,7 @@ def main(args):
     coverage_path = aligned_dir / "frame_list_faces_coverage.txt"
     with open(coverage_path, "w") as f:
         for frame_idx, num_covered, names in coverage_info:
-            f.write(f"{frame_idx:04d} {num_covered}/3 {','.join(names)}\n")
+            f.write(f"{frame_idx:04d} {num_covered}/6 {','.join(names)}\n")
     logger.info(f"Saved faces coverage info ({len(coverage_info)} frames) to {coverage_path}")
 
     # Save filtered frame list
