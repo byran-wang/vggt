@@ -93,6 +93,7 @@ class run_wonder_hoi:
                 "pipeline_sam3d_align_filter": self.pipeline_sam3d_align_filter,
                 "pipeline_sam3d_align_filter_vis": self.pipeline_sam3d_align_filter_vis,
                 "pipeline_sam3d_best_id": self.pipeline_sam3d_best_id,
+                "pipeline_sam3d_best_id_vis": self.pipeline_sam3d_best_id_vis,
                 "ho3d_SAM3D_post_process": self.ho3d_SAM3D_post_process,
                 "ho3d_keyframe_optimization": self.ho3d_keyframe_optimization,
                 "ho3d_align_gen_3d": self.ho3d_align_gen_3d,
@@ -877,6 +878,17 @@ class run_wonder_hoi:
         scene_dir = f"{self.dataset_dir}/{scene_name}"
         cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_best_id.py "
         cmd += f"--scene_dir {scene_dir} "
+        print(cmd)
+        os.system(cmd)
+
+    def pipeline_sam3d_best_id_vis(self, scene_name, **kwargs):
+        self.print_header(f"Visualize SAM3D best id frame in Rerun for {scene_name}")
+        frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D_align_filter/best_id.txt"
+        cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_aligned_vis.py "
+        cmd += f"--dataset_dir {self.dataset_dir} "
+        cmd += f"--scene_name {scene_name} "
+        cmd += f"--align_method pts "
+        cmd += f"--frame_list_file {frame_list_file} "
         print(cmd)
         os.system(cmd)
 
@@ -2437,6 +2449,8 @@ if __name__ == "__main__":
                 "ho3d_SAM3D_aligned_pts_vis",
                 "pipeline_sam3d_align_filter",
                 "pipeline_sam3d_align_filter_vis",
+                "pipeline_sam3d_best_id",
+                "pipeline_sam3d_best_id_vis",
                 "ho3d_SAM3D_post_process",
                 "ho3d_keyframe_optimization",
                 "ho3d_align_gen_3d",
