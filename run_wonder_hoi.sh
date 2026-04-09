@@ -49,6 +49,7 @@ python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3
 python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_align_filter_vis --seq_list $seq_list
 python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_best_id --seq_list $seq_list
 python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_best_id_vis --seq_list $seq_list
+python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_best_id_sum --seq_list $seq_list
 
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_by_foundation_pose --seq_list $seq_list --rebuild #--vis
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_post_process  --seq_list $seq_list --rebuild

@@ -94,6 +94,7 @@ class run_wonder_hoi:
                 "pipeline_sam3d_align_filter_vis": self.pipeline_sam3d_align_filter_vis,
                 "pipeline_sam3d_best_id": self.pipeline_sam3d_best_id,
                 "pipeline_sam3d_best_id_vis": self.pipeline_sam3d_best_id_vis,
+                "pipeline_sam3d_best_id_sum": self.pipeline_sam3d_best_id_sum,
                 "ho3d_SAM3D_post_process": self.ho3d_SAM3D_post_process,
                 "ho3d_keyframe_optimization": self.ho3d_keyframe_optimization,
                 "ho3d_align_gen_3d": self.ho3d_align_gen_3d,
@@ -893,6 +894,21 @@ class run_wonder_hoi:
         cmd += f"--scene_name {scene_name} "
         cmd += f"--align_method pts "
         cmd += f"--frame_list_file {frame_list_file} "
+        print(cmd)
+        os.system(cmd)
+
+    def pipeline_sam3d_best_id_sum(self, scene_name, **kwargs):
+        self.print_header(f"Summarize best id across all sequences")
+        output_file = f"{vggt_code_dir}/output/metrics_summary/best_id_sum.txt"
+        if self.rebuild:
+            cmd = f"rm -rf {output_file}"
+            print(cmd)
+            os.system(cmd)
+        seq_list_str = ",".join(sequence_name_list)
+        cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_best_id_sum.py "
+        cmd += f"--dataset_dir {self.dataset_dir} "
+        cmd += f"--sequence_list {seq_list_str} "
+        cmd += f"--output_file {output_file} "
         print(cmd)
         os.system(cmd)
 
@@ -2448,6 +2464,7 @@ if __name__ == "__main__":
                 "pipeline_sam3d_align_filter_vis",
                 "pipeline_sam3d_best_id",
                 "pipeline_sam3d_best_id_vis",
+                "pipeline_sam3d_best_id_sum",
                 "ho3d_SAM3D_post_process",
                 "ho3d_keyframe_optimization",
                 "ho3d_align_gen_3d",
