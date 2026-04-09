@@ -106,3 +106,7 @@ Host 3090_server1
 ### 2026-03-10
 #### Top Priorities
 - [x] rsync `3090_server1:/data1/shibo/Documents/project/vggt/output[3_17_08_37][df071f4][SOTA][HashGrid_base_resolution_64][n_levels_14]/metrics_summary` to `output[3_17_08_37][df071f4][SOTA][HashGrid_base_resolution_64][n_levels_14]` by `rsync -as --ignore-existing --info=progress2`
+
+### 2026-04-09
+#### Top Priorities
+- [x]compare output/metrics_summary/eval.txt and SOTA results in CLAUDE.md in the metrics of ADD AUC and SAM3D CD, and sort ADD AUC
