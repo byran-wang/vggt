@@ -81,24 +81,31 @@ for device in "${!device_sequences[@]}"; do
 
     # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
     #   --execute_list obj_process \
-    #   --process_list ho3d_obj_SAM3D_gen ho3d_align_SAM3D_mask ho3d_align_SAM3D_pts \
+    #   --process_list ho3d_obj_SAM3D_filter_2D ho3d_obj_SAM3D_filter_3D \
+    #   --seq_list $sequences --rebuild 
+
+    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    #   --execute_list obj_process \
+    #   --process_list ho3d_align_SAM3D_mask ho3d_align_SAM3D_pts \
     #   --seq_list $sequences --rebuild 
 
 
     # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
     #   --execute_list obj_process \
-    #   --process_list ho3d_SAM3D_post_process \
+    #   --process_list pipeline_sam3d_align_filter pipeline_sam3d_best_id \
     #   --seq_list $sequences --rebuild 
+   
+
+    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    #   --execute_list obj_process \
+    #   --process_list ho3d_SAM3D_post_process \
+    #   --seq_list $sequences --rebuild  
 
     # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
     #   --execute_list obj_process \
     #   --process_list hoi_pipeline_data_preprocess hoi_pipeline_get_corres \
     #   --seq_list $sequences --rebuild 
 
-    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-    #   --execute_list obj_process \
-    #   --process_list hoi_pipeline_data_preprocess_sam3d_neus \
-    #   --seq_list $sequences --rebuild
 
 
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
@@ -111,17 +118,6 @@ for device in "${!device_sequences[@]}"; do
       --process_list hoi_pipeline_align_hand_object_h hoi_pipeline_align_hand_object_r hoi_pipeline_align_hand_object_o hoi_pipeline_align_hand_object_ho \
       --seq_list $sequences --rebuild       
 
-    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-    #   --execute_list obj_process \
-    #   --process_list hoi_pipeline_neus_init \
-    #   --seq_list $sequences --rebuild  
-
-
-
-    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
-    #   --execute_list obj_process \
-    #   --process_list hoi_pipeline_HY_gen hoi_pipeline_align_SAM3D_with_HY hoi_pipeline_3D_points_align_with_HY hoi_pipeline_HY_omni_gen hoi_pipeline_HY_to_SAM3D \
-    #   --seq_list $sequences --rebuild  
 
 
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
