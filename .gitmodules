@@ -31,3 +31,6 @@
 [submodule "third_party/hold"]
 	path = third_party/hold
 	url = git@github.com:byran-wang/hold.git
+[submodule "third_party/MV-SAM3D"]
+	path = third_party/MV-SAM3D
+	url = git@github.com:byran-wang/MV-SAM3D.git
