@@ -119,10 +119,11 @@ def log_depth_points(dataset_dir, scene_name, fid, c2o, scale):
 def main(args):
     sam3d_dir = Path(f"{args.dataset_dir}/{args.scene_name}/SAM3D")
 
-    # Load frame list after 3D filter
-    frame_list_file = sam3d_dir / "frame_list_after_3d_filtered.txt"
+    # Load frame list — default is after 3D filter, but can be overridden
+    frame_list_file = (Path(args.frame_list_file) if args.frame_list_file
+                       else sam3d_dir / "frame_list_after_3d_filtered.txt")
     if not frame_list_file.exists():
-        print(f"Error: {frame_list_file} not found. Run ho3d_obj_SAM3D_filter_3D first.")
+        print(f"Error: {frame_list_file} not found.")
         return
     with open(frame_list_file, "r") as f:
         frame_indices = [int(line.strip()) for line in f if line.strip()]
@@ -158,6 +159,8 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_dir", type=str, required=True)
     parser.add_argument("--scene_name", type=str, required=True)
     parser.add_argument("--jpeg_quality", type=int, default=85)
+    parser.add_argument("--frame_list_file", type=str, default=None,
+                        help="Optional explicit path to a frame list file (e.g. frame_list_after_ftp_filtered.txt)")
 
     args = parser.parse_args()
     main(args)
