@@ -109,4 +109,4 @@ Host 3090_server1
 
 ### 2026-04-09
 #### Top Priorities
-- [x]compare output/metrics_summary/eval.txt and SOTA results in CLAUDE.md in the metrics of ADD AUC and SAM3D CD, and sort ADD AUC
+- [x]compare output/metrics_summary/eval.txt and SOTA results in CLAUDE.md in the metrics of ADD AUC and SAM3D CD, and sort ADD AUC delta
