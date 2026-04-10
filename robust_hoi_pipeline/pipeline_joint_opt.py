@@ -260,6 +260,17 @@ def load_preprocessed_data(data_preprocess_dir: Path, frame_indices: List[int]) 
                 data['hand_c2o'].append(None)
         else:
             data['hand_c2o'].append(None)
+
+    # Load SAM3D depth scale
+    depth_scale_path = data_preprocess_dir / "depth_scale.json"
+    if depth_scale_path.exists():
+        import json
+        with open(depth_scale_path, "r") as f:
+            depth_scale_info = json.load(f)
+        data['sam3d_scale'] = depth_scale_info.get("obj_scale", 1.0)
+    else:
+        data['sam3d_scale'] = 1.0
+
     return data
 
 
@@ -1431,51 +1442,58 @@ def _save_depth_debug_stages(debug_dir, frame_idx, d, K, extrinsics, ys, xs, dbg
         _save_colored_points_debug(debug_dir, frame_idx, masked_pts_obj, dbg_image, ys, xs, "depth_after_masked_in_obj")
 
 
-def _align_frame_with_sam3d(image_info_work, frame_idx, obj_mesh, max_pts=2000, num_iters=100, inlier_thresh=0.3, debug_dir=None):
-    """Align a frame by optimizing pose with rendered-vs-observed depth/normal losses."""
+def _is_hand_far_from_object(image_info_work, frame_idx, obj_mesh, thresh=0.015, debug_dir=None):
+    """Check if hand contact points are far from the object in object space.
 
+    Uses finger tip contact vertices (from contact_zones.pkl) instead of
+    hand centroid. Returns True if the minimum distance from any contact
+    point to the nearest object vertex exceeds thresh, or if hand is absent.
+    """
+    hand_meshes = image_info_work.get("hand_meshes_right")
+    if hand_meshes is None or frame_idx >= len(hand_meshes) or hand_meshes[frame_idx] is None:
+        return True
+    hand_mesh_data = hand_meshes[frame_idx]
+    hv = np.asarray(hand_mesh_data["vertices"], dtype=np.float32)
+    hf = np.asarray(hand_mesh_data["faces"], dtype=np.int32)
+    finger_idx = _get_finger_contact_idx()
+    if hv.shape[0] <= finger_idx.max():
+        return True
+    ext = image_info_work["extrinsics"][frame_idx].astype(np.float32)
+    R, t = ext[:3, :3], ext[:3, 3]
+    hv_obj = (hv - t[None, :]) @ R
+    contact_pts = hv_obj[finger_idx]  # (96, 3)
+    ov = np.asarray(obj_mesh.vertices, dtype=np.float32)  # (Nv, 3)
 
-    del inlier_thresh  # kept in signature for compatibility
+    # Scale threshold by SAM3D scale (from depth_scale.json)
+    sam3d_scale = image_info_work.get("sam3d_scale", 1.0)
+    thresh = thresh / sam3d_scale
 
-    frame_obs = _prepare_frame_observations(
-        image_info_work,
-        frame_idx,
-        debug_dir=debug_dir,
-    )
-    if frame_obs is None:
-        return False
-
-    d, K, n_obs, vmask, masks, ys, xs, extrinsics, obs_normal = frame_obs
-
-    # Debug: save depth points at various filtering stages
-    _dbg_image = None
+    # Save debug: hand mesh before (camera space) and after (object space) transform
     if debug_dir is not None:
-        images = image_info_work.get("images")
-        if images is not None and frame_idx < len(images):
-            _dbg_image = images[frame_idx]
-        _save_depth_debug_stages(debug_dir, frame_idx, d, K, extrinsics, ys, xs, _dbg_image)
+        import trimesh as _tri
+        _dbg = Path(debug_dir) / "hand_dist"
+        _dbg.mkdir(parents=True, exist_ok=True)
+        # Hand in camera space
+        _tri.Trimesh(vertices=hv, faces=hf).export(str(_dbg / f"hand_cam_{frame_idx:04d}.ply"))
+        # Hand in object space
+        _tri.Trimesh(vertices=hv_obj, faces=hf).export(str(_dbg / f"hand_obj_{frame_idx:04d}.ply"))
+        # Contact points in object space (red)
+        _colors = np.zeros((len(contact_pts), 4), dtype=np.uint8)
+        _colors[:, 0] = 255; _colors[:, 3] = 255
+        _tri.PointCloud(contact_pts, colors=_colors).export(str(_dbg / f"contact_pts_obj_{frame_idx:04d}.ply"))
+        # Object mesh for reference
+        obj_mesh.export(str(_dbg / f"obj_mesh_{frame_idx:04d}.ply"))
 
-    ys, xs, ext0 = _filter_pixels_in_object_bbox(d, K, extrinsics, frame_idx, ys, xs)
+    # Min distance from each contact point to nearest object vertex,
+    # then take the mean across all contact points
+    dists = np.linalg.norm(contact_pts[:, None, :] - ov[None, :, :], axis=2)  # (96, Nv)
+    min_per_contact = dists.min(axis=1)  # (96,)
+    mean_dist = min_per_contact.mean()
+    if mean_dist > thresh:
+        logger.info(f"[hand_dist] Frame {frame_idx}: mean contact-object distance {mean_dist:.3f} > {thresh}, too far")
+        return True
+    return False
 
-    if debug_dir is not None and len(ys) > 0:
-        bbox_pts_cam = _depth_pixels_to_cam_points(d, K, ys, xs)
-        bbox_pts_obj = _cam_points_to_object_points(bbox_pts_cam, ext0)
-        _save_colored_points_debug(debug_dir, frame_idx, bbox_pts_obj, _dbg_image, ys, xs, "depth_after_bbox_in_obj")
-
-    has_enough_depth = len(ys) >= max_pts
-    if len(ys) == 0:
-        logger.warning(f"[align_depth] Frame {frame_idx}: no depth points in object bbox")
-    elif not has_enough_depth:
-        logger.warning(f"[align_depth] Frame {frame_idx}: only {len(ys)} depth points (< {max_pts}), disabling depth loss")
-
-    if len(ys) > max_pts:
-        sel = np.random.choice(len(ys), max_pts, replace=False)
-        ys, xs = ys[sel], xs[sel]
-
-    pts_cam_sel = _depth_pixels_to_cam_points(d, K, ys, xs) if len(ys) > 0 else None
-
-    if not torch.cuda.is_available():
-        logger.warning(f"[align_depth] Frame {frame_idx}: CUDA unavailable, skipping depth optimization")
         return False
 
     H, W = d.shape
@@ -2254,6 +2272,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         "images": preprocessed_data["images"],
         "image_masks": preprocessed_data.get("masks_obj"),
         "image_masks_hand": preprocessed_data.get("masks_hand"),
+        "sam3d_scale": preprocessed_data["sam3d_scale"],
         "keyframe": np.array(image_info["keyframe"], dtype=bool),
         "registered": np.array(image_info["register"], dtype=bool),
         "invalid": np.array(image_info["invalid"], dtype=bool),
@@ -2383,12 +2402,15 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             # ).astype(image_info_work["track_mask"].dtype)
 
             # Align the frame with SAM3D mesh using depth with outlier rejection
-            # if sam3d_mesh is not None:
-            if 0:
-                logger.info(f"[register_remaining_frames] Aligning frame {next_frame_idx} with SAM3D mesh using depth")
-                sucess = _align_frame_with_sam3d(image_info_work, next_frame_idx, sam3d_mesh, 
-                                             debug_dir=debug_dir
-                                             )
+            if 1:
+
+                if _is_hand_far_from_object(image_info_work, next_frame_idx, sam3d_mesh, thresh=0.15, debug_dir=None):
+                    logger.warning("hand is too far from object, so we will align the object with the hand")
+                    sucess = _align_object_with_hand(image_info_work, next_frame_idx, sam3d_mesh,
+                                                 debug_dir=debug_dir
+                                                 )
+                else:
+                    sucess = True  # proceed without hand alignment
                 if not sucess:
                     image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True
                     logger.warning(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to large reprojection error and failed depth-mesh alignment")
@@ -2398,7 +2420,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                     continue
                 else:
                     sucess, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args, skip_check=True)
-                    logger.info(f"[register_remaining_frames] After depth-mesh alignment, reprojection error for frame {next_frame_idx}: {mean_error:.2f}")
+                    logger.info(f"[register_remaining_frames] After object_hand alignment, reprojection error for frame {next_frame_idx}: {mean_error:.2f}")
                     _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_align_mesh")
 
 
