@@ -25,7 +25,7 @@ model:
   radius: 1.0
   scene_scale: 1.0
   num_samples_per_ray: 512
-  train_num_rays: 256
+  train_num_rays: 1024
   max_train_num_rays: 8192
   grid_prune: true
   grid_prune_occ_thre: 0.001
@@ -63,7 +63,7 @@ model:
       n_levels: 14
       n_features_per_level: 2
       log2_hashmap_size: 19
-      base_resolution: 32
+      base_resolution: 64
       per_level_scale: 1.3195079107728942
       include_xyz: true
     mlp_network_config:

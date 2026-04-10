@@ -2659,7 +2659,7 @@ if __name__ == "__main__":
                         help="Disable point-to-plane loss and skip NeuS mesh loading")
     parser.add_argument("--vis_thresh", type=float, default=0.3,
                         help="Visibility score threshold for filtering tracks in the condition frame")
-    parser.add_argument("--neus_init_steps", type=int, default=3000,
+    parser.add_argument("--neus_init_steps", type=int, default=1000,
                         help="Number of NeuS training steps for initial mesh")
 
     args = parser.parse_args()
