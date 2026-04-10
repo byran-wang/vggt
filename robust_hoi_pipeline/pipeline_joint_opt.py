@@ -629,7 +629,6 @@ def _build_default_joint_opt_args(output_dir: Path, cond_index: int) -> SimpleNa
         pnp_reproj_thresh=4.0,
         joint_opt_reproj_thresh=4.0,
         optimize_3D_prior=False,
-        neus_init_steps=3000,
         only_save_register_order=only_save_register_order,
     )
 
@@ -2455,7 +2454,6 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             keyframe_local_indices = keyframe_local_indices[keyframe_local_indices != next_frame_idx]
             if keyframe_local_indices.size > 0:
                 # neus_total_steps = args.neus_init_steps
-                neus_total_steps = 3000 # hardcoded
                 o2c_keyframes = image_info_work["extrinsics"][keyframe_local_indices].astype(np.float32)
                 K_keyframes = intrinsics[keyframe_local_indices].astype(np.float32)
                 images_keyframes = [preprocessed_data["images"][i] for i in keyframe_local_indices]
@@ -2635,12 +2633,12 @@ if __name__ == "__main__":
                         help="Output directory for results")
     parser.add_argument("--cond_index", type=int, default=0,
                         help="Condition frame index (keyframe with known SAM3D pose)")
-    parser.add_argument("--neus_init_steps", type=int, default=3000,
-                        help="Number of NeuS training steps used in pipeline_neus_init.py (for resuming)")
     parser.add_argument("--optimize_3D_prior", action="store_true", default=False,
                         help="Disable point-to-plane loss and skip NeuS mesh loading")
     parser.add_argument("--vis_thresh", type=float, default=0.3,
                         help="Visibility score threshold for filtering tracks in the condition frame")
+    parser.add_argument("--neus_init_steps", type=int, default=3000,
+                        help="Number of NeuS training steps for initial mesh")
 
     args = parser.parse_args()
     main(args)
