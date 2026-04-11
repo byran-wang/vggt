@@ -23,6 +23,10 @@ from utils_simba.depth import get_depth, depth2xyzmap
 from utils_simba.render import diff_renderer, projection_matrix_from_intrinsics
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_sam3d_transform
 from robust_hoi_pipeline.geometry_utils import compute_reproj_errors
+from robust_hoi_pipeline.pipeline_joint_opt_debug import (
+    _save_binary_mask_debug,
+    _save_hand_obj_meshes_in_obj_space,
+)
 from utils_simba.logger import get_logger
 
 logger = get_logger(__name__)
@@ -716,47 +720,6 @@ def mask_track_for_outliers(image_info, frame_idx, reproj_thresh, min_track_numb
               f"with reproj error > {reproj_thresh}px")
 
 
-def _save_binary_mask_debug(debug_dir, frame_idx, pred_mask, target_mask, filename_prefix, it=None):
-    if debug_dir is None or pred_mask is None:
-        return
-
-    import cv2 as _cv2
-
-    def _to_u8(mask):
-        if torch.is_tensor(mask):
-            arr = mask.detach().float().cpu().numpy()
-        else:
-            arr = np.asarray(mask, dtype=np.float32)
-        if arr.ndim != 2:
-            return None
-        return (np.clip(arr, 0.0, 1.0) * 255).astype(np.uint8)
-
-    pred_u8 = _to_u8(pred_mask)
-    if pred_u8 is None:
-        return
-
-    H, W = pred_u8.shape
-    canvas = np.zeros((H, W, 3), dtype=np.uint8)
-
-    # Pred mask contour in blue
-    contours, _ = _cv2.findContours(pred_u8, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
-    _cv2.drawContours(canvas, contours, -1, (255, 0, 0), 2)
-    # Target mask contour in green
-    if target_mask is not None:
-        target_u8 = _to_u8(target_mask)
-        if target_u8 is not None:
-            contours_t, _ = _cv2.findContours(target_u8, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
-            _cv2.drawContours(canvas, contours_t, -1, (0, 255, 0), 2)
-
-    _debug_dir = Path(debug_dir)
-    _debug_dir.mkdir(parents=True, exist_ok=True)
-    if it is None:
-        out_name = f"{filename_prefix}_frame_{frame_idx:04d}.png"
-    else:
-        out_name = f"{filename_prefix}_frame_{frame_idx:04d}_iter{it:03d}.png"
-    _cv2.imwrite(str(_debug_dir / out_name), canvas)
-
-
 def _save_depth_points_obj(image_info_work, frame_idx, tag="after_PnP",max_pts=5000):
     """Back-project masked depth pixels to object space and store in image_info_work."""
     depth_priors = image_info_work.get("depth_priors")
@@ -1085,6 +1048,12 @@ def _align_object_with_hand(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
     R_init = torch.tensor(ext[:3, :3].astype(np.float32), dtype=torch.float32, device=device)
     t_init = torch.tensor(ext[:3, 3].astype(np.float32), dtype=torch.float32, device=device)
 
+    # Save hand & object meshes in object space BEFORE optimization
+    _save_hand_obj_meshes_in_obj_space(
+        debug_dir, frame_idx, obj_mesh, hand_verts_in_cam, hf_np,
+        R_init, t_init, tag="before",
+    )
+
     # Convert rotation to axis-angle for optimization
     from pytorch3d.transforms import matrix_to_axis_angle, axis_angle_to_matrix
     rotvec = matrix_to_axis_angle(R_init.unsqueeze(0)).squeeze(0)
@@ -1156,6 +1125,12 @@ def _align_object_with_hand(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
     R_best = axis_angle_to_matrix(best_rotvec.unsqueeze(0)).squeeze(0)
     image_info_work["extrinsics"][frame_idx, :3, :3] = R_best.detach().cpu().numpy()
     image_info_work["extrinsics"][frame_idx, :3, 3] = best_trans.detach().cpu().numpy()
+
+    # Save hand & object meshes in object space AFTER optimization
+    _save_hand_obj_meshes_in_obj_space(
+        debug_dir, frame_idx, obj_mesh, hand_verts_in_cam, hf_np,
+        R_best, best_trans, tag="after",
+    )
 
     logger.info(f"[align_hand] Frame {frame_idx}: optimized, best_loss={best_loss:.4f}")
     return True
