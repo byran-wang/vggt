@@ -978,6 +978,203 @@ def register_new_frame_by_PnP(
     update_pose=True,
     return_pose=False,
 ):
+    """Estimate pose of frame `frame_idx` using PnP with depth-backprojected 3D points from the nearest registered frame.
+
+    Backprojects 2D track positions from the nearest registered frame's depth map
+    to obtain 3D points in object space, then solves PnP against the target frame's
+    2D track positions.
+
+    Args:
+        image_info: Dictionary containing reconstruction data. Must include
+            ``depth_priors`` (list/array of (H, W) depth maps in object space)
+            alongside the standard keys (extrinsics, intrinsics, pred_tracks,
+            track_mask, registered).
+        frame_idx: Frame index to register
+        args: Arguments with configuration
+        iters: Number of RANSAC iterations (default 100)
+        update_pose: Whether to write the estimated pose back into extrinsics
+        return_pose: If True, return (pose, success) instead of just success
+
+    Returns:
+        - if return_pose is False: bool success
+        - if return_pose is True: (estimated_o2c_pose, success)
+    """
+    def _ret(pose, success):
+        if return_pose:
+            return pose, bool(success)
+        return bool(success)
+
+    extrinsics = image_info.get("extrinsics")
+    intrinsics = image_info.get("intrinsics")
+    pred_tracks = image_info.get("pred_tracks")
+    track_mask = image_info.get("track_mask")
+    depth_priors = image_info.get("depth_priors")
+
+    missing = [
+        name
+        for name, val in [
+            ("extrinsics", extrinsics),
+            ("intrinsics", intrinsics),
+            ("pred_tracks", pred_tracks),
+            ("track_mask", track_mask),
+            ("depth_priors", depth_priors),
+        ]
+        if val is None
+    ]
+
+    if missing:
+        print(f"[register_new_frame] Missing inputs: {missing}; skipping registration.")
+        return _ret(None, False)
+
+    # --- Find the nearest registered frame ---
+    from robust_hoi_pipeline.pipeline_joint_opt import _find_nearest_registered_frame
+
+    nearest_idx = _find_nearest_registered_frame(image_info, frame_idx)
+    if nearest_idx is None:
+        print(f"[register_new_frame] Frame {frame_idx}: No registered frames available, skipping.")
+        return _ret(None, False)
+
+    # --- Backproject tracks from the nearest frame's depth to 3D in object space ---
+    ref_depth = depth_priors[nearest_idx]  # (H, W), already in object space
+    if ref_depth is None or not np.any(ref_depth > 0):
+        print(f"[register_new_frame] Frame {frame_idx}: Reference frame {nearest_idx} has no valid depth, skipping.")
+        return _ret(None, False)
+
+    ref_K = intrinsics[nearest_idx].astype(np.float64)  # (3, 3)
+    ref_ext = extrinsics[nearest_idx].astype(np.float64)
+    ref_o2c = np.eye(4, dtype=np.float64)
+    ref_o2c[:3, :4] = ref_ext[:3, :4]  # accept either (3,4) or (4,4) input
+    ref_c2o = np.linalg.inv(ref_o2c)  # camera-to-object
+
+    # Tracks visible in both the reference frame and the target frame
+    ref_mask = track_mask[nearest_idx].astype(bool)
+    tgt_mask = track_mask[frame_idx].astype(bool)
+    both_visible = ref_mask & tgt_mask
+
+    if not both_visible.any():
+        print(f"[register_new_frame] Frame {frame_idx}: No tracks visible in both frame {nearest_idx} and {frame_idx}, skipping.")
+        return _ret(None, False)
+
+    ref_tracks_2d = pred_tracks[nearest_idx][both_visible]  # (M, 2) x,y
+    tgt_tracks_2d = pred_tracks[frame_idx][both_visible]    # (M, 2) x,y
+
+    # Sample depth at reference track positions (nearest-neighbor)
+    H, W = ref_depth.shape[:2]
+    ref_uv = np.round(ref_tracks_2d).astype(int)
+    ref_uv[:, 0] = np.clip(ref_uv[:, 0], 0, W - 1)
+    ref_uv[:, 1] = np.clip(ref_uv[:, 1], 0, H - 1)
+    sampled_depth = ref_depth[ref_uv[:, 1], ref_uv[:, 0]]  # (M,)
+
+    # Keep only points with valid depth
+    valid_depth_mask = sampled_depth > 0.01
+    if valid_depth_mask.sum() < 10:
+        print(f"[register_new_frame] Frame {frame_idx}: Only {valid_depth_mask.sum()} tracks with valid depth in ref frame {nearest_idx} (need >= 10), skipping.")
+        return _ret(None, False)
+
+    ref_uv_valid = ref_uv[valid_depth_mask].astype(np.float64)
+    z_valid = sampled_depth[valid_depth_mask].astype(np.float64)
+    pts_2d = tgt_tracks_2d[valid_depth_mask].astype(np.float64)
+
+    # Backproject to 3D in camera space: x = (u - cx) * z / fx, y = (v - cy) * z / fy
+    x_cam = (ref_uv_valid[:, 0] - ref_K[0, 2]) * z_valid / ref_K[0, 0]
+    y_cam = (ref_uv_valid[:, 1] - ref_K[1, 2]) * z_valid / ref_K[1, 1]
+    pts_cam = np.stack([x_cam, y_cam, z_valid], axis=1)  # (M', 3)
+
+    # Transform to object space
+    pts_cam_h = np.hstack([pts_cam, np.ones((len(pts_cam), 1))])  # (M', 4)
+    pts_obj = (ref_c2o @ pts_cam_h.T).T[:, :3]  # (M', 3)
+
+    # Filter out invalid 3D points (NaN/Inf)
+    finite_mask = np.isfinite(pts_obj).all(axis=1)
+    if not finite_mask.all():
+        pts_obj = pts_obj[finite_mask]
+        pts_2d = pts_2d[finite_mask]
+
+    if len(pts_obj) < 10:
+        print(f"[register_new_frame] Frame {frame_idx}: Only {len(pts_obj)} valid 3D points from depth (need >= 10), skipping.")
+        return _ret(None, False)
+
+    pts_3d = pts_obj
+    # Get intrinsic matrix for this frame
+    K = intrinsics[frame_idx].astype(np.float64)
+
+    # Use nearest registered frame's pose as initial guess
+    R_init = extrinsics[nearest_idx, :3, :3].astype(np.float64)
+    t_init = extrinsics[nearest_idx, :3, 3].astype(np.float64)
+
+    rvec_init, _ = cv2.Rodrigues(R_init)
+
+    # Solve PnP with RANSAC
+    success, rvec, tvec, inliers = cv2.solvePnPRansac(
+        objectPoints=pts_3d,
+        imagePoints=pts_2d,
+        cameraMatrix=K,
+        distCoeffs=None,
+        rvec=rvec_init.copy(),
+        tvec=t_init.reshape(3, 1).copy(),
+        useExtrinsicGuess=True,
+        iterationsCount=iters,
+        reprojectionError=args.pnp_reproj_thresh,
+        flags=cv2.SOLVEPNP_ITERATIVE,
+    )
+
+    if not success or inliers is None or len(inliers) < 4:
+        print(f"[register_new_frame] Frame {frame_idx}: PnP failed (inliers={len(inliers) if inliers is not None else 0}), keeping initial pose.")
+        return _ret(None, False)
+
+    # Refine with all inliers using iterative PnP
+    inlier_mask = np.zeros(len(pts_3d), dtype=bool)
+    inlier_mask[inliers.flatten()] = True
+
+    pts_3d_inliers = pts_3d[inlier_mask]
+    pts_2d_inliers = pts_2d[inlier_mask]
+
+    success_refine, rvec_refined, tvec_refined = cv2.solvePnP(
+        objectPoints=pts_3d_inliers,
+        imagePoints=pts_2d_inliers,
+        cameraMatrix=K,
+        distCoeffs=None,
+        rvec=rvec,
+        tvec=tvec,
+        useExtrinsicGuess=True,
+        flags=cv2.SOLVEPNP_ITERATIVE,
+    )
+
+    if success_refine:
+        rvec = rvec_refined
+        tvec = tvec_refined
+
+    # Convert back to rotation matrix
+    R, _ = cv2.Rodrigues(rvec)
+    t = tvec.flatten()
+
+    estimated_pose = np.eye(4, dtype=np.float64)
+    estimated_pose[:3, :3] = R
+    estimated_pose[:3, 3] = t
+
+    if update_pose:
+        extrinsics[frame_idx, :3, :3] = R.astype(np.float32)
+        extrinsics[frame_idx, :3, 3] = t.astype(np.float32)
+
+    # Compute reprojection error for logging
+    proj_pts, _ = cv2.projectPoints(pts_3d_inliers, rvec, tvec, K, None)
+    proj_pts = proj_pts.reshape(-1, 2)
+    reproj_err = np.linalg.norm(proj_pts - pts_2d_inliers, axis=1).mean()
+
+    print(f"[register_new_frame] Frame {frame_idx}: PnP success with {len(inliers)}/{len(pts_3d)} inliers, "
+          f"mean reproj error: {reproj_err:.2f}px")
+
+    return _ret(estimated_pose, True)
+
+
+def register_new_frame_by_PnP_old(
+    image_info,
+    frame_idx,
+    args,
+    iters=100,
+    update_pose=True,
+    return_pose=False,
+):
     """Estimate pose of frame `frame_idx` using PnP with existing 3D points and 2D tracks.
 
     Uses RANSAC-based PnP to robustly estimate the camera pose from 2D-3D correspondences.
