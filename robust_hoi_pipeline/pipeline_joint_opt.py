@@ -1442,7 +1442,7 @@ def _save_depth_debug_stages(debug_dir, frame_idx, d, K, extrinsics, ys, xs, dbg
         _save_colored_points_debug(debug_dir, frame_idx, masked_pts_obj, dbg_image, ys, xs, "depth_after_masked_in_obj")
 
 
-def _is_hand_far_from_object(image_info_work, frame_idx, obj_mesh, thresh=0.015, debug_dir=None):
+def _is_hand_far_from_object(image_info_work, frame_idx, obj_mesh, thresh=0.02, debug_dir=None):
     """Check if hand contact points are far from the object in object space.
 
     Uses finger tip contact vertices (from contact_zones.pkl) instead of
@@ -1468,30 +1468,32 @@ def _is_hand_far_from_object(image_info_work, frame_idx, obj_mesh, thresh=0.015,
     sam3d_scale = image_info_work.get("sam3d_scale", 1.0)
     thresh = thresh / sam3d_scale
 
-    # Save debug: hand mesh before (camera space) and after (object space) transform
-    if debug_dir is not None:
-        import trimesh as _tri
-        _dbg = Path(debug_dir) / "hand_dist"
-        _dbg.mkdir(parents=True, exist_ok=True)
-        # Hand in camera space
-        _tri.Trimesh(vertices=hv, faces=hf).export(str(_dbg / f"hand_cam_{frame_idx:04d}.ply"))
-        # Hand in object space
-        _tri.Trimesh(vertices=hv_obj, faces=hf).export(str(_dbg / f"hand_obj_{frame_idx:04d}.ply"))
-        # Contact points in object space (red)
-        _colors = np.zeros((len(contact_pts), 4), dtype=np.uint8)
-        _colors[:, 0] = 255; _colors[:, 3] = 255
-        _tri.PointCloud(contact_pts, colors=_colors).export(str(_dbg / f"contact_pts_obj_{frame_idx:04d}.ply"))
-        # Object mesh for reference
-        obj_mesh.export(str(_dbg / f"obj_mesh_{frame_idx:04d}.ply"))
+
 
     # Min distance from each contact point to nearest object vertex,
     # then take the mean across all contact points
     dists = np.linalg.norm(contact_pts[:, None, :] - ov[None, :, :], axis=2)  # (96, Nv)
     min_per_contact = dists.min(axis=1)  # (96,)
-    mean_dist = min_per_contact.mean()
+    mean_dist = min_per_contact.min()
     if mean_dist > thresh:
         logger.info(f"[hand_dist] Frame {frame_idx}: mean contact-object distance {mean_dist:.3f} > {thresh}, too far")
+        # Save debug: hand mesh before (camera space) and after (object space) transform
+        if debug_dir is not None:
+            import trimesh as _tri
+            _dbg = Path(debug_dir) / "hand_dist"
+            _dbg.mkdir(parents=True, exist_ok=True)
+            # Hand in camera space
+            _tri.Trimesh(vertices=hv, faces=hf).export(str(_dbg / f"hand_cam_{frame_idx:04d}.ply"))
+            # Hand in object space
+            _tri.Trimesh(vertices=hv_obj, faces=hf).export(str(_dbg / f"hand_obj_{frame_idx:04d}.ply"))
+            # Contact points in object space (red)
+            _colors = np.zeros((len(contact_pts), 4), dtype=np.uint8)
+            _colors[:, 0] = 255; _colors[:, 3] = 255
+            _tri.PointCloud(contact_pts, colors=_colors).export(str(_dbg / f"contact_pts_obj_{frame_idx:04d}.ply"))
+            # Object mesh for reference
+            obj_mesh.export(str(_dbg / f"obj_mesh_{frame_idx:04d}.ply"))        
         return True
+    logger.info(f"[hand_dist] Frame {frame_idx}: mean contact-object distance {mean_dist:.3f} <= {thresh}, acceptable")
     return False
 
         return False
@@ -2167,7 +2169,7 @@ def _check_contact_and_reset(hand_verts_in_cam, obj_verts, image_info_work, fram
             return "skip"
 
 
-def _check_pose_moved(image_info_work, frame_idx, min_rot=2, min_trans=0.005):
+def _check_pose_moved(image_info_work, frame_idx, min_rot=2, min_trans=0.01):
     """Check whether a frame's pose differs from its nearest registered neighbor.
 
     Returns True if the pose moved sufficiently, False if it barely changed
@@ -2181,10 +2183,12 @@ def _check_pose_moved(image_info_work, frame_idx, min_rot=2, min_trans=0.005):
     R_delta = T_curr[:3, :3] @ T_near[:3, :3].T
     angle = np.rad2deg(np.arccos(np.clip((np.trace(R_delta) - 1) / 2, -1.0, 1.0)))
     trans = np.linalg.norm(T_curr[:3, 3] - T_near[:3, 3])
-    if angle < min_rot and trans < min_trans:
-        logger.warning(f"[check_pose_moved] Frame {frame_idx} pose barely moved "
-              f"(rot={angle:.2f}\u00b0, trans={trans:.4f}), nearest={nearest_idx}")
+    if angle < min_rot or trans < min_trans:
+        logger.warning(f"[check_pose_moved] Frame {frame_idx} static"
+              f"(rot={angle:.2f}\u00b0, trans={trans:.4f}), nearest={nearest_idx}, min_rot={min_rot}, min_trans={min_trans}")
         return False
+    logger.info(f"[check_pose_moved] Frame {frame_idx} moved "
+        f"(rot={angle:.2f}\u00b0, trans={trans:.4f}), nearest={nearest_idx}, min_rot={min_rot}, min_trans={min_trans}")
     return True
 
 
@@ -2312,9 +2316,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
         logger.info("+" * 50)
         logger.info(f"Next frame to register: {image_info['frame_indices'][next_frame_idx]} (local idx {next_frame_idx})")
-        debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
-        if RUN_ON_SERVER:
-            debug_dir = None
+
 
         # if check_frame_invalid(
         #     image_info_work,
@@ -2350,10 +2352,10 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 refiner.cfg['crop_ratio'] = fp_crop_ratio
 
             fp_pose_sam3d, fp_success_sam3d = _reset_and_track_foundation_pose(
-                image_info_work, next_frame_idx, sam3d_mesh, debug_dir=debug_dir
+                image_info_work, next_frame_idx, sam3d_mesh
             )
             fp_pose_neus, fp_success_neus = _reset_and_track_foundation_pose(
-                image_info_work, next_frame_idx, neus_mesh_trimesh, debug_dir=debug_dir
+                image_info_work, next_frame_idx, neus_mesh_trimesh
             )
             iter_pose, iter_success, iter_score = check_which_estimate_is_better_and_update(
                 image_info_work,
@@ -2389,7 +2391,6 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             
 
         if is_moved:
-            logger.warning(f"[register_remaining_frames] Frame {next_frame_idx} align depth to mesh due to high reprojection error")
             # _reset_pose_to_nearest_registered(image_info_work, next_frame_idx)
             # _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_reset_when_pnp_fail")
             # _init_pose_from_hand(image_info_work, next_frame_idx)
@@ -2403,23 +2404,18 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
             # Align the frame with SAM3D mesh using depth with outlier rejection
             if 1:
+                debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
+                if RUN_ON_SERVER:
+                    debug_dir = None
 
-                if _is_hand_far_from_object(image_info_work, next_frame_idx, sam3d_mesh, thresh=0.15, debug_dir=None):
+                _obj_mesh = neus_mesh_trimesh if neus_mesh_trimesh is not None else sam3d_mesh
+                if _is_hand_far_from_object(image_info_work, next_frame_idx, _obj_mesh, debug_dir=debug_dir):
                     logger.warning("hand is too far from object, so we will align the object with the hand")
-                    sucess = _align_object_with_hand(image_info_work, next_frame_idx, sam3d_mesh,
+                    _align_object_with_hand(image_info_work, next_frame_idx, _obj_mesh,
                                                  debug_dir=debug_dir
                                                  )
-                else:
-                    sucess = True  # proceed without hand alignment
-                if not sucess:
-                    image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True
-                    logger.warning(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to large reprojection error and failed depth-mesh alignment")
-                    invalid_cnt["reproj_err"] += 1
-                    save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
-                    print_image_info_stats(image_info_work, invalid_cnt)
-                    continue
-                else:
-                    sucess, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args, skip_check=True)
+
+                    _, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args, skip_check=True)
                     logger.info(f"[register_remaining_frames] After object_hand alignment, reprojection error for frame {next_frame_idx}: {mean_error:.2f}")
                     _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_align_mesh")
 
