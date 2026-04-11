@@ -548,13 +548,6 @@ def _save_compressed(path: Path, data: dict) -> None:
         pickle.dump(data, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 
-def _load_compressed(path: Path) -> dict:
-    """Load dict from gzip-compressed pickle."""
-    import gzip
-    with gzip.open(path, "rb") as f:
-        return pickle.load(f)
-
-
 def save_results(image_info: Dict, register_idx, preprocessed_data, results_dir: Path, only_save_register_order=False
 ) -> None:
     """Save image info for joint optimization outputs.
@@ -723,206 +716,37 @@ def mask_track_for_outliers(image_info, frame_idx, reproj_thresh, min_track_numb
               f"with reproj error > {reproj_thresh}px")
 
 
-def _save_depth_alignment_debug(image_info_work, frame_idx, depth_map, K, masks, ys, xs, debug_dir):
-    if debug_dir is None:
+def _save_binary_mask_debug(debug_dir, frame_idx, pred_mask, target_mask, filename_prefix, it=None):
+    if debug_dir is None or pred_mask is None:
         return
 
-    from PIL import Image
-    import trimesh as _trimesh
+    import cv2 as _cv2
 
-    _debug_dir = Path(debug_dir)
-    _debug_dir.mkdir(parents=True, exist_ok=True)
-
-    img_dbg = None
-    images = image_info_work.get("images")
-    if images is not None and images[frame_idx] is not None:
-        img_dbg = np.asarray(images[frame_idx])
-        if img_dbg.ndim == 2:
-            Image.fromarray(img_dbg.astype(np.uint8), mode="L").save(
-                _debug_dir / f"image_frame_{frame_idx:04d}.png")
-        elif img_dbg.ndim == 3 and img_dbg.shape[2] >= 3:
-            Image.fromarray(img_dbg[:, :, :3].astype(np.uint8), mode="RGB").save(
-                _debug_dir / f"image_frame_{frame_idx:04d}.png")
-
-    if masks is not None and masks[frame_idx] is not None:
-        mask_u8 = (masks[frame_idx] > 0).astype(np.uint8) * 255
-        Image.fromarray(mask_u8, mode="L").save(_debug_dir / f"mask_frame_{frame_idx:04d}.png")
-
-    if len(ys) == 0:
-        return
-
-    z_dbg = depth_map[ys, xs].astype(np.float64)
-    x_dbg = (xs.astype(np.float64) - K[0, 2]) * z_dbg / K[0, 0]
-    y_dbg = (ys.astype(np.float64) - K[1, 2]) * z_dbg / K[1, 1]
-    pts_dbg = np.stack([x_dbg, y_dbg, z_dbg], axis=-1)
-
-    colors_dbg = None
-    if img_dbg is not None:
-        if img_dbg.ndim == 2:
-            img_rgb = np.stack([img_dbg, img_dbg, img_dbg], axis=-1)
-        elif img_dbg.ndim == 3 and img_dbg.shape[2] >= 3:
-            img_rgb = img_dbg[:, :, :3]
+    def _to_u8(mask):
+        if torch.is_tensor(mask):
+            arr = mask.detach().float().cpu().numpy()
         else:
-            img_rgb = None
+            arr = np.asarray(mask, dtype=np.float32)
+        if arr.ndim != 2:
+            return None
+        return (np.clip(arr, 0.0, 1.0) * 255).astype(np.uint8)
 
-        if img_rgb is not None:
-            colors_dbg = img_rgb[ys, xs]
-            if np.issubdtype(colors_dbg.dtype, np.floating) and colors_dbg.max(initial=0.0) <= 1.0:
-                colors_dbg = colors_dbg * 255.0
-            colors_dbg = np.clip(colors_dbg, 0, 255).astype(np.uint8)
-
-    if colors_dbg is None:
-        colors_dbg = np.zeros((len(pts_dbg), 3), dtype=np.uint8)
-        colors_dbg[:, 2] = 255
-
-    ply_path = _debug_dir / f"depth_frame_{frame_idx:04d}.ply"
-    _trimesh.PointCloud(pts_dbg.astype(np.float32), colors=colors_dbg).export(ply_path)
-
-
-def _save_icp_iteration_debug(debug_dir, it, pts_obj, p, c):
-    if debug_dir is None:
+    pred_u8 = _to_u8(pred_mask)
+    if pred_u8 is None:
         return
 
-    import trimesh as _trimesh
+    H, W = pred_u8.shape
+    canvas = np.zeros((H, W, 3), dtype=np.uint8)
 
-    _debug_dir = Path(debug_dir)
-    _debug_dir.mkdir(parents=True, exist_ok=True)
-
-    # all object-space depth points (blue)
-    colors_all = np.zeros((len(pts_obj), 4), dtype=np.uint8)
-    colors_all[:, 2] = 255
-    colors_all[:, 3] = 255
-    _trimesh.PointCloud(pts_obj.astype(np.float32), colors=colors_all).export(
-        _debug_dir / f"pts_obj_iter{it:03d}.ply")
-
-    # inlier points (green)
-    colors_p = np.zeros((len(p), 4), dtype=np.uint8)
-    colors_p[:, 1] = 255
-    colors_p[:, 3] = 255
-    _trimesh.PointCloud(p.astype(np.float32), colors=colors_p).export(
-        _debug_dir / f"inlier_iter{it:03d}.ply")
-
-    # closest mesh surface points (red)
-    colors_c = np.zeros((len(c), 4), dtype=np.uint8)
-    colors_c[:, 0] = 255
-    colors_c[:, 3] = 255
-    _trimesh.PointCloud(c.astype(np.float32), colors=colors_c).export(
-        _debug_dir / f"closest_iter{it:03d}.ply")
-
-
-def _save_obj_depth_points_debug(debug_dir, frame_idx, pts_obj, filename_prefix, color_rgba, it=None):
-    if debug_dir is None or pts_obj is None or len(pts_obj) == 0:
-        return
-
-    import trimesh as _trimesh
-
-    _debug_dir = Path(debug_dir)
-    _debug_dir.mkdir(parents=True, exist_ok=True)
-    colors_obj = np.zeros((len(pts_obj), 4), dtype=np.uint8)
-    colors_obj[:, :] = np.array(color_rgba, dtype=np.uint8)
-    suffix = f"_iter_{it:03d}" if it is not None else ""
-    _trimesh.PointCloud(pts_obj.astype(np.float32), colors=colors_obj).export(
-        _debug_dir / f"{filename_prefix}_frame_{frame_idx:04d}{suffix}.ply"
-    )
-
-
-def _backproject_depth_torch(depth, K, mask):
-    """Back-project masked depth pixels to 3D camera-space points (differentiable)."""
-    vs, us = torch.where(mask)
-    zs = depth[vs, us]
-    xs = (us.float() - K[0, 2]) * zs / K[0, 0]
-    ys = (vs.float() - K[1, 2]) * zs / K[1, 1]
-    return torch.stack([xs, ys, zs], dim=-1)  # (N, 3)
-
-
-def _depth_map_to_obj_points(depth, K, R, trans, mask=None):
-    """Back-project a depth map to 3D points in object space.
-
-    Args:
-        depth: (H, W) depth map (torch tensor).
-        K: (3, 3) intrinsic matrix (numpy).
-        R: (3, 3) rotation from object to camera (torch tensor).
-        trans: (3,) translation from object to camera (torch tensor).
-        mask: optional (H, W) boolean mask of valid pixels (torch tensor).
-
-    Returns:
-        pts_obj: (N, 3) numpy array of points in object space.
-    """
-    if mask is None:
-        mask = (depth > 0) & torch.isfinite(depth)
-    vs, us = torch.where(mask)
-    zs = depth[vs, us]
-    xs = (us.float() - K[0, 2]) * zs / K[0, 0]
-    ys = (vs.float() - K[1, 2]) * zs / K[1, 1]
-    pts_cam = torch.stack([xs, ys, zs], dim=-1)  # (N, 3)
-    # cam_to_obj: p_obj = R^T @ (p_cam - t)
-    pts_obj = (R.T @ (pts_cam - trans[None, :]).T).T
-    return pts_obj.detach().cpu().numpy()
-
-
-def _save_colored_points_debug(debug_dir, frame_idx, pts, image, ys, xs, filename_prefix):
-    """Save a colored point cloud using pixel colors from the image."""
-    if debug_dir is None or pts is None or len(pts) == 0:
-        return
-
-    import trimesh as _trimesh
-
-    _debug_dir = Path(debug_dir)
-    _debug_dir.mkdir(parents=True, exist_ok=True)
-
-    if image is not None and image.ndim == 3 and image.shape[2] >= 3:
-        colors = image[ys, xs, :3].copy()
-        if np.issubdtype(colors.dtype, np.floating) and colors.max(initial=0.0) <= 1.0:
-            colors = (colors * 255.0).astype(np.uint8)
-        else:
-            colors = np.clip(colors, 0, 255).astype(np.uint8)
-        colors_rgba = np.zeros((len(pts), 4), dtype=np.uint8)
-        colors_rgba[:, :3] = colors
-        colors_rgba[:, 3] = 255
-    else:
-        colors_rgba = np.full((len(pts), 4), [128, 128, 128, 255], dtype=np.uint8)
-
-    _trimesh.PointCloud(pts.astype(np.float32), colors=colors_rgba).export(
-        _debug_dir / f"{filename_prefix}_frame_{frame_idx:04d}.ply"
-    )
-
-
-def _save_normal_map_debug(debug_dir, frame_idx, normal_map, filename_prefix, it=None):
-    if debug_dir is None or normal_map is None:
-        return
-
-    from PIL import Image
-    import torch
-
-    if torch.is_tensor(normal_map):
-        normal_np = normal_map.detach().cpu().numpy()
-    else:
-        normal_np = np.asarray(normal_map)
-    if normal_np.ndim != 3 or normal_np.shape[2] != 3:
-        return
-    normal_np = (normal_np + 1.0) * 0.5
-    normal_u8 = np.clip(normal_np * 255.0, 0, 255).astype(np.uint8)
-    _debug_dir = Path(debug_dir)
-    _debug_dir.mkdir(parents=True, exist_ok=True)
-    if it is None:
-        out_name = f"{filename_prefix}_frame_{frame_idx:04d}.png"
-    else:
-        out_name = f"{filename_prefix}_frame_{frame_idx:04d}_iter{it:03d}.png"
-    Image.fromarray(normal_u8, mode="RGB").save(_debug_dir / out_name)
-
-
-def _save_binary_mask_debug(debug_dir, frame_idx, mask, filename_prefix, it=None):
-    if debug_dir is None or mask is None:
-        return
-
-    from PIL import Image
-
-    if torch.is_tensor(mask):
-        mask_np = mask.detach().float().cpu().numpy()
-    else:
-        mask_np = np.asarray(mask)
-    if mask_np.ndim != 2:
-        return
+    # Pred mask contour in blue
+    contours, _ = _cv2.findContours(pred_u8, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
+    _cv2.drawContours(canvas, contours, -1, (255, 0, 0), 2)
+    # Target mask contour in green
+    if target_mask is not None:
+        target_u8 = _to_u8(target_mask)
+        if target_u8 is not None:
+            contours_t, _ = _cv2.findContours(target_u8, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
+            _cv2.drawContours(canvas, contours_t, -1, (0, 255, 0), 2)
 
     _debug_dir = Path(debug_dir)
     _debug_dir.mkdir(parents=True, exist_ok=True)
@@ -930,62 +754,7 @@ def _save_binary_mask_debug(debug_dir, frame_idx, mask, filename_prefix, it=None
         out_name = f"{filename_prefix}_frame_{frame_idx:04d}.png"
     else:
         out_name = f"{filename_prefix}_frame_{frame_idx:04d}_iter{it:03d}.png"
-    Image.fromarray((np.clip(mask_np, 0.0, 1.0) * 255.0).astype(np.uint8), mode="L").save(_debug_dir / out_name)
-
-
-def _save_mesh_debug(debug_dir, frame_idx, vertices, faces, filename_prefix, it=None):
-    if debug_dir is None or vertices is None or faces is None:
-        return
-    import trimesh as _trimesh
-
-    if torch.is_tensor(vertices):
-        verts_np = vertices.detach().cpu().numpy()
-    else:
-        verts_np = np.asarray(vertices)
-    if torch.is_tensor(faces):
-        faces_np = faces.detach().cpu().numpy()
-    else:
-        faces_np = np.asarray(faces)
-
-    if verts_np.ndim == 3:
-        verts_np = verts_np[0]
-    if faces_np.ndim != 2 or verts_np.ndim != 2:
-        return
-
-    _debug_dir = Path(debug_dir)
-    _debug_dir.mkdir(parents=True, exist_ok=True)
-    if it is None:
-        out_name = f"{filename_prefix}_frame_{frame_idx:04d}.obj"
-    else:
-        out_name = f"{filename_prefix}_frame_{frame_idx:04d}_iter{it:03d}.obj"
-    _trimesh.Trimesh(vertices=verts_np.astype(np.float32), faces=faces_np.astype(np.int32), process=False).export(
-        _debug_dir / out_name
-    )
-
-
-def _smooth_normal_map_masked(normal_map, valid_mask, num_iters=2, kernel_size=3, eps=1e-6):
-    """Smooth an HxWx3 normal map with masked local averaging and renormalization."""
-    import torch
-    import torch.nn.functional as F
-
-    if normal_map is None:
-        return None
-
-    normal_valid = torch.as_tensor(valid_mask, dtype=torch.float32, device=normal_map.device)[None, None]
-    normal_chw = normal_map.permute(2, 0, 1)[None]
-
-    for _ in range(int(num_iters)):
-        smoothed_sum = F.avg_pool2d(normal_chw * normal_valid, kernel_size=kernel_size, stride=1, padding=kernel_size // 2)
-        smoothed_w = F.avg_pool2d(normal_valid, kernel_size=kernel_size, stride=1, padding=kernel_size // 2)
-        normal_chw = torch.where(
-            smoothed_w > eps,
-            smoothed_sum / (smoothed_w + eps),
-            normal_chw,
-        )
-        normal_chw = F.normalize(normal_chw, dim=1, eps=eps)
-        normal_chw = torch.where(normal_valid > 0, normal_chw, torch.zeros_like(normal_chw))
-
-    return normal_chw[0].permute(1, 2, 0)
+    _cv2.imwrite(str(_debug_dir / out_name), canvas)
 
 
 def _save_depth_points_obj(image_info_work, frame_idx, tag="after_PnP",max_pts=5000):
@@ -1036,34 +805,6 @@ def _cam_points_to_object_points(pts_cam, extrinsic):
     return (R.T @ (pts_cam - t).T).T
 
 
-def _build_observation_mask(height, width, ys, xs, device):
-    """Create boolean HxW observation mask from selected pixel indices."""
-    import torch
-
-    obs_mask = torch.zeros((height, width), dtype=torch.bool, device=device)
-    obs_mask[torch.tensor(ys, device=device), torch.tensor(xs, device=device)] = True
-    return obs_mask
-
-
-def _filter_pixels_in_object_bbox(depth_map, K, extrinsics, frame_idx, ys, xs, bbox_min=None, bbox_max=None):
-    """Keep only depth pixels whose object-space points are inside a 3D bbox."""
-    ext0 = extrinsics[frame_idx].astype(np.float64)
-    pts_cam = _depth_pixels_to_cam_points(depth_map, K, ys, xs)
-    pts_obj0 = _cam_points_to_object_points(pts_cam, ext0)
-
-    if bbox_min is None:
-        bbox_min = np.array([-0.8, -0.8, -0.8], dtype=np.float64)
-    else:
-        bbox_min = np.asarray(bbox_min, dtype=np.float64)
-    if bbox_max is None:
-        bbox_max = np.array([0.8, 0.8, 0.8], dtype=np.float64)
-    else:
-        bbox_max = np.asarray(bbox_max, dtype=np.float64)
-
-    in_bbox = np.all((pts_obj0 >= bbox_min) & (pts_obj0 <= bbox_max), axis=1)
-    return ys[in_bbox], xs[in_bbox], ext0
-
-
 def _filter_depth_by_object_bbox(image_info_work, frame_idx, bbox_min=[-0.8, -0.8, -0.8], bbox_max=[0.8, 0.8, 0.8]):
     """Zero out depth pixels whose object-space 3D points fall outside a bounding box."""
     depth_priors = image_info_work.get("depth_priors")
@@ -1100,60 +841,6 @@ def _filter_depth_by_object_bbox(image_info_work, frame_idx, bbox_min=[-0.8, -0.
         logger.debug(f"[filter_depth_bbox] Frame {frame_idx}: zeroed {int(outside.sum())}/{len(ys)} depth pixels outside object bbox")
 
 
-def _prepare_frame_observations(
-    image_info_work,
-    frame_idx,
-    torch_device=None,
-    normal_smooth_iters=5,
-    normal_kernel_size=5,
-    normal_eps=1e-6,
-    debug_dir=None,
-):
-    """Collect per-frame observations and optionally prepare smoothed normal tensor."""
-    depth_priors = image_info_work.get("depth_priors")
-    normal_priors = image_info_work.get("normal_priors")
-    intrinsics = image_info_work.get("intrinsics")
-    extrinsics = image_info_work.get("extrinsics")
-
-    d = depth_priors[frame_idx]
-    if d is None:
-        logger.warning(f"[align_depth] Frame {frame_idx}: no depth, skipping")
-        return None
-
-    K = intrinsics[frame_idx] if intrinsics.ndim == 3 else intrinsics
-    n_obs = normal_priors[frame_idx] if (normal_priors is not None and frame_idx < len(normal_priors)) else None
-
-    vmask = d > 0.01
-    masks = image_info_work.get("image_masks")
-    if masks is not None and masks[frame_idx] is not None:
-        vmask = vmask & (masks[frame_idx] > 0)
-    if n_obs is not None:
-        vmask = vmask & np.isfinite(n_obs).all(axis=-1) & (np.linalg.norm(n_obs, axis=-1) > 1e-6)
-
-    ys, xs = np.where(vmask)
-
-    obs_normal = None
-    if n_obs is not None and torch_device is not None:
-        n_obs_f = n_obs.astype(np.float32)
-        obs_normal = torch.tensor(n_obs_f, dtype=torch.float32, device=torch_device)
-        obs_normal = F.normalize(obs_normal, dim=-1)
-        obs_normal = _smooth_normal_map_masked(
-            obs_normal,
-            vmask,
-            num_iters=normal_smooth_iters,
-            kernel_size=normal_kernel_size,
-            eps=normal_eps,
-        )
-        _save_normal_map_debug(
-            debug_dir=debug_dir,
-            frame_idx=frame_idx,
-            normal_map=obs_normal,
-            filename_prefix="normal_prior_smoothed",
-        )
-
-    return d, K, n_obs, vmask, masks, ys, xs, extrinsics, obs_normal
-
-
 def _prepare_render_inputs(mesh, K, H, W, device):
     """Prepare renderer context, mesh tensors, and camera projection tensor."""
     glctx = dr.RasterizeCudaContext()
@@ -1176,16 +863,37 @@ def _prepare_render_inputs(mesh, K, H, W, device):
 
 
 
-def _build_observed_hoi_mask(image_info_work, frame_idx, H, W, device, debug_dir=None):
-    """Build observed HOI mask as union of object/hand masks."""
+def _build_observed_hoi_mask(image_info_work, frame_idx, H, W, device,
+                             hand_verts_in_cam=None, hand_tri=None,
+                             projection=None, glctx=None,
+                             debug_dir=None):
+    """Build observed HOI mask as union of object mask and rendered hand mesh mask.
+
+    The hand mask comes from rendering the hand mesh in camera space rather
+    than from image_masks_hand, since the rendered mask is more accurate.
+    """
     mask_union = np.zeros((H, W), dtype=bool)
     masks_obj = image_info_work.get("image_masks")
-    masks_hand = image_info_work.get("image_masks_hand")
 
     if masks_obj is not None and frame_idx < len(masks_obj) and masks_obj[frame_idx] is not None:
         mask_union |= (np.asarray(masks_obj[frame_idx]) > 0)
-    if masks_hand is not None and frame_idx < len(masks_hand) and masks_hand[frame_idx] is not None:
-        mask_union |= (np.asarray(masks_hand[frame_idx]) > 0)
+
+    # Render hand mesh mask from camera space (identity o2c since verts are already in cam)
+    if hand_verts_in_cam is not None and hand_tri is not None and projection is not None and glctx is not None:
+        hand_color = torch.ones((1, hand_verts_in_cam.shape[1], 3), dtype=torch.float32, device=device)
+        identity_o2c = torch.eye(4, dtype=torch.float32, device=device)
+        hand_img, _ = diff_renderer(
+            verts=hand_verts_in_cam,
+            tri=hand_tri,
+            color=hand_color,
+            projection=projection,
+            ob_in_cvcams=identity_o2c,
+            resolution=np.asarray([H, W]),
+            glctx=glctx,
+        )
+        # hand_img: (H, W, 3) — any non-zero pixel is hand
+        hand_mask_np = (hand_img[..., 0].detach().cpu().numpy() > 0)
+        mask_union |= hand_mask_np
 
     if not mask_union.any():
         return None
@@ -1201,113 +909,6 @@ def _build_observed_hoi_mask(image_info_work, frame_idx, H, W, device, debug_dir
     return torch.tensor(mask_union.astype(np.float32), dtype=torch.float32, device=device)
 
 
-def rodrigues(aa):
-    aa_b = aa[None]
-    th = aa_b.norm(dim=-1, keepdim=True).clamp(min=1e-8)
-    k = aa_b / th
-    Kx = torch.zeros(1, 3, 3, device=device, dtype=torch.float32)
-    Kx[:, 0, 1] = -k[:, 2]
-    Kx[:, 0, 2] = k[:, 1]
-    Kx[:, 1, 0] = k[:, 2]
-    Kx[:, 1, 2] = -k[:, 0]
-    Kx[:, 2, 0] = -k[:, 1]
-    Kx[:, 2, 1] = k[:, 0]
-    c = torch.cos(th).unsqueeze(-1)
-    s = torch.sin(th).unsqueeze(-1)
-    I3 = torch.eye(3, device=device, dtype=torch.float32).unsqueeze(0)
-    return (c * I3 + s * Kx + (1 - c) * k.unsqueeze(-1) @ k.unsqueeze(-2))[0]
-
-def gmof(x, sigma):
-    """
-    Geman-McClure error function
-    """
-    x_squared = x**2
-    sigma_squared = sigma**2
-    # loss_val = (sigma_squared * x_squared) / (sigma_squared + x_squared + 1e-8)
-    loss_val = (x_squared) / (sigma_squared + x_squared + 1e-8)
-    return loss_val
-
-def _compute_depth_loss(depth_r, obs_depth, obs_mask, K, sigma=0.1,
-                        max_pts=2000, debug_ctx=None):
-    """KNN-based depth loss between rendered and observed 3D point clouds.
-
-    Each depth map is independently masked by its own valid pixels,
-    back-projected to 3D camera space using intrinsics, then a bidirectional
-    chamfer distance with GMoF robustifier is computed.
-
-    Returns (loss, valid_count) or (None, 0) when too few valid pixels.
-    """
-    render_mask = (depth_r > 0) & torch.isfinite(depth_r)
-    obs_valid = obs_mask & (obs_depth > 0) & torch.isfinite(obs_depth)
-
-    render_count = int(render_mask.sum().item())
-    obs_count = int(obs_valid.sum().item())
-    valid_count = min(render_count, obs_count)
-
-    if valid_count < 100:
-        return None, valid_count
-
-    # Back-project to 3D camera space
-    pts_r = _backproject_depth_torch(depth_r, K, render_mask)
-    pts_o = _backproject_depth_torch(obs_depth, K, obs_valid)
-
-
-    # # Subsample for memory efficiency
-    # if len(pts_r) > max_pts:
-    #     idx = torch.randperm(len(pts_r), device=pts_r.device)[:max_pts]
-    #     pts_r = pts_r[idx]
-    # if len(pts_o) > max_pts:
-    #     idx = torch.randperm(len(pts_o), device=pts_o.device)[:max_pts]
-    #     pts_o = pts_o[idx]
-
-    # Debug: save subsampled point clouds in object space
-    if debug_ctx is not None:
-        R = debug_ctx["R"]
-        trans = debug_ctx["trans"]
-        debug_dir = debug_ctx["debug_dir"]
-        frame_idx = debug_ctx["frame_idx"]
-        it = debug_ctx["it"]
-        with torch.no_grad():
-            pts_r_obj = (R.T @ (pts_r - trans[None, :]).T).T.cpu().numpy()
-            pts_o_obj = (R.T @ (pts_o - trans[None, :]).T).T.cpu().numpy()
-        _save_obj_depth_points_debug(
-            debug_dir, frame_idx, pts_r_obj,
-            "depth_rendered_obj", color_rgba=(0, 0, 255, 255), it=it,
-        )
-        _save_obj_depth_points_debug(
-            debug_dir, frame_idx, pts_o_obj,
-            "depth_observed_obj", color_rgba=(0, 255, 0, 255), it=it,
-        )
-
-    # Bidirectional chamfer with GMoF robustifier
-    dists = torch.cdist(pts_r, pts_o)           # (Nr, No)
-    nn_r2o = dists.min(dim=1).values             # rendered → observed
-    nn_o2r = dists.min(dim=0).values             # observed → rendered
-    # loss = gmof(nn_r2o, sigma=sigma).mean() + gmof(nn_o2r, sigma=sigma).mean()
-    loss = nn_r2o.mean() + nn_o2r.mean()
-
-    # # KNN correspondences: for each observed point find nearest rendered point,
-    # # filter by max distance, then compute L2 loss on matched pairs.
-    # dists = torch.cdist(pts_o, pts_r)              # (No, Nr)
-    # nn_dist, nn_idx = dists.min(dim=1)             # (No,) nearest rendered for each observed
-    # close = nn_dist < 0.05
-    # if close.sum() == 0:
-    #     return torch.tensor(0.0, device=depth_r.device), valid_count
-    # corr_r = pts_r[nn_idx[close]]                  # matched rendered points
-    # corr_dist = (pts_o[close] - corr_r).norm(dim=-1)
-    # loss = gmof(corr_dist, sigma=sigma).mean()
-
-    return loss, valid_count
-
-
-def _compute_normal_loss(normal_r, obs_normal, valid):
-    """Cosine-distance normal loss on valid pixels."""
-    if obs_normal is None or normal_r is None:
-        return torch.tensor(0.0, device=normal_r.device if normal_r is not None else "cuda")
-    dot = (normal_r[valid] * obs_normal[valid]).sum(dim=-1).clamp(-1.0, 1.0)
-    return (1.0 - dot).mean()
-
-
 def _compute_iou_loss(render_union, obs_hoi_mask):
     """Silhouette IoU loss between rendered union mask and observed HOI mask."""
     if obs_hoi_mask is None:
@@ -1317,24 +918,6 @@ def _compute_iou_loss(render_union, obs_hoi_mask):
     iou = inter / (union + 1e-6)
     return 1.0 - iou
 
-
-def _compute_reproj_loss(R, trans, trk_pts3d, trk_pts2d, K, sigma=4.0):
-    """Reprojection loss from 3D track points projected via current pose.
-
-    Returns scalar loss (0 when inputs are None or no points in front of camera).
-    """
-    if trk_pts3d is None:
-        return torch.tensor(0.0, device=R.device)
-    cam_trk = (R @ trk_pts3d.T).T + trans[None, :]
-    front = cam_trk[:, 2] > 1e-6
-    if front.sum() == 0:
-        return torch.tensor(0.0, device=R.device)
-    z = cam_trk[front, 2:3]
-    proj_x = K[0, 0] * cam_trk[front, 0:1] / z + K[0, 2]
-    proj_y = K[1, 1] * cam_trk[front, 1:2] / z + K[1, 2]
-    proj = torch.cat([proj_x, proj_y], dim=-1)
-    err = (proj - trk_pts2d[front]).norm(dim=-1)
-    return gmof(err, sigma=sigma).mean()
 
 
 _FINGER_CONTACT_IDX = None
@@ -1388,58 +971,6 @@ def _compute_contact_loss(hand_verts, obj_verts, device, contact_thresh=100000, 
         reduction="mean",
     )
 
-
-def _prepare_track_reproj_data(image_info_work, frame_idx, K, device):
-    """Extract valid 3D track points and their 2D observations for reprojection loss.
-
-    Returns (trk_pts3d, trk_pts2d, K_tensor) or (None, None, None) if insufficient data.
-    """
-    pred_tracks_all = image_info_work.get("pred_tracks")
-    track_mask_all = image_info_work.get("track_mask")
-    points_3d_all = image_info_work.get("points_3d")
-
-    if pred_tracks_all is None or track_mask_all is None or points_3d_all is None:
-        return None, None, None
-
-    frame_tmask = np.asarray(track_mask_all[frame_idx]).astype(bool)
-    finite_mask = np.isfinite(points_3d_all).all(axis=-1)
-    # Only use tracks with well-established 3D points (visible in multiple keyframes)
-    well_observed = np.ones_like(finite_mask)
-    kf_mask_arr = image_info_work.get("keyframe")
-    if kf_mask_arr is not None:
-        kf_indices_arr = np.where(np.asarray(kf_mask_arr).astype(bool))[0]
-        if len(kf_indices_arr) > 0:
-            trk_vis_count = np.asarray(track_mask_all)[kf_indices_arr].astype(bool).sum(axis=0)
-            well_observed = trk_vis_count >= 2
-    trk_valid = frame_tmask & finite_mask & well_observed
-    if trk_valid.sum() < 10:
-        return None, None, None
-
-    trk_pts3d = torch.tensor(points_3d_all[trk_valid], dtype=torch.float32, device=device)
-    trk_pts2d = torch.tensor(pred_tracks_all[frame_idx][trk_valid], dtype=torch.float32, device=device)
-    K_tensor = torch.tensor(K.astype(np.float32), dtype=torch.float32, device=device)
-    logger.debug(f"[align_depth] Frame {frame_idx}: using {int(trk_valid.sum())} tracks for reprojection loss")
-    return trk_pts3d, trk_pts2d, K_tensor
-
-
-def _save_depth_debug_stages(debug_dir, frame_idx, d, K, extrinsics, ys, xs, dbg_image):
-    """Save 3D point clouds at raw and masked depth filtering stages for debugging."""
-    # Raw 3D points (all depth > 0, before mask) in camera and object space
-    raw_mask = d > 0
-    raw_ys, raw_xs = np.where(raw_mask)
-    if len(raw_ys) > 0:
-        ext_raw = extrinsics[frame_idx].astype(np.float64)
-        raw_pts_cam = _depth_pixels_to_cam_points(d, K, raw_ys, raw_xs)
-        raw_pts_obj = _cam_points_to_object_points(raw_pts_cam, ext_raw)
-        _save_colored_points_debug(debug_dir, frame_idx, raw_pts_cam, dbg_image, raw_ys, raw_xs, "depth_raw_in_cam")
-        _save_colored_points_debug(debug_dir, frame_idx, raw_pts_obj, dbg_image, raw_ys, raw_xs, "depth_raw_in_obj")
-
-    # Masked 3D points (after vmask, before bbox filter) in object space
-    if len(ys) > 0:
-        ext_masked = extrinsics[frame_idx].astype(np.float64)
-        masked_pts_cam = _depth_pixels_to_cam_points(d, K, ys, xs)
-        masked_pts_obj = _cam_points_to_object_points(masked_pts_cam, ext_masked)
-        _save_colored_points_debug(debug_dir, frame_idx, masked_pts_obj, dbg_image, ys, xs, "depth_after_masked_in_obj")
 
 
 def _is_hand_far_from_object(image_info_work, frame_idx, obj_mesh, thresh=0.02, debug_dir=None):
@@ -1496,171 +1027,137 @@ def _is_hand_far_from_object(image_info_work, frame_idx, obj_mesh, thresh=0.02, 
     logger.info(f"[hand_dist] Frame {frame_idx}: mean contact-object distance {mean_dist:.3f} <= {thresh}, acceptable")
     return False
 
-        return False
 
+def _align_object_with_hand(image_info_work, frame_idx, obj_mesh, max_pts=2000, num_iters=100, inlier_thresh=0.3, debug_dir=None):
+    """Optimize the camera pose of frame_idx with mask IoU loss and contact loss.
+
+    Mask loss: IoU between rendered (object+hand) silhouette and observed (object mask + rendered hand mask).
+    Contact loss: distance between hand finger tips and object surface.
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    debug_dir = debug_dir / "align_object_with_hand"
+
+    ext = image_info_work["extrinsics"][frame_idx].astype(np.float64)
+    K = (image_info_work["intrinsics"][frame_idx]
+         if image_info_work["intrinsics"].ndim == 3
+         else image_info_work["intrinsics"])
+
+    # Load depth for image dimensions
+    depth_priors = image_info_work["depth_priors"]
+    d = depth_priors[frame_idx]
+    if d is None:
+        logger.warning(f"[align_hand] Frame {frame_idx}: no depth prior, skipping")
+        return False
     H, W = d.shape
+
+    # Prepare rendering inputs
     glctx, obj_verts, obj_tri, vnormals, obj_color, projection = _prepare_render_inputs(obj_mesh, K, H, W, device)
-    obs_hoi_mask = _build_observed_hoi_mask(image_info_work, frame_idx, H, W, device, debug_dir=debug_dir)
     obj_nv = int(obj_verts.shape[1])
 
-    trk_pts3d_t, trk_pts2d_t, K_t = _prepare_track_reproj_data(image_info_work, frame_idx, K, device)
-
-    # Load hand mesh in camera space (prefer preprocessed right-hand mesh, fallback to pose payload).
+    # Load hand mesh in camera space
     hand_verts_in_cam = hand_tri = hand_color = None
     hand_meshes_right = image_info_work.get("hand_meshes_right")
-    hv_np = hf_np = None
     if hand_meshes_right is not None and frame_idx < len(hand_meshes_right) and hand_meshes_right[frame_idx] is not None:
         hand_mesh_data = hand_meshes_right[frame_idx]
         hv_np = np.asarray(hand_mesh_data.get("vertices"), dtype=np.float32)
         hf_np = np.asarray(hand_mesh_data.get("faces"), dtype=np.int32)
+        if hv_np.ndim == 2 and hf_np.ndim == 2:
+            hand_verts_in_cam = torch.tensor(hv_np, dtype=torch.float32, device=device)[None]
+            hand_tri = torch.tensor(hf_np, dtype=torch.int32, device=device)
+            hand_color = torch.ones((1, hv_np.shape[0], 3), dtype=torch.float32, device=device)
 
+    if hand_verts_in_cam is None:
+        logger.warning(f"[align_hand] Frame {frame_idx}: no hand mesh, skipping")
+        return False
 
-    if hv_np is not None and hf_np is not None and hv_np.ndim == 2 and hf_np.ndim == 2:
-        hand_verts_in_cam = torch.tensor(hv_np, dtype=torch.float32, device=device)[None]  # (1, Nh, 3), camera space
-        hand_tri = torch.tensor(hf_np, dtype=torch.int32, device=device)  # (Fh, 3)
-        hand_color = torch.ones((1, hv_np.shape[0], 3), dtype=torch.float32, device=device)
+    # Build observed HOI mask (object mask + rendered hand mask)
+    obs_hoi_mask = _build_observed_hoi_mask(
+        image_info_work, frame_idx, H, W, device,
+        hand_verts_in_cam=hand_verts_in_cam, hand_tri=hand_tri,
+        projection=projection, glctx=glctx,
+        debug_dir=debug_dir,
+    )
+    if obs_hoi_mask is None:
+        logger.warning(f"[align_hand] Frame {frame_idx}: empty HOI mask, skipping")
+        return False
 
+    # Initialize pose as axis-angle + translation
+    R_init = torch.tensor(ext[:3, :3].astype(np.float32), dtype=torch.float32, device=device)
+    t_init = torch.tensor(ext[:3, 3].astype(np.float32), dtype=torch.float32, device=device)
 
-    obs_depth = torch.tensor(d.astype(np.float32), dtype=torch.float32, device=device)
-    obs_mask = _build_observation_mask(H, W, ys, xs, device)
+    # Convert rotation to axis-angle for optimization
+    from pytorch3d.transforms import matrix_to_axis_angle, axis_angle_to_matrix
+    rotvec = matrix_to_axis_angle(R_init.unsqueeze(0)).squeeze(0)
 
+    rotvec = torch.nn.Parameter(rotvec)
+    trans = torch.nn.Parameter(t_init.clone())
+    optimizer = torch.optim.Adam([rotvec, trans], lr=5e-4)
 
-    # Check initial contact loss; if hand is too far from object, reset pose to nearby frame
-    contact_status = _check_contact_and_reset(hand_verts_in_cam, obj_verts, image_info_work, frame_idx, device)
-    if contact_status == "skip":
-        return True  # skip optimization but consider frame aligned to avoid blocking future frames
-
-    # Initialize optimization vars from current frame pose in image_info_work.
-    ext0 = image_info_work["extrinsics"][frame_idx].astype(np.float64)
-    init_rot = ScipyRotation.from_matrix(ext0[:3, :3]).as_rotvec().astype(np.float32)
-    rotvec = torch.tensor(init_rot, dtype=torch.float32, device=device, requires_grad=True)
-    trans = torch.tensor(ext0[:3, 3].astype(np.float32), dtype=torch.float32, device=device, requires_grad=True)
-    optimizer = torch.optim.Adam([rotvec, trans], lr=10e-3)
-    best = {"loss": float("inf"), "R": ext0[:3, :3].copy(), "t": ext0[:3, 3].copy(), "valid": 0}            
+    best_loss = float("inf")
+    best_rotvec = rotvec.detach().clone()
+    best_trans = trans.detach().clone()
 
     for it in range(num_iters):
         optimizer.zero_grad()
-        R = rodrigues(rotvec)
+
+        R = axis_angle_to_matrix(rotvec.unsqueeze(0)).squeeze(0)
         o2c = torch.eye(4, dtype=torch.float32, device=device)
         o2c[:3, :3] = R
         o2c[:3, 3] = trans
 
-
-        obj_img, depth_r = diff_renderer(
-            verts=obj_verts,
-            tri=obj_tri,
-            color=obj_color,
-            projection=projection,
-            ob_in_cvcams=o2c,
-            resolution=np.asarray([H, W]),
-            glctx=glctx,
+        # Render object mesh
+        obj_img, _ = diff_renderer(
+            verts=obj_verts, tri=obj_tri, color=obj_color,
+            projection=projection, ob_in_cvcams=o2c,
+            resolution=np.asarray([H, W]), glctx=glctx,
         )
 
-        # Render merged foreground mask from object mesh + hand mesh.
-        hand_verts_in_obj = None
-
-        # Transform hand vertices from camera space to object space using current pose.
-        # For row vectors: v_obj = (v_cam - t) @ R, where o2c = [R|t].
+        # Render merged foreground (object + hand in object space)
         hand_verts_in_obj = ((hand_verts_in_cam[0] - trans[None, :]) @ R).unsqueeze(0)
         fg_verts = torch.cat([obj_verts, hand_verts_in_obj], dim=1)
         fg_tri = torch.cat([obj_tri, hand_tri + obj_nv], dim=0)
         fg_color = torch.cat([torch.ones_like(obj_color), hand_color], dim=1)
         fg_img, _ = diff_renderer(
-            verts=fg_verts,
-            tri=fg_tri,
-            color=fg_color,
-            projection=projection,
-            ob_in_cvcams=o2c,
-            resolution=np.asarray([H, W]),
-            glctx=glctx,
+            verts=fg_verts, tri=fg_tri, color=fg_color,
+            projection=projection, ob_in_cvcams=o2c,
+            resolution=np.asarray([H, W]), glctx=glctx,
         )
-        sil_pred = fg_img[..., 1]  # Green channel as silhouette
-        render_union = sil_pred
+        render_union = fg_img[..., 1]  # green channel as silhouette
 
-
-        depth_r = torch.flip(depth_r[0], dims=[0])
-        _debug_ctx = None
-        if debug_dir is not None and (it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1):
-            _debug_ctx = {"K": K, "R": R, "trans": trans, "debug_dir": debug_dir,
-                          "frame_idx": frame_idx, "it": it + 1}
-        loss_depth, valid_count = _compute_depth_loss(depth_r, obs_depth, obs_mask, K, debug_ctx=_debug_ctx)
-        if loss_depth is None:
-            loss_depth = torch.tensor(0.0, device=device)
-            logger.debug(f"[align_depth] Frame {frame_idx}: iter {it}, only {valid_count} valid rendered pixels, and set depth loss to 0")
-
+        # Mask IoU loss
         loss_iou = _compute_iou_loss(render_union, obs_hoi_mask)
-        loss_reproj = _compute_reproj_loss(R, trans, trk_pts3d_t, trk_pts2d_t, K_t)
 
-        # Hand-object contact loss: attract nearby hand verts to object surface
-        _contact_debug = debug_dir if (debug_dir is not None and (it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1)) else None
-        loss_contact = _compute_contact_loss(hand_verts_in_obj, obj_verts, device, debug_dir=_contact_debug, frame_idx=frame_idx, it=it + 1)
+        # Contact loss
+        loss_contact = _compute_contact_loss(hand_verts_in_obj, obj_verts, device)
 
-        w_depth = 0.0 if not has_enough_depth else 1.0
-        w_mask = 20.0
-        w_reproj = 0.0
-        w_contact = 1.0
+        loss = loss_iou + 0.1 * loss_contact
 
-        loss = w_depth * loss_depth + w_mask * loss_iou  + w_contact * loss_contact #w_reproj * loss_reproj
+        if loss.item() < best_loss:
+            best_loss = loss.item()
+            best_rotvec = rotvec.detach().clone()
+            best_trans = trans.detach().clone()
 
-        if torch.isfinite(loss):
-            loss.backward()
-            optimizer.step()
+        loss.backward()
+        optimizer.step()
 
-        loss_val = float(loss.detach().item())
-        if loss_val < best["loss"]:
-            best["loss"] = loss_val
-            best["R"] = R.detach().cpu().numpy().astype(np.float64)
-            best["t"] = trans.detach().cpu().numpy().astype(np.float64)
-            best["valid"] = valid_count
+        if (it + 1) % 20 == 0:
+            logger.debug(f"[align_hand] Frame {frame_idx}: iter {it+1}, "
+                         f"loss={loss.item():.4f} iou={loss_iou.item():.4f} contact={loss_contact.item():.4f}")
 
-        if it == 0 or (it + 1) % 5 == 0 or it == num_iters - 1:
+        # Save debug images
+        if debug_dir is not None and (it == 0 or (it + 1) % 20 == 0 or it == num_iters - 1):
             _save_binary_mask_debug(
-                debug_dir=debug_dir,
-                frame_idx=frame_idx,
-                mask=render_union,
-                filename_prefix="mask_render_union",
-                it=it + 1,
-            )
-            if hand_verts_in_obj is not None:
-                _save_mesh_debug(
-                    debug_dir=debug_dir,
-                    frame_idx=frame_idx,
-                    vertices=hand_verts_in_obj,
-                    faces=hand_tri,
-                    filename_prefix="hand_mesh_obj",
-                    it=it + 1,
-                )
-            logger.debug(
-                f"[align_depth] Frame {frame_idx}: iter {it+1}/{num_iters}, total {loss.item():.3f} "
-                f"loss_contact={loss_contact.item():.3f}, loss_iou={loss_iou.item():.3f}, "
-                f"loss_d={loss_depth.item():.3f}, loss_reproj={loss_reproj.item():.3f}, valid={valid_count}"
+                debug_dir, frame_idx,
+                render_union.detach(), obs_hoi_mask,
+                "align_hand_mask", it=it + 1,
             )
 
-    if not np.isfinite(best["loss"]):
-        logger.warning(f"[align_depth] Frame {frame_idx}: optimization failed (best_valid={best['valid']})")
-        return False
+    # Apply best pose
+    R_best = axis_angle_to_matrix(best_rotvec.unsqueeze(0)).squeeze(0)
+    image_info_work["extrinsics"][frame_idx, :3, :3] = R_best.detach().cpu().numpy()
+    image_info_work["extrinsics"][frame_idx, :3, 3] = best_trans.detach().cpu().numpy()
 
-    if pts_cam_sel is not None:
-        pts_obj_opt = (best["R"].T @ (pts_cam_sel - best["t"]).T).T
-        _save_obj_depth_points_debug(
-            debug_dir=debug_dir,
-            frame_idx=frame_idx,
-            pts_obj=pts_obj_opt,
-            filename_prefix="depth_obj_optimized",
-            color_rgba=(0, 255, 0, 255),
-        )
-
-        # Store optimized depth points in object space
-        depth_pts_obj = image_info_work.get("depth_points_obj")
-        if depth_pts_obj is not None:
-            depth_pts_obj[frame_idx] = pts_obj_opt.astype(np.float32)
-
-    extrinsics[frame_idx, :3, :3] = best["R"].astype(np.float32)
-    extrinsics[frame_idx, :3, 3] = best["t"].astype(np.float32)
-    logger.info(
-        f"[align_depth] Frame {frame_idx}: alignment done, "
-        f"best_loss={best['loss']:.6f}, valid={best['valid']}"
-    )
+    logger.info(f"[align_hand] Frame {frame_idx}: optimized, best_loss={best_loss:.4f}")
     return True
 
 
@@ -2134,41 +1631,6 @@ def check_which_estimate_is_better_and_update(
     return best_pose, True, best_score
 
 
-def _check_contact_and_reset(hand_verts_in_cam, obj_verts, image_info_work, frame_idx, device, thresh_contact=0.06):
-    """Check initial contact loss and reset pose to nearby frame if too large.
-
-    Returns:
-        "reset" if pose was reset to a nearby registered frame,
-        "skip" if contact is already good (optimization can be skipped),
-        "ok" if hand_verts_in_cam is None (no hand data, proceed normally).
-    """
-    if hand_verts_in_cam is None:
-        return "ok"
-    with torch.no_grad():
-        # Use current frame pose from image_info_work for contact check.
-        ext0 = image_info_work["extrinsics"][frame_idx].astype(np.float64)
-        R_init = torch.tensor(ext0[:3, :3].astype(np.float32), dtype=torch.float32, device=device)
-        trans = torch.tensor(ext0[:3, 3].astype(np.float32), dtype=torch.float32, device=device)
-        hand_in_obj = ((hand_verts_in_cam[0] - trans[None, :]) @ R_init).unsqueeze(0)
-        contact_loss = _compute_contact_loss(hand_in_obj, obj_verts, device)
-        loss_val = contact_loss.item()
-        
-        if loss_val > thresh_contact:
-            logger.warning(f"[align_depth] Frame {frame_idx}: initial contact loss {loss_val:.4f} > {thresh_contact}, resetting pose to nearby frame")
-            nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
-            if nearest_idx is not None:
-                ext_near = image_info_work["extrinsics"][nearest_idx].astype(np.float32)
-                image_info_work["extrinsics"][frame_idx, :3, :3] = ext_near[:3, :3]
-                image_info_work["extrinsics"][frame_idx, :3, 3] = ext_near[:3, 3]
-                logger.warning(f"[align_depth] Frame {frame_idx}: reset to nearest registered frame {nearest_idx}")
-                return "reset"
-            logger.warning(f"[align_depth] Frame {frame_idx}: no nearby registered frame found, reset skipped")
-            return "ok"
-        else:
-            logger.debug(f"[align_depth] Frame {frame_idx}: initial contact loss {loss_val:.4f} within threshold {thresh_contact}, skipping pose reset")
-            return "skip"
-
-
 def _check_pose_moved(image_info_work, frame_idx, min_rot=2, min_trans=0.01):
     """Check whether a frame's pose differs from its nearest registered neighbor.
 
@@ -2189,23 +1651,6 @@ def _check_pose_moved(image_info_work, frame_idx, min_rot=2, min_trans=0.01):
         return False
     logger.info(f"[check_pose_moved] Frame {frame_idx} moved "
         f"(rot={angle:.2f}\u00b0, trans={trans:.4f}), nearest={nearest_idx}, min_rot={min_rot}, min_trans={min_trans}")
-    return True
-
-
-def _init_pose_from_hand(image_info_work, frame_idx):
-    """Initialize frame pose using hand pose for frame_idx frame.
-
-
-    Returns True if the pose was successfully initialized, False otherwise
-    (caller should fall back to _reset_pose_to_nearest_registered).
-    """
-    hand_c2o = image_info_work.get("hand_c2o")
-    if hand_c2o is None:
-        return False
-
-    hand_o2c = np.linalg.inv(hand_c2o[frame_idx])
-    image_info_work["extrinsics"][frame_idx] = hand_o2c
-
     return True
 
 
