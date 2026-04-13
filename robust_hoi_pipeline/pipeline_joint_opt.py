@@ -25,7 +25,7 @@ from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_sam3d_trans
 from robust_hoi_pipeline.geometry_utils import compute_reproj_errors
 from robust_hoi_pipeline.pipeline_joint_opt_debug import (
     _save_binary_mask_debug,
-    _save_hand_obj_meshes_in_obj_space,
+    _save_hand_obj_meshes_in_cam_space,
 )
 from utils_simba.logger import get_logger
 
@@ -991,7 +991,7 @@ def _is_hand_far_from_object(image_info_work, frame_idx, obj_mesh, thresh=0.02, 
     return False
 
 
-def _align_object_with_hand(image_info_work, frame_idx, obj_mesh, max_pts=2000, num_iters=100, inlier_thresh=0.3, debug_dir=None):
+def _align_object_with_hand(image_info_work, frame_idx, obj_mesh, max_pts=2000, num_iters=300, inlier_thresh=0.3, debug_dir=None):
     """Optimize the camera pose of frame_idx with mask IoU loss and contact loss.
 
     Mask loss: IoU between rendered (object+hand) silhouette and observed (object mask + rendered hand mask).
@@ -1048,10 +1048,10 @@ def _align_object_with_hand(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
     R_init = torch.tensor(ext[:3, :3].astype(np.float32), dtype=torch.float32, device=device)
     t_init = torch.tensor(ext[:3, 3].astype(np.float32), dtype=torch.float32, device=device)
 
-    # Save hand & object meshes in object space BEFORE optimization
-    _save_hand_obj_meshes_in_obj_space(
+    # Save hand & object meshes and depth points in camera space BEFORE optimization
+    _save_hand_obj_meshes_in_cam_space(
         debug_dir, frame_idx, obj_mesh, hand_verts_in_cam, hf_np,
-        R_init, t_init, tag="before",
+        R_init, t_init, tag="before", depth_map=d, K=K,
     )
 
     # Convert rotation to axis-angle for optimization
@@ -1126,10 +1126,10 @@ def _align_object_with_hand(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
     image_info_work["extrinsics"][frame_idx, :3, :3] = R_best.detach().cpu().numpy()
     image_info_work["extrinsics"][frame_idx, :3, 3] = best_trans.detach().cpu().numpy()
 
-    # Save hand & object meshes in object space AFTER optimization
-    _save_hand_obj_meshes_in_obj_space(
+    # Save hand & object meshes and depth points in camera space AFTER optimization
+    _save_hand_obj_meshes_in_cam_space(
         debug_dir, frame_idx, obj_mesh, hand_verts_in_cam, hf_np,
-        R_best, best_trans, tag="after",
+        R_best, best_trans, tag="after", depth_map=d, K=K,
     )
 
     logger.info(f"[align_hand] Frame {frame_idx}: optimized, best_loss={best_loss:.4f}")
