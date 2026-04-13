@@ -905,6 +905,8 @@ class run_wonder_hoi:
         cmd += f"--scene_name {scene_name} "
         cmd += f"--align_method pts "
         cmd += f"--frame_list_file {frame_list_file} "
+        if self.seq_config["cond_select_strategy"] == "manual":
+            cmd += f"--frame_indices {self._get_best_cond_id(scene_name)} "
         print(cmd)
         os.system(cmd)
 

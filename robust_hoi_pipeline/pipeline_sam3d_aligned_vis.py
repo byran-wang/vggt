@@ -77,12 +77,16 @@ def main(args):
         logger.error(f"{aligned_dir} not found. Run ho3d_align_SAM3D_{args.align_method} first.")
         return
 
-    # Load frame list — either after 3D filter or after depth-coverage filter
-    frame_list_file = (Path(args.frame_list_file) if args.frame_list_file is not None
-                       else dataset_dir / args.scene_name / "SAM3D_aligned_pts" / "frame_list_after_aligned_pts.txt")
-    frame_indices = load_frame_indices(frame_list_file)
-    if frame_indices is None:
-        return
+    # Load frame indices: --frame_indices takes priority over --frame_list_file
+    if args.frame_indices is not None:
+        frame_indices = [int(x) for x in args.frame_indices]
+        logger.info(f"Using {len(frame_indices)} frames from --frame_indices")
+    else:
+        frame_list_file = (Path(args.frame_list_file) if args.frame_list_file is not None
+                           else dataset_dir / args.scene_name / "SAM3D_aligned_pts" / "frame_list_after_aligned_pts.txt")
+        frame_indices = load_frame_indices(frame_list_file)
+        if frame_indices is None:
+            return
 
     # init_rerun(f"sam3d_aligned_{args.align_method}_vis")
     init_rerun(f"sam3d_aligned_vis")
@@ -124,6 +128,8 @@ if __name__ == "__main__":
     parser.add_argument("--align_method", type=str, default="pts", choices=["mask", "pts"],
                         help="Alignment method: 'mask' for SAM3D_aligned_mask, 'pts' for SAM3D_aligned_pts")
     parser.add_argument("--jpeg_quality", type=int, default=85)
+    parser.add_argument("--frame_indices", type=int, nargs="+", default=None,
+                        help="Explicit frame indices (highest priority, e.g. --frame_indices 0 10 20)")
     parser.add_argument("--frame_list_file", type=str, default=None,
                         help="Optional explicit path to a frame list file (e.g. frame_list_faces_coverage.txt)")
 
