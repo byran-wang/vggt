@@ -1,286 +1,211 @@
-"""
-Visualize predicted (optimized) and GT hand meshes from align_hands_object.py results.
+"""Visualize hand fitting results from fit_hand.py in Rerun.
+
+Displays per-frame hand mesh (gray + vertex normals), camera intrinsics,
+and the original RGB image.
+
 Usage:
-    cd generator && python scripts/align_hands_object_vis.py \
-        --pred_path ./data/{seq}/hold_fit.aligned_h_all.npy \
-        --seq_name {seq} \
-        --show_images
+    cd generator && python scripts/fit_hand_vis.py \
+        --data_dir /path/to/dataset/scene_name --mode h_trans
 """
 
-import os
-import sys
 import argparse
-import numpy as np
-import cv2
 import pickle
-from glob import glob
+import sys
+from pathlib import Path
 
+import numpy as np
 import rerun as rr
 import rerun.blueprint as rrb
+import trimesh
 
-sys.path = [".", "..", "../code"] + sys.path
-from common.rerun_utils import compute_vertex_normals
-from src.utils.io.gt import load_data as gt_load_data
+project_root = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
+from utils_simba.logger import get_logger
 
-def _load_pickle_compat(path):
-    with open(path, "rb") as f:
-        try:
-            return pickle.load(f)
-        except ModuleNotFoundError as e:
-            if "numpy._core" not in str(e):
-                raise
-            f.seek(0)
-            class _NumpyCompatUnpickler(pickle.Unpickler):
-                def find_class(self, module, name):
-                    if module.startswith("numpy._core"):
-                        module = module.replace("numpy._core", "numpy.core", 1)
-                    return super().find_class(module, name)
-            return _NumpyCompatUnpickler(f).load()
+logger = get_logger(__name__)
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Visualize aligned hands and object results")
-    parser.add_argument("--pred_path", type=str, required=True,
-                        help="Path to predicted .npy file (e.g., out_dir/hold_fit.aligned_h_all.npy)")
-    parser.add_argument("--seq_name", type=str, required=True)
-    parser.add_argument("--data_dir", type=str, default="./data")
-    parser.add_argument("--dataset_type", type=str, default="zed", choices=["zed", "ho3d"])
-    parser.add_argument("--show_object", action="store_true")
-    parser.add_argument("--show_images", action="store_true")
-    parser.add_argument("--max_frames", type=int, default=-1)
-    parser.add_argument("--min_frame_num", type=int, default=0)
-    parser.add_argument("--frame_interval", type=int, default=1)
-    return parser.parse_args()
+def _load_fit(data_dir, mode):
+    """Load hand fitting .npy, trying both hold_fit and hand_fit prefixes."""
+    data_dir = Path(data_dir)
+    for prefix in ("hold_fit", "hand_fit"):
+        path = data_dir / f"{prefix}.aligned_{mode}.npy"
+        if path.exists():
+            arr = np.load(path, allow_pickle=True)
+            if isinstance(arr, np.ndarray) and arr.dtype == object and arr.size == 1:
+                return arr.item()
+            return arr
+    return None
 
 
-def load_pred_data(pred_path):
-    """Load optimized result .npy file."""
-    return np.load(pred_path, allow_pickle=True).item()
+def _extract(fit, key):
+    """Extract a key from the fit dict, handling nested 'right' sub-dict."""
+    if fit is None:
+        return None
+    if isinstance(fit, dict):
+        for hand_key in ("right", "rhand", "hand"):
+            sub = fit.get(hand_key)
+            if isinstance(sub, dict) and key in sub:
+                return sub[key]
+        return fit.get(key)
+    return None
 
 
-def get_image_fids_from_rgb(data_dir, seq_name, dataset_type):
-    """Extract frame indices from RGB image filenames."""
-    if dataset_type == "zed":
-        im_ps = sorted(glob(f"{data_dir}/{seq_name}/rgb/*.jpg"))
-    else:
-        im_ps = sorted(glob(f"{data_dir}/train/{seq_name}/rgb/*.jpg"))
-    fids = []
-    for p in im_ps:
-        fname = os.path.basename(p).split(".")[0]
-        fids.append(int(fname))
-    return np.array(fids)
+def _load_intrinsics(data_dir, fid):
+    """Load camera intrinsics (3x3) from meta pickle."""
+    meta_path = Path(data_dir) / "meta" / f"{fid:04d}.pkl"
+    if not meta_path.exists():
+        return None
+    with open(meta_path, "rb") as f:
+        meta = pickle.load(f)
+    K = meta.get("intrinsics", meta.get("camMat"))
+    if K is not None:
+        return np.array(K, dtype=np.float64).reshape(3, 3)
+    return None
 
 
-def load_gt_data(seq_name, data_dir, dataset_type):
-    """Load GT hand/object data using gt.load_data with image fids from RGB files."""
-    image_fids = get_image_fids_from_rgb(data_dir, seq_name, dataset_type)
+def _load_image(data_dir, fid):
+    """Load RGB image for a frame."""
+    from PIL import Image
 
-    def get_image_fids(full_seq_name):
-        return image_fids.tolist()
-
-    data_gt = gt_load_data(seq_name, get_image_fids)
-    return data_gt
-
-
-def load_metadata(seq_name, data_dir, dataset_type, num_frames, min_frame_num, frame_interval):
-    """Load image paths and camera intrinsics."""
-    if dataset_type == "zed":
-        im_ps = sorted(glob(f"{data_dir}/{seq_name}/rgb/*.jpg"))[:num_frames]
-        im_ps = im_ps[min_frame_num::frame_interval]
-        intrinsic_file = sorted(glob(f"{data_dir}/{seq_name}/meta/*.pkl"))[0]
-    else:
-        im_ps = sorted(glob(f"{data_dir}/train/{seq_name}/rgb/*.jpg"))
-        im_ps = im_ps[min_frame_num:num_frames:frame_interval]
-        intrinsic_file = sorted(glob(f"{data_dir}/train/{seq_name}/meta/*.pkl"))[0]
-
-    K = np.array(_load_pickle_compat(intrinsic_file)["camMat"])
-
-    return {"im_paths": im_ps, "K": K}
+    rgb_dir = Path(data_dir) / "rgb"
+    for ext in (".png", ".jpg", ".jpeg"):
+        p = rgb_dir / f"{fid:04d}{ext}"
+        if p.exists():
+            return np.array(Image.open(p).convert("RGB"))
+    return None
 
 
-def visualize(pred_data, gt_data, metadata, args):
-    """Main visualization loop."""
-    # Color constants (RGBA as 0-255 for albedo_factor)
-    pred_blue = [76, 128, 255, 230]
-    gt_green = [0, 255, 0, 204]
-    pred_left_color = [143, 237, 255, 230]
-    gt_left_color = [143, 237, 143, 204]
-    obj_color = [5, 144, 201, 128]
+def main(args):
+    data_dir = Path(args.data_dir)
 
-    # Determine frame count from pred data
-    num_frames = None
-    for side in ["right", "left"]:
-        if side in pred_data and "v3d_cam" in pred_data[side]:
-            num_frames = pred_data[side]["v3d_cam"].shape[0]
-            break
-    if num_frames is None:
-        print("No hand data found in pred_path")
+    # Load hand fit data
+    fit = _load_fit(data_dir, args.mode)
+    if fit is None:
+        logger.error(f"No hand fit data found for mode '{args.mode}' in {data_dir}")
         return
 
-    if args.max_frames > 0:
-        num_frames = min(num_frames, args.max_frames)
+    v3d_cam = _extract(fit, "v3d_cam")
+    f3d = _extract(fit, "f3d")
+    if v3d_cam is None or f3d is None:
+        logger.error(f"Missing v3d_cam or f3d in fit data")
+        return
 
-    # GT data fields
-    gt_v3d_h = None
-    gt_faces_h = None
-    gt_v3d_o = None
-    gt_faces_o = None
-    gt_colors_o = None
-    if gt_data is not None:
-        if "v3d_c.right" in gt_data:
-            gt_v3d_h = gt_data["v3d_c.right"].numpy() if hasattr(gt_data["v3d_c.right"], 'numpy') else np.array(gt_data["v3d_c.right"])
-            gt_faces_h = gt_data["faces.right"].numpy() if hasattr(gt_data["faces.right"], 'numpy') else np.array(gt_data["faces.right"])
-        if "v3d_c.object" in gt_data:
-            gt_v3d_o = gt_data["v3d_c.object"].numpy() if hasattr(gt_data["v3d_c.object"], 'numpy') else np.array(gt_data["v3d_c.object"])
-            gt_faces_o = gt_data["faces.object"].numpy() if hasattr(gt_data["faces.object"], 'numpy') else np.array(gt_data["faces.object"])
-        if "colors.object" in gt_data:
-            gt_colors_o = gt_data["colors.object"].numpy().astype(np.uint8) if hasattr(gt_data["colors.object"], 'numpy') else np.array(gt_data["colors.object"]).astype(np.uint8)
+    v3d_cam = np.asarray(v3d_cam, dtype=np.float32)
+    f3d = np.asarray(f3d, dtype=np.int32)
 
-    # Blueprint
-    blueprint = rrb.Vertical(
-        rrb.Spatial3DView(
-            name="3D View",
-            origin="/",
-        ),
+    # Seal the wrist opening
+    from common.body_models import seal_mano_mesh_np
+    v3d_cam, f3d = seal_mano_mesh_np(v3d_cam, f3d, is_rhand=True)
+
+    logger.info(f"Loaded hand fit: {v3d_cam.shape[0]} frames, "
+                f"{v3d_cam.shape[1]} verts, {f3d.shape[0]} faces (sealed)")
+
+    # Determine frame indices
+    if args.frame_indices is not None:
+        frame_indices = args.frame_indices
+    else:
+        frame_list_path = data_dir / "hands" / "frame_list.txt"
+        if frame_list_path.exists():
+            with open(frame_list_path, "r") as f:
+                frame_indices = [int(line.strip()) for line in f if line.strip()]
+            logger.info(f"Loaded {len(frame_indices)} frames from {frame_list_path}")
+        else:
+            frame_indices = list(range(v3d_cam.shape[0]))
+            logger.warning(f"No frame_list.txt found, using indices 0..{len(frame_indices)-1}")
+
+    if len(frame_indices) != v3d_cam.shape[0]:
+        logger.warning(f"Frame list length ({len(frame_indices)}) != vertex data length ({v3d_cam.shape[0]}), "
+                       f"using min of both")
+        n = min(len(frame_indices), v3d_cam.shape[0])
+        frame_indices = frame_indices[:n]
+        v3d_cam = v3d_cam[:n]
+
+    # Init Rerun
+    rr.init("fit_hand_vis", spawn=True)
+    blueprint = rrb.Blueprint(
         rrb.Horizontal(
-            rrb.Spatial2DView(name="image", origin="/image"),
-        ) if args.show_images else rrb.Spatial3DView(name="3D View 2", origin="/"),
-        row_shares=[5, 2] if args.show_images else [1],
+            rrb.Spatial3DView(name="3D View", origin="world"),
+            rrb.Spatial2DView(name="Camera", origin="world/camera"),
+            column_shares=[2, 1],
+        ),
     )
-    rr.init("align_hands_vis", spawn=True)
     rr.send_blueprint(blueprint)
+    rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Y_DOWN, static=True)
 
-    K = metadata.get("K")
-    im_paths = metadata.get("im_paths", [])
+    # Load intrinsics once (same for all frames typically)
+    K = _load_intrinsics(data_dir, frame_indices[0])
 
-    for frame_id in range(num_frames):
-        rr.set_time("frame_id", sequence=frame_id)
+    for i, fid in enumerate(frame_indices):
+        rr.set_time_sequence("frame", i)
 
-        # --- Predicted hands ---
-        for side, color in [("right", pred_blue), ("left", pred_left_color)]:
-            if side in pred_data and "v3d_cam" in pred_data[side]:
-                v = pred_data[side]["v3d_cam"][frame_id].astype(np.float32)
-                f = pred_data[side]["f3d"].astype(np.int32)
-                normals = compute_vertex_normals(v, f)
-                rr.log(
-                    f"pred/{side}_hand",
-                    rr.Mesh3D(
-                        vertex_positions=v,
-                        triangle_indices=f,
-                        vertex_normals=normals,
-                        albedo_factor=color,
-                    ),
-                )
+        verts = v3d_cam[i]  # (778, 3)
 
-        # --- GT hand ---
-        if gt_v3d_h is not None and frame_id < gt_v3d_h.shape[0]:
-            v = gt_v3d_h[frame_id].astype(np.float32)
-            f = gt_faces_h.astype(np.int32)
-            normals = compute_vertex_normals(v, f)
-            rr.log(
-                "gt/right_hand",
-                rr.Mesh3D(
-                    vertex_positions=v,
-                    triangle_indices=f,
-                    vertex_normals=normals,
-                    albedo_factor=gt_green,
-                ),
-            )
+        # Skip frames with NaN vertices
+        if np.isnan(verts).any():
+            continue
 
-        # --- GT object ---
-        if args.show_object and gt_v3d_o is not None and frame_id < gt_v3d_o.shape[0]:
-            obj_v = gt_v3d_o[frame_id].astype(np.float32)
-            obj_f = gt_faces_o.astype(np.int32)
-            if gt_colors_o is not None:
-                rr.log(
-                    "gt/object",
-                    rr.Mesh3D(
-                        vertex_positions=obj_v,
-                        triangle_indices=obj_f,
-                        vertex_colors=gt_colors_o,
-                    ),
-                )
-            else:
-                rr.log(
-                    "gt/object",
-                    rr.Mesh3D(
-                        vertex_positions=obj_v,
-                        triangle_indices=obj_f,
-                        albedo_factor=obj_color,
-                    ),
-                )
+        # Compute vertex normals via trimesh
+        mesh = trimesh.Trimesh(vertices=verts, faces=f3d, process=False)
+        vnormals = np.array(mesh.vertex_normals, dtype=np.float32)
 
-        # --- Predicted object ---
-        if args.show_object and "object" in pred_data:
-            obj = pred_data["object"]
-            if "v3d_cam" in obj:
-                obj_v = obj["v3d_cam"][frame_id].astype(np.float32)
-                if "f3d" in obj and obj["f3d"].ndim == 2:
-                    obj_f = obj["f3d"].astype(np.int32)
-                    obj_normals = compute_vertex_normals(obj_v, obj_f)
-                    rr.log(
-                        "pred/object",
-                        rr.Mesh3D(
-                            vertex_positions=obj_v,
-                            triangle_indices=obj_f,
-                            vertex_normals=obj_normals,
-                            albedo_factor=obj_color,
-                        ),
-                    )
-                else:
-                    rr.log("pred/object", rr.Points3D(obj_v, radii=0.001))
+        # Log hand mesh (gray + normals)
+        rr.log("world/hand_mesh", rr.Mesh3D(
+            vertex_positions=verts,
+            triangle_indices=f3d.astype(np.uint32),
+            vertex_normals=vnormals,
+            mesh_material=rr.Material(albedo_factor=[180, 180, 180]),
+        ))
 
-        # --- Image ---
-        if args.show_images and frame_id < len(im_paths) and K is not None:
-            img_path = im_paths[frame_id]
-            if os.path.exists(img_path):
-                bgr = cv2.imread(img_path)
-                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-                h, w = rgb.shape[:2]
-                rr.log(
-                    "image",
-                    rr.Pinhole(
-                        resolution=[w, h],
-                        focal_length=[float(K[0, 0]), float(K[1, 1])],
-                        principal_point=[float(K[0, 2]), float(K[1, 2])],
-                    ),
-                )
-                rr.log("image", rr.Image(rgb.astype(np.uint8)))
+        # Log camera image with intrinsics
+        img = _load_image(data_dir, fid)
+        frame_K = _load_intrinsics(data_dir, fid)
+        if frame_K is None:
+            frame_K = K
+        if img is not None and frame_K is not None:
+            H, W = img.shape[:2]
+            rr.log("world/camera", rr.Pinhole(
+                resolution=[W, H],
+                focal_length=[float(frame_K[0, 0]), float(frame_K[1, 1])],
+                principal_point=[float(frame_K[0, 2]), float(frame_K[1, 2])],
+                image_plane_distance=1.0,
+            ))
+            rr.log("world/camera", rr.Image(img).compress(jpeg_quality=args.jpeg_quality))
 
+        # Log filtered depth as 3D points (masked by hand mask)
+        if frame_K is not None:
+            depth_path = data_dir / "depth" / f"{fid:04d}.png"
+            mask_hand_path = data_dir / "mask_hand" / f"{fid:04d}.png"
+            if depth_path.exists():
+                from utils_simba.depth import load_filtered_depth
+                from PIL import Image as _PILImage
+                depth = load_filtered_depth(str(depth_path))
+                valid = depth > 0.01
+                if mask_hand_path.exists():
+                    mask_hand = np.array(_PILImage.open(mask_hand_path).convert("L"))
+                    valid = valid & (mask_hand > 0)
+                ys, xs = np.where(valid)
+                if len(ys) > 0:
+                    zs = depth[ys, xs].astype(np.float32)
+                    xc = (xs.astype(np.float32) - frame_K[0, 2]) * zs / frame_K[0, 0]
+                    yc = (ys.astype(np.float32) - frame_K[1, 2]) * zs / frame_K[1, 1]
+                    pts = np.stack([xc, yc, zs], axis=-1)
+                    rr.log("world/depth_points", rr.Points3D(pts, radii=0.0005))
 
-def main():
-    args = parse_args()
-
-    print(f"Loading predicted data from {args.pred_path}")
-    pred_data = load_pred_data(args.pred_path)
-
-    # Determine max frame num
-    max_frame_num = args.max_frames if args.max_frames > 0 else None
-    if max_frame_num is None:
-        for side in ["right", "left"]:
-            if side in pred_data and "v3d_cam" in pred_data[side]:
-                max_frame_num = pred_data[side]["v3d_cam"].shape[0]
-                break
-
-    # Load GT data via gt.load_data with image fids from RGB files
-    gt_data = None
-    try:
-        print("Loading GT data...")
-        gt_data = load_gt_data(args.seq_name, args.data_dir, args.dataset_type)
-    except Exception as e:
-        print(f"Could not load GT data: {e}")
-
-    # Load metadata (images, intrinsics)
-    metadata = {}
-    if args.show_images:
-        metadata = load_metadata(
-            args.seq_name, args.data_dir, args.dataset_type,
-            max_frame_num, args.min_frame_num, args.frame_interval,
-        )
-
-    visualize(pred_data, gt_data, metadata, args)
+    logger.info(f"Logged {len(frame_indices)} frames to Rerun (mode={args.mode})")
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Visualize hand fitting results in Rerun")
+    parser.add_argument("--data_dir", type=str, required=True,
+                        help="Dataset directory (e.g. ho3d_v3/train/MC1)")
+    parser.add_argument("--mode", type=str, default="h_trans",
+                        help="Hand fit mode (e.g. h_intrinsic, h_trans, h_rot, h_pose, h_all)")
+    parser.add_argument("--frame_indices", type=int, nargs="+", default=None,
+                        help="Explicit frame indices (overrides frame_list.txt)")
+    parser.add_argument("--jpeg_quality", type=int, default=30,
+                        help="JPEG compression quality for camera images")
+    args = parser.parse_args()
+    main(args)

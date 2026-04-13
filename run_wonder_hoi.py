@@ -141,6 +141,8 @@ class run_wonder_hoi:
                 "fit_hand_pose": self.fit_hand_pose,
                 "fit_hand_all": self.fit_hand_all,
                 "fit_hand_viewer": self.fit_hand_viewer,
+                "fit_hand_intrinsic_vis": self.fit_hand_intrinsic_vis,
+                "fit_hand_trans_vis": self.fit_hand_trans_vis,
             },
             "baseline": {
                 "foundation_pose_eval_vis": self.foundation_pose_eval_vis,
@@ -609,10 +611,7 @@ class run_wonder_hoi:
         return
 
     def _fit_hand(self, scene_name, mode, output_dir, stage_desc, **kwargs):
-        self.print_header(f"fit hand to {stage_desc} for {scene_name}")
-        if self.vis:
-            self._fit_hand_vis(scene_name, **kwargs)
-            return        
+        self.print_header(f"fit hand to {stage_desc} for {scene_name}")      
         self._cleanup_mano_ckpt(output_dir, mode)
         self.fit_hand_step(scene_name, mode, output_dir, **kwargs)
 
@@ -638,8 +637,28 @@ class run_wonder_hoi:
 
     def fit_hand_all(self, scene_name, **kwargs):
         mode = "h_all"
-        output_dir = f"{self.dataset_dir}/{scene_name}/"    
+        output_dir = f"{self.dataset_dir}/{scene_name}/"
         self._fit_hand(scene_name, mode, output_dir, "all", **kwargs)
+
+    def fit_hand_intrinsic_vis(self, scene_name, **kwargs):
+        self.print_header(f"Visualize hand fit for {scene_name}")
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+        cmd = f"cd {vggt_code_dir}/generator && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python scripts/fit_hand_vis.py "
+        cmd += f"--data_dir {data_dir} "
+        cmd += f"--mode h_intrinsic "
+        print(cmd)
+        os.system(cmd)
+
+    def fit_hand_trans_vis(self, scene_name, **kwargs):
+        self.print_header(f"Visualize hand fit for {scene_name}")
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+        cmd = f"cd {vggt_code_dir}/generator && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python scripts/fit_hand_vis.py "
+        cmd += f"--data_dir {data_dir} "
+        cmd += f"--mode h_trans "
+        print(cmd)
+        os.system(cmd)        
 
     def estimate_hand_pose(self, scene_name, **kwargs):
         self.print_header(f"estimate hand pose for {scene_name}")
@@ -2434,8 +2453,10 @@ if __name__ == "__main__":
                 "align_pcs",
                 "scale_3D_gen",
                 "fit_hand_intrinsic",
+                "fit_hand_intrinsic_vis",
                 "align_corres",
                 "fit_hand_trans",
+                "fit_hand_trans_vis",
                 "fit_hand_rot",
                 "fit_hand_pose",
                 "fit_hand_all",
