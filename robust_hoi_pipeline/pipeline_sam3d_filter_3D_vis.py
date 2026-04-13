@@ -67,6 +67,56 @@ def log_mesh(frame_dir, entity="world/sam3d_mesh", static=False):
     return mesh
 
 
+def render_mesh_contour(mesh, K, o2c, H, W, color=(0, 255, 0), thickness=2):
+    """Render a mesh silhouette contour onto an image.
+
+    Projects mesh faces onto the image plane, rasterizes a binary mask,
+    then extracts contours.
+
+    Args:
+        mesh: trimesh object in object space.
+        K: (3, 3) intrinsic matrix.
+        o2c: (4, 4) object-to-camera transform.
+        H, W: image dimensions.
+        color: BGR contour color (default green).
+        thickness: contour line thickness.
+
+    Returns:
+        contour_img: (H, W, 3) uint8 image with contours drawn on black background,
+                     or None if mesh has no visible faces.
+    """
+    verts = np.array(mesh.vertices, dtype=np.float64)
+    faces = np.array(mesh.faces, dtype=np.int32)
+
+    # Transform vertices to camera space
+    R = o2c[:3, :3]
+    t = o2c[:3, 3]
+    verts_cam = (R @ verts.T).T + t  # (V, 3)
+
+    # Project to 2D
+    z = verts_cam[:, 2]
+    px = (K[0, 0] * verts_cam[:, 0] / z + K[0, 2]).astype(np.float32)
+    py = (K[1, 1] * verts_cam[:, 1] / z + K[1, 2]).astype(np.float32)
+    pts_2d = np.stack([px, py], axis=-1)  # (V, 2)
+
+    # Rasterize: fill visible triangles (front-facing, z > 0)
+    mask = np.zeros((H, W), dtype=np.uint8)
+    for f in faces:
+        tri_z = z[f]
+        if np.any(tri_z <= 0):
+            continue
+        tri_pts = pts_2d[f].reshape(1, 3, 2).astype(np.int32)
+        cv2.fillPoly(mask, tri_pts, 255)
+
+    if mask.max() == 0:
+        return None
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contour_img = np.zeros((H, W, 3), dtype=np.uint8)
+    cv2.drawContours(contour_img, contours, -1, color, thickness)
+    return contour_img
+
+
 def log_image(rgb_dir, fid, frame_idx, K, c2o, jpeg_quality=85):
     """Load and log camera image. Returns True if image was found."""
     img_path = rgb_dir / f"{fid}.jpg"

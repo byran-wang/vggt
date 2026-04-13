@@ -2,6 +2,7 @@ import argparse
 import sys
 from pathlib import Path
 
+import numpy as np
 import rerun as rr
 
 project_root = Path(__file__).parent.parent
@@ -9,7 +10,7 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
 from utils_simba.logger import get_logger
-from pipeline_sam3d_filter_3D_vis import init_rerun, load_camera_pose, log_mesh, log_image, log_depth_points
+from pipeline_sam3d_filter_3D_vis import init_rerun, load_camera_pose, log_mesh, log_image, log_depth_points, render_mesh_contour
 
 logger = get_logger(__name__)
 
@@ -32,6 +33,38 @@ def load_frame_indices(frame_list_file):
             indices.append(int(line.split()[0]))
     logger.info(f"Loaded {len(indices)} frames from {frame_list_file}")
     return indices
+
+
+def save_contour_image(mesh, rgb_dir, fid, K, c2o, scene_name):
+    """Render mesh contour, overlay on the RGB image, and save to /tmp.
+
+    Returns:
+        Path to the tmp directory containing the saved image, or None if
+        the contour could not be rendered.
+    """
+    from PIL import Image as _Image
+
+    img_path = rgb_dir / f"{fid}.jpg"
+    if not img_path.exists():
+        img_path = rgb_dir / f"{fid}.png"
+    if not img_path.exists():
+        return None
+
+    img = np.array(_Image.open(img_path).convert("RGB"))
+    H, W = img.shape[:2]
+    o2c = np.linalg.inv(c2o)
+    contour_img = render_mesh_contour(mesh, K, o2c, H, W)
+    if contour_img is None:
+        return None
+
+    contour_mask = contour_img.any(axis=-1)
+    img_with_contour = img.copy()
+    img_with_contour[contour_mask] = contour_img[contour_mask]
+
+    tmp_dir = Path("/tmp/sam3d_contour") / scene_name
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    _Image.fromarray(img_with_contour).save(tmp_dir / f"{fid}.png")
+    return tmp_dir
 
 
 def main(args):
@@ -71,10 +104,15 @@ def main(args):
 
         # Log mesh from original SAM3D directory
         mesh = log_mesh(sam3d_dir / fid)
-        has_img = log_image(rgb_dir, fid, frame_idx, K, c2o, args.jpeg_quality)
         has_pts = log_depth_points(args.dataset_dir, args.scene_name, fid, c2o, scale)
 
-        logger.info(f"  Frame {fid}: mesh={'yes' if mesh else 'no'}, image={'yes' if has_img else 'no'}, depth_pts={'yes' if has_pts else 'no'}")
+        # Render mesh contour overlay and log image
+        contour_dir = save_contour_image(mesh, rgb_dir, fid, K, c2o, args.scene_name) if mesh is not None else None
+        has_contour = contour_dir is not None
+        has_img = log_image(contour_dir or rgb_dir, fid, frame_idx, K, c2o, args.jpeg_quality)
+
+        logger.info(f"  Frame {fid}: mesh={'yes' if mesh else 'no'}, image={'yes' if has_img else 'no'}, "
+                     f"depth_pts={'yes' if has_pts else 'no'}, contour={'yes' if has_contour else 'no'}")
 
     logger.info(f"Done. Visualized {len(frame_indices)} frames with {args.align_method} alignment.")
 
