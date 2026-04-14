@@ -56,7 +56,7 @@ sequences = {
         },     
     "ABF14":
         {
-        "cond_idx": 380,
+        "cond_idx": 0,
         },
     "GPMF12":
         {
@@ -112,7 +112,7 @@ sequences = {
         },
     "BB12":
         {
-        "cond_idx": 820,
+        "cond_idx": 770,
         },
     "BB13":
         {
