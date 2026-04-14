@@ -56,18 +56,15 @@ def prepare_image_list(
     Returns:
         Sorted list of frame indices
     """
-    # Get all available image files
+    # Get all available image file indices
     image_files = sorted([f for f in os.listdir(image_dir) if f.endswith(('.jpg', '.png', '.jpeg'))])
-    total_frames = len(image_files)
+    available_indices = set(int(Path(f).stem) for f in image_files)
 
-    if end == -1 or end > total_frames:
-        end = total_frames
-
-    # Generate frame indices with interval
-    frame_indices = list(range(start, end, interval))
+    # Generate frame indices with interval, filtered to existing files
+    frame_indices = [i for i in range(start, end, interval) if i in available_indices]
 
     # Ensure cond_index is included
-    if cond_index not in frame_indices and cond_index < total_frames:
+    if cond_index not in frame_indices and cond_index in available_indices:
         frame_indices.append(cond_index)
         frame_indices = sorted(frame_indices)
 

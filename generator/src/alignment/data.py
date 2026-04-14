@@ -7,7 +7,7 @@ import sys
 
 
 from third_party.utils_simba.utils_simba.hand import initialize_mano_model
-from third_party.utils_simba.utils_simba.depth import depth2xyzmap, get_depth
+from third_party.utils_simba.utils_simba.depth import depth2xyzmap, get_depth, load_filtered_depth
 from third_party.utils_simba.utils_simba.mask import load_mask_bool
 import cv2
 import pickle
@@ -90,7 +90,7 @@ def get_hand_depth(depth_ps, mask_hand_ps, meta, device="cuda"):
             continue
 
         # Load depth once and compute in-place
-        depth = get_depth(depth_p)
+        depth = load_filtered_depth(depth_p)
         depth = torch.from_numpy(depth.astype(np.float32)).to(device)
 
         # Load mask alpha channel directly and convert to boolean
@@ -113,12 +113,14 @@ def read_data(args):
         glob(f"{data_dir}/rgb/*.jpg")
         + glob(f"{data_dir}/rgb/*.png")
     )
-    mask_obj_ps = sorted(glob(f"{data_dir}/mask_object/*.png"))
-    mask_hand_ps = sorted(glob(f"{data_dir}/mask_hand/*.png"))
-    depth_ps = sorted(glob(f"{data_dir}/depth/*.png"))
-    
-    assert len(im_ps) == len(mask_hand_ps) == len(mask_obj_ps) == len(depth_ps), "Number of images, hand masks, object masks, and depth maps must be equal."
-    num_total_frames = len(im_ps)
+    mask_obj_ps = [p.replace("/rgb/", "/mask_object/").replace(".jpg", ".png") for p in im_ps]
+    mask_hand_ps = [p.replace("/rgb/", "/mask_hand/").replace(".jpg", ".png") for p in im_ps]
+    depth_ps = [p.replace("/rgb/", "/depth/").replace(".jpg", ".png") for p in im_ps]
+
+    for name, paths in [("mask_object", mask_obj_ps), ("mask_hand", mask_hand_ps), ("depth", depth_ps)]:
+        missing = [p for p in paths if not os.path.exists(p)]
+        if missing:
+            print(f"[WARNING] {len(missing)}/{len(paths)} {name} files missing, e.g.: {missing[0]}")
 
 
     im0 = Path(im_ps[0])
@@ -189,11 +191,14 @@ def read_data_after_object_reconstruction(args):
         glob(f"{data_dir}/rgb/*.jpg")
         + glob(f"{data_dir}/rgb/*.png")
     )
-    mask_obj_ps = sorted(glob(f"{data_dir}/mask_obj/*.png"))
-    mask_hand_ps = sorted(glob(f"{data_dir}/mask_hand/*.png"))
-    depth_ps = sorted(glob(f"{data_dir}/depth_filtered/*.png"))
+    mask_obj_ps = [p.replace("/rgb/", "/mask_obj/").replace(".png", ".png") for p in im_ps]
+    mask_hand_ps = [p.replace("/rgb/", "/mask_hand/").replace(".png", ".png") for p in im_ps]
+    depth_ps = [p.replace("/rgb/", "/depth_filtered/").replace(".png", ".png") for p in im_ps]
 
-    assert len(im_ps) == len(mask_hand_ps) == len(mask_obj_ps) == len(depth_ps), "Number of images, hand masks, object masks, and depth maps must be equal."
+    for name, paths in [("mask_object", mask_obj_ps), ("mask_hand", mask_hand_ps), ("depth", depth_ps)]:
+        missing = [p for p in paths if not os.path.exists(p)]
+        if missing:
+            print(f"[WARNING] {len(missing)}/{len(paths)} {name} files missing, e.g.: {missing[0]}")
 
     im0 = Path(im_ps[0])
     intrinsic_file = str(im0.parent.parent / "meta" / f"{im0.stem}.pkl")

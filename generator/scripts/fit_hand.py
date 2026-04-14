@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import torch
 import pytorch_lightning as pl
@@ -109,11 +110,25 @@ def main(args):
     out = xdict()
     for key in pl_model.models.keys():
         out[key] = pl_model.models[key]()
-    # if 'sdf' in out['object']:
-    #     del out['object']['sdf']
     out = out.to("cpu").to_np()
+
+
+    # Reindex output arrays by frame number so out[key][frame_idx] works directly
+    rgb_dir = Path(args.data_dir) / "rgb"
+    frame_ids = sorted(int(f.stem) for f in rgb_dir.iterdir() if f.suffix in ('.jpg', '.png', '.jpeg'))
+    N = max(frame_ids) + 1
+    for key_hand in list(out.keys()):
+        v_hand = out[key_hand]
+        for key in list(v_hand.keys()):
+            v = v_hand[key]
+            if isinstance(v, np.ndarray) and v.ndim >= 1 and v.shape[0] == len(frame_ids):
+                packed = np.full((N,) + v.shape[1:], np.nan, dtype=v.dtype)
+                for src_i, fid in enumerate(frame_ids):
+                    packed[fid] = v[src_i]
+                out[key_hand][key] = packed
+    
     np.save(out_p, out)
-    print(f"Saved to {out_p}")
+    print(f"Saved to {out_p} ({N} frame slots, {len(frame_ids)} valid)")
 
 
 def load_conf(args):

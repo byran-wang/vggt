@@ -103,25 +103,17 @@ def main(args):
     logger.info(f"Loaded hand fit: {v3d_cam.shape[0]} frames, "
                 f"{v3d_cam.shape[1]} verts, {f3d.shape[0]} faces (sealed)")
 
+
     # Determine frame indices
     if args.frame_indices is not None:
         frame_indices = args.frame_indices
     else:
-        frame_list_path = data_dir / "hands" / "frame_list.txt"
-        if frame_list_path.exists():
-            with open(frame_list_path, "r") as f:
-                frame_indices = [int(line.strip()) for line in f if line.strip()]
-            logger.info(f"Loaded {len(frame_indices)} frames from {frame_list_path}")
-        else:
-            frame_indices = list(range(v3d_cam.shape[0]))
-            logger.warning(f"No frame_list.txt found, using indices 0..{len(frame_indices)-1}")
+        rgb_dir = data_dir / "rgb"
+        frame_indices = sorted(int(f.stem) for f in rgb_dir.iterdir() if f.suffix in ('.jpg', '.png', '.jpeg'))
+        logger.info(f"Loaded {len(frame_indices)} frames from {rgb_dir}")
 
-    if len(frame_indices) != v3d_cam.shape[0]:
-        logger.warning(f"Frame list length ({len(frame_indices)}) != vertex data length ({v3d_cam.shape[0]}), "
-                       f"using min of both")
-        n = min(len(frame_indices), v3d_cam.shape[0])
-        frame_indices = frame_indices[:n]
-        v3d_cam = v3d_cam[:n]
+    # Filter to frames within the packed array range
+    frame_indices = [fid for fid in frame_indices if fid < v3d_cam.shape[0]]
 
     # Init Rerun
     rr.init("fit_hand_vis", spawn=True)
@@ -138,10 +130,10 @@ def main(args):
     # Load intrinsics once (same for all frames typically)
     K = _load_intrinsics(data_dir, frame_indices[0])
 
-    for i, fid in enumerate(frame_indices):
-        rr.set_time_sequence("frame", i)
+    for fid in frame_indices:
+        rr.set_time_sequence("frame", fid)
 
-        verts = v3d_cam[i]  # (778, 3)
+        verts = v3d_cam[fid]  # (778, 3)
 
         # Skip frames with NaN vertices
         if np.isnan(verts).any():
