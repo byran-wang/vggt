@@ -2071,10 +2071,10 @@ class run_wonder_hoi:
         
             print(cmd)
             os.system(cmd)
-            return                  
-
+            return
+                  
         if self.rebuild:
-            cmd = f"rm -rf {out_dir}/hold_fit.aligned_{mode}.npy && rm -rf {out_dir}mano_fit_ckpt/{mode}/"
+            cmd = f"rm -rf {out_dir}/hold_fit.aligned_{mode}.npy && rm -rf {out_dir}/mano_fit_ckpt/{mode}/"
             print(cmd)
             os.system(cmd)
 
