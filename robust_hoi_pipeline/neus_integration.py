@@ -310,7 +310,10 @@ def run_neus_training(
 
         # Export mesh
         system.cuda()
-        system.export()
+        try:
+            system.export()
+        except (IndexError, RuntimeError) as e:
+            print(f"[NeuS] Mesh export failed (SDF may not have converged): {e}")
 
     # ------------------------------------------------------------------
     # Update cache
