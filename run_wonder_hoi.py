@@ -1798,6 +1798,7 @@ class run_wonder_hoi:
         out_dir = f"{self.dataset_dir}/{scene_name}/pipeline_preprocess/"
         frame_interval = self.seq_config['frame_interval']
         frame_number = self.seq_config['frame_number']
+        frame_end = self.seq_config['frame_end']
 
         if self.rebuild:
             cmd = f"rm -rf {out_dir}"
@@ -1808,7 +1809,7 @@ class run_wonder_hoi:
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_data_preprocess.py "
         cmd += f"--data_dir {data_dir} "
         cmd += f"--output_dir {out_dir} "
-        cmd += f"--start 0 --end {frame_number * frame_interval - 1} --interval {frame_interval} "
+        cmd += f"--start 0 --end {frame_end} --interval {frame_interval} "
         cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
         print(cmd)
         os.system(cmd)
