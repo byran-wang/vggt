@@ -74,10 +74,16 @@ for device in "${!device_sequences[@]}"; do
   sequences=${device_sequences[$device]}
   
   (
+
+    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    #   --execute_list data_convert \
+    #   --process_list ho3d_estimate_hand_pose ho3d_interpolate_hamer  \
+    #   --seq_list $sequences --rebuild
+
     # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
     #   --execute_list hand_pose_postprocess \
     #   --process_list fit_hand_intrinsic fit_hand_trans  \
-    #   --seq_list $sequences --rebuild --dataset_type ho3d
+    #   --seq_list $sequences --rebuild
 
     # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
     #   --execute_list obj_process \
