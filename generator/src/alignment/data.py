@@ -7,7 +7,7 @@ import sys
 
 
 from third_party.utils_simba.utils_simba.hand import initialize_mano_model
-from third_party.utils_simba.utils_simba.depth import depth2xyzmap, get_depth, load_filtered_depth
+from third_party.utils_simba.utils_simba.depth import depth2xyzmap, load_filtered_depth
 from third_party.utils_simba.utils_simba.mask import load_mask_bool
 import cv2
 import pickle
@@ -36,24 +36,6 @@ def _load_pickle_compat(path):
             f.seek(0)
             return _NumpyCompatUnpickler(f).load()
 
-def get_hand_pc(depth_ps, mask_hand_ps, meta, device="cuda"):
-    hand_pc = []
-    # show the progress bar with description
-    for depth_p, mask_hand_p in tqdm(zip(depth_ps, mask_hand_ps), total=len(depth_ps), desc="Getting hand point map"):
-        if not os.path.exists(depth_p) or not os.path.exists(mask_hand_p):
-            print(f"Depth or mask hand not found: {depth_p} or {mask_hand_p}")
-            continue
-        if depth_p.split('/')[-1] != mask_hand_p.split('/')[-1]:
-            print(f"Depth or mask hand not match: {depth_p} or {mask_hand_p}")
-            continue
-        
-        depth = get_depth(depth_p)
-        xyz_map = depth2xyzmap(torch.FloatTensor(depth).to(device), torch.FloatTensor(meta['K']).to(device))
-
-        mask_hand = torch.from_numpy(load_mask_bool(mask_hand_p)).to(device)
-        xyz_map = xyz_map[mask_hand]
-        hand_pc.append(xyz_map)
-    return hand_pc
 
 def read_hand_data(data, hand_indices):
     mydata = {}
@@ -169,7 +151,6 @@ def read_data(args):
         # assert and print error information if not equal
         assert depth_gt.shape[0] == j2d_right_pad.shape[0], f"depth_gt length: {depth_gt.shape[0]} != j2d_right_pad length: {j2d_right_pad.shape[0]}"
         data_r['j2d.gt'] = j2d_right_pad
-        # data_r['v3d.gt'] = get_hand_pc(meta['depth_paths'], meta['mask_hand_paths'], meta)
         data_r['v3d.gt'] = None
         data_r['depth.gt'] = depth_gt
         data_r['valid'] = right_valid_1
@@ -267,7 +248,6 @@ def read_data_after_object_reconstruction(args):
         # assert and print error information if not equal
         assert depth_gt.shape[0] == j2d_right_pad.shape[0], f"depth_gt length: {depth_gt.shape[0]} != j2d_right_pad length: {j2d_right_pad.shape[0]}"
         data_r['j2d.gt'] = j2d_right_pad
-        # data_r['v3d.gt'] = get_hand_pc(meta['depth_paths'], meta['mask_hand_paths'], meta)
         data_r['v3d.gt'] = None
         data_r['depth.gt'] = depth_gt
         data_r['valid'] = right_valid_1
