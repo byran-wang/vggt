@@ -13,7 +13,7 @@ sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
 import torch
 
-from utils_simba.depth import depth2xyzmap, get_depth
+from utils_simba.depth import depth2xyzmap, load_filtered_depth
 from utils_simba.logger import get_logger
 from utils_simba.rerun import load_mesh_as_trimesh
 from utils_simba.render import nvdiffrast_render
@@ -42,7 +42,7 @@ def _backproject_depth_to_object_space(fid, dataset_dir, scene_name, c2o, scale)
     with open(meta_path, "rb") as f:
         meta = pickle.load(f)
     K = np.array(meta["camMat"], dtype=np.float64)
-    depth = get_depth(str(depth_path))
+    depth = load_filtered_depth(str(depth_path))
     depth /= scale
     mask_obj = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
 
