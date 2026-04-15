@@ -84,7 +84,7 @@ def _resize_to_height(img: np.ndarray, h: int):
 
 def _stream_label(name: str):
     labels = {
-        "foundation": "FoundationPose",
+        "foundation": "SAM3D + FoundationPose",
         "bundle_sdf": "BundleSDF",
         "hold": "HOLD",
         "joint_opt": "Ours",
