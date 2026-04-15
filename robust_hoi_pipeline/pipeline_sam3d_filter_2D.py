@@ -22,9 +22,22 @@ from robust_hoi_pipeline.pipeline_data_preprocess import prepare_image_list
 
 def _load_intrinsics(meta_path: str) -> np.ndarray:
     """Load camera intrinsics from meta pickle file."""
+    import io
+
+    class _NumpyCompatUnpickler(pickle.Unpickler):
+        def find_class(self, module, name):
+            if module.startswith("numpy._core"):
+                module = module.replace("numpy._core", "numpy.core", 1)
+            return super().find_class(module, name)
+
     with open(meta_path, "rb") as f:
-        meta = pickle.load(f)
-    return np.array(meta["camMat"], dtype=np.float32)
+        try:
+            meta = pickle.load(f)
+        except ModuleNotFoundError:
+            f.seek(0)
+            meta = _NumpyCompatUnpickler(f).load()
+    K = meta.get("intrinsics", meta.get("camMat"))
+    return np.array(K, dtype=np.float32)
 
 
 def _geometry_quality(depth: np.ndarray, K: np.ndarray, mask: np.ndarray) -> float:
