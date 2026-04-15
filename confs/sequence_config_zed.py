@@ -1,14 +1,26 @@
 sequence_name_list = [
     ###### in-the-wild captured by ZED ##########
+    "AG1",
     "CUB1",
-    "CUB2",
+    "CUP3",
     "DUC1",
-    "DUC2",
-    "TC3",
-    "TC4",
+    "GT1"
+    "HAM1",
+    "TG1",
     "WC3",
-    "WC4", 
+    "KNI1",
+    "MEC1",
+    "MED1",
+    "MOU1",
+    "PIN1",
+    "SCI1",
+    "SHP1",
+    "SPA1",
+    "SPN1",
+    "TAB1",
+    "TC3", 
 ]
+
 sequences = {
     # {
     # # reconstruction fail after increase matching scores to 0.5 from 0.3 and retrival image number to top 50%
