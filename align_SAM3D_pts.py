@@ -789,7 +789,7 @@ def main(args):
         sam3d_depth_colors = sam3d_image[sam3d_valid_depth]  # RGB from image
         save_points_to_ply(sam3d_depth_3d, os.path.join(args.out_dir, "input_sam3d_depth.ply"), colors=sam3d_depth_colors)
     
-    if valid_mask.sum() < 20:
+    if valid_mask.sum() < 15:
         print("Not enough valid correspondences for alignment")
         return
 
