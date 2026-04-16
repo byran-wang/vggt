@@ -21,6 +21,7 @@ from utils_simba.visibility_mesh import get_visibility_mesh, get_visibility_occ
 from utils_simba.visibility_test import (
     mesh_to_voxel_grid, voxel_centers, get_camera_pose,
 )
+from pipeline_sam3d_filter_2D import _load_intrinsics
 from pipeline_sam3d_filter_3D_vis import load_camera_pose
 
 logger = get_logger(__name__)
@@ -39,9 +40,7 @@ def _backproject_depth_to_object_space(fid, dataset_dir, scene_name, c2o, scale)
     if not all(p.exists() for p in [depth_path, mask_path, meta_path]):
         return None
     
-    with open(meta_path, "rb") as f:
-        meta = pickle.load(f)
-    K = np.array(meta["camMat"], dtype=np.float64)
+    K = _load_intrinsics(str(meta_path)).astype(np.float64)
     depth = load_filtered_depth(str(depth_path))
     depth /= scale
     mask_obj = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
