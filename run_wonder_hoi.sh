@@ -52,6 +52,7 @@ python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_al
 # Filter aligned frames by depth 3-axis coverage
 python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_align_filter --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_align_filter_vis --seq_list $seq_list
+python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_delete_unused --seq_list $seq_list
 python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_best_id --seq_list $seq_list
 python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_best_id_vis --seq_list $seq_list
 python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_best_id_sum --seq_list $seq_list

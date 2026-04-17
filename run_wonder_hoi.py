@@ -93,6 +93,7 @@ class run_wonder_hoi:
                 "ho3d_SAM3D_aligned_pts_vis": self.ho3d_SAM3D_aligned_pts_vis,
                 "pipeline_sam3d_align_filter": self.pipeline_sam3d_align_filter,
                 "pipeline_sam3d_align_filter_vis": self.pipeline_sam3d_align_filter_vis,
+                "pipeline_sam3d_delete_unused": self.pipeline_sam3d_delete_unused,
                 "pipeline_sam3d_best_id": self.pipeline_sam3d_best_id,
                 "pipeline_sam3d_best_id_vis": self.pipeline_sam3d_best_id_vis,
                 "pipeline_sam3d_best_id_sum": self.pipeline_sam3d_best_id_sum,
@@ -968,6 +969,14 @@ class run_wonder_hoi:
         cmd += f"--dataset_dir {self.dataset_dir} "
         cmd += f"--scene_name {scene_name} "
         cmd += f"--out_dir {out_dir} "
+        print(cmd)
+        os.system(cmd)
+
+    def pipeline_sam3d_delete_unused(self, scene_name, **kwargs):
+        self.print_header(f"Delete unused SAM3D folders for {scene_name}")
+        cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_delete_unused.py "
+        cmd += f"--dataset_dir {self.dataset_dir} "
+        cmd += f"--scene_name {scene_name} "
         print(cmd)
         os.system(cmd)
 
@@ -2498,6 +2507,7 @@ if __name__ == "__main__":
                 "ho3d_SAM3D_aligned_pts_vis",
                 "pipeline_sam3d_align_filter",
                 "pipeline_sam3d_align_filter_vis",
+                "pipeline_sam3d_delete_unused",
                 "pipeline_sam3d_best_id",
                 "pipeline_sam3d_best_id_vis",
                 "pipeline_sam3d_best_id_sum",
