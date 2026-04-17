@@ -4,7 +4,7 @@ sequence_name_list = [
     "CUB1",
     "CUP3",
     "DUC1",
-    "GT1"
+    "GT1",
     "HAM1",
     "TG1",
     "WC3",
@@ -49,6 +49,77 @@ sequences = {
     "obj_3_cond_idx": 0,
     "obj_4_cond_idx": 0,    
     },
-                                                 
+    "AG1":
+    {
+    "cond_idx": 7,
+    }, 
+    "CUB1":
+    {
+    "cond_idx": 70,
+    }, 
+    "CUP3":
+    {
+    "cond_idx": 9,
+    }, 
+    "DUC1":
+    {
+    "cond_idx": 3,
+    }, 
+    "GT1":
+    {
+    "cond_idx": 13,
+    }, 
+    "TG1":
+    {
+    "cond_idx": 8,
+    }, 
+    "WC3":
+    {
+    "cond_idx": 9999,
+    }, 
+    "KNI1":
+    {
+    "cond_idx": 24,
+    }, 
+    "MEC1":
+    {
+    "cond_idx": 84,
+    }, 
+    "MED1":
+    {
+    "cond_idx": 108,
+    }, 
+    "MOU1":
+    {
+    "cond_idx": 124,
+    }, 
+    "PIN1":
+    {
+    "cond_idx": 120,
+    }, 
+    "SCI1":
+    {
+    "cond_idx": 8,
+    }, 
+    "SHP1":
+    {
+    "cond_idx": 3,
+    },                                                             
+    "SPA1":
+    {
+    "cond_idx": 46,
+    }, 
+    "SPN1":
+    {
+    "cond_idx": 126,
+    }, 
+    "TAB1":
+    {
+    "cond_idx": 9999,
+    }, 
+    "TC3":
+    {
+    "cond_idx": 63,
+    },                                                         
 }
 
