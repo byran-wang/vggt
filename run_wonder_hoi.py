@@ -89,8 +89,10 @@ class run_wonder_hoi:
                 "ho3d_align_SAM3D_mask": self.ho3d_align_SAM3D_mask,
                 "ho3d_align_by_foundation_pose": self.ho3d_align_by_foundation_pose,
                 "ho3d_align_SAM3D_pts": self.ho3d_align_SAM3D_pts,
+                "ho3d_align_SAM3D_fp": self.ho3d_align_SAM3D_fp,
                 "ho3d_SAM3D_aligned_mask_vis": self.ho3d_SAM3D_aligned_mask_vis,
                 "ho3d_SAM3D_aligned_pts_vis": self.ho3d_SAM3D_aligned_pts_vis,
+                "ho3d_SAM3D_aligned_fp_vis": self.ho3d_SAM3D_aligned_fp_vis,
                 "pipeline_sam3d_align_filter": self.pipeline_sam3d_align_filter,
                 "pipeline_sam3d_align_filter_vis": self.pipeline_sam3d_align_filter_vis,
                 "pipeline_sam3d_delete_unused": self.pipeline_sam3d_delete_unused,
@@ -909,6 +911,15 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
+    def ho3d_SAM3D_aligned_fp_vis(self, scene_name, **kwargs):
+        self.print_header(f"Visualize SAM3D FP-aligned frames in Rerun for {scene_name}")
+        cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_aligned_vis.py "
+        cmd += f"--dataset_dir {self.dataset_dir} "
+        cmd += f"--scene_name {scene_name} "
+        cmd += f"--align_method fp "
+        print(cmd)
+        os.system(cmd)
+
     def pipeline_sam3d_best_id(self, scene_name, **kwargs):
         self.print_header(f"Find best id from filtered frames for {scene_name}")
         scene_dir = f"{self.dataset_dir}/{scene_name}"
@@ -1139,6 +1150,22 @@ class run_wonder_hoi:
             print("Ranking (best to worst):")
             for rank, (sid, err) in enumerate(sorted_scores.items()):
                 print(f"  {rank+1}. id={sid} mean_error={err:.4f}")
+
+    def ho3d_align_SAM3D_fp(self, scene_name, **kwargs):
+        self.print_header(f"Refine SAM3D alignment with FoundationPose for {scene_name}")
+        out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_fp/"
+
+        if self.rebuild:
+            cmd = f"rm -rf {out_dir}/*"
+            print(cmd)
+            os.system(cmd)
+
+        cmd = f"cd {vggt_code_dir}/third_party/FoundationPose && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python  {vggt_code_dir}/align_SAM3D_fp.py "
+        cmd += f"--data_dir {self.dataset_dir}/{scene_name} "
+        cmd += f"--out_dir {out_dir} "
+        print(cmd)
+        os.system(cmd)
 
     def ho3d_SAM3D_post_process(self, scene_name, **kwargs):
         self.print_header(f"Copy SAM3D results for {scene_name}")
@@ -2504,8 +2531,10 @@ if __name__ == "__main__":
                 "ho3d_align_SAM3D_mask",
                 "ho3d_align_by_foundation_pose",
                 "ho3d_align_SAM3D_pts",
+                "ho3d_align_SAM3D_fp",
                 "ho3d_SAM3D_aligned_mask_vis",
                 "ho3d_SAM3D_aligned_pts_vis",
+                "ho3d_SAM3D_aligned_fp_vis",
                 "pipeline_sam3d_align_filter",
                 "pipeline_sam3d_align_filter_vis",
                 "pipeline_sam3d_delete_unused",

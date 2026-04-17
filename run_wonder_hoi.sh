@@ -49,6 +49,7 @@ python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_al
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_SAM3D_pts --seq_list $seq_list #--vis
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_aligned_pts_vis --seq_list $seq_list
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_SAM3D_fp --seq_list $seq_list --rebuild
+python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_aligned_fp_vis --seq_list $seq_list
 
 # Filter aligned frames by depth 3-axis coverage
 python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_align_filter --seq_list $seq_list --rebuild

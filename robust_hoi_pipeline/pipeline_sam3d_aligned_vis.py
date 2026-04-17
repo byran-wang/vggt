@@ -125,8 +125,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Visualize SAM3D aligned frames in Rerun")
     parser.add_argument("--dataset_dir", type=str, required=True)
     parser.add_argument("--scene_name", type=str, required=True)
-    parser.add_argument("--align_method", type=str, default="pts", choices=["mask", "pts"],
-                        help="Alignment method: 'mask' for SAM3D_aligned_mask, 'pts' for SAM3D_aligned_pts")
+    parser.add_argument("--align_method", type=str, default="pts", choices=["mask", "pts", "fp"],
+                        help="Alignment method: 'mask' for SAM3D_aligned_mask, 'pts' for SAM3D_aligned_pts, 'fp' for SAM3D_aligned_fp")
     parser.add_argument("--jpeg_quality", type=int, default=85)
     parser.add_argument("--frame_indices", type=int, nargs="+", default=None,
                         help="Explicit frame indices (highest priority, e.g. --frame_indices 0 10 20)")

@@ -25,6 +25,7 @@ from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_sam3d_trans
 from robust_hoi_pipeline.geometry_utils import compute_reproj_errors
 from robust_hoi_pipeline.pipeline_joint_opt_debug import (
     _save_binary_mask_debug,
+    _save_depth_points_debug,
     _save_hand_obj_meshes_in_cam_space,
 )
 from utils_simba.logger import get_logger
@@ -1474,7 +1475,7 @@ def _reset_and_track_foundation_pose(image_info_work, frame_idx, obj_mesh, debug
         logger.warning(f"[FoundationPose] Frame {frame_idx}: no nearest registered frame, using current pose as init")
     else:
         logger.debug(f"[FoundationPose] Frame {frame_idx}: using nearest registered frame {nearest_idx} pose as init")
-
+    # _save_depth_points_debug(debug_dir, frame_idx, depth, K, rgb=rgb, o2c=current_o2c)
     fp_pose = _run_foundation_pose_track(
         obj_mesh, rgb, depth, None, K, current_o2c,
         debug_dir=str(debug_dir) if debug_dir is not None else None,
@@ -1717,6 +1718,8 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         if isinstance(sam3d_mesh, trimesh.Scene):
             sam3d_mesh = sam3d_mesh.dump(concatenate=True)
         logger.info(f"Loaded SAM3D mesh: {len(sam3d_mesh.vertices)} vertices")
+    else:
+        raise ValueError(f"SAM3D mesh path {sam_3d_mesh_file} is invalid or file not found")        
 
     # Load the NeuS mesh (if available) for FoundationPose tracking
     neus_mesh_trimesh = None

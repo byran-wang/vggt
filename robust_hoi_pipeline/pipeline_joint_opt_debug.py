@@ -108,3 +108,37 @@ def _save_hand_obj_meshes_in_cam_space(debug_dir, frame_idx, obj_mesh, hand_vert
             ys = (vs.astype(np.float64) - K[1, 2]) * zs / K[1, 1]
             pts = np.stack([xs, ys, zs], axis=-1).astype(np.float32)
             _trimesh.PointCloud(pts).export(_dbg / f"depth_pts_{tag}_frame_{frame_idx:04d}.ply")
+
+
+def _save_depth_points_debug(debug_dir, frame_idx, depth, K, rgb=None, o2c=None):
+    """Back-project depth to 3D points and save as colored PLY in debug_dir.
+
+    If o2c (4x4 object-to-camera) is provided, transforms points to object space.
+    """
+    if debug_dir is None or depth is None or K is None:
+        return
+    import trimesh as _trimesh
+
+    _dbg = Path(debug_dir)
+    _dbg.mkdir(parents=True, exist_ok=True)
+
+    vs, us = np.where(depth > 0.01)
+    if len(vs) == 0:
+        return
+    zs = depth[vs, us].astype(np.float64)
+    xs = (us.astype(np.float64) - K[0, 2]) * zs / K[0, 0]
+    ys = (vs.astype(np.float64) - K[1, 2]) * zs / K[1, 1]
+    pts = np.stack([xs, ys, zs], axis=-1).astype(np.float32)
+
+    # Transform to object space if o2c is provided
+    if o2c is not None:
+        c2o = np.linalg.inv(o2c)
+        pts_h = np.hstack([pts, np.ones((len(pts), 1), dtype=np.float32)])
+        pts = (c2o @ pts_h.T).T[:, :3].astype(np.float32)
+
+    colors = None
+    if rgb is not None and rgb.shape[:2] == depth.shape[:2]:
+        colors = rgb[vs, us]  # (N, 3) uint8
+
+    pc = _trimesh.PointCloud(pts, colors=colors)
+    pc.export(_dbg / f"depth_pts_frame_{frame_idx:04d}.ply")
