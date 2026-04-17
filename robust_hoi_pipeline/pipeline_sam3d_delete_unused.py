@@ -22,7 +22,9 @@ def main(args):
 
     with open(filter_file, "r") as f:
         keep_frames = {int(line.strip()) for line in f if line.strip()}
-    logger.info(f"Loaded {len(keep_frames)} kept frames from {filter_file}")
+    # Always keep the condition frame
+    keep_frames.add(args.cond_idx)
+    logger.info(f"Loaded {len(keep_frames)} kept frames from {filter_file} (including cond_idx={args.cond_idx})")
 
     # Enumerate all numeric frame folders under SAM3D/
     all_folders = sorted(
@@ -46,5 +48,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Delete SAM3D folders not in frame_list_align_filter.txt")
     parser.add_argument("--dataset_dir", type=str, required=True)
     parser.add_argument("--scene_name", type=str, required=True)
+    parser.add_argument("--cond_idx", type=int, default=0, help="Condition frame index (always kept)")
     args = parser.parse_args()
     main(args)
