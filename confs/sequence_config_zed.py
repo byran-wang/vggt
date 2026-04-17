@@ -75,7 +75,7 @@ sequences = {
     }, 
     "WC3":
     {
-    "cond_idx": 9999,
+    "cond_idx": 193,
     }, 
     "KNI1":
     {
