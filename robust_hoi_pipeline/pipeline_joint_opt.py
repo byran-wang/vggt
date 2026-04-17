@@ -1956,16 +1956,16 @@ def main(args):
     try:
         log_dir = Path(args.output_dir) / "pipeline_joint_opt"
         log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / "log.txt"
+        log_path = log_dir / "txt.log"
         log_file = open(log_path, "a", buffering=1)
         sys.stdout = TeeStream(orig_stdout, log_file)
         sys.stderr = TeeStream(orig_stderr, log_file)
         # Add file handler so logger output also goes to log.txt
-        from utils_simba.logger import ColoredFormatter
+        from utils_simba.logger import PlainFormatter
         import logging as _logging
-        _file_handler = _logging.FileHandler(log_path, mode="a")
+        _file_handler = _logging.FileHandler(log_path, mode="w")
         _file_handler.setLevel(_logging.DEBUG)
-        _file_handler.setFormatter(ColoredFormatter())
+        _file_handler.setFormatter(PlainFormatter())
         logger.addHandler(_file_handler)
         logger.info(f"[logging] Writing console output to {log_path}")
 
