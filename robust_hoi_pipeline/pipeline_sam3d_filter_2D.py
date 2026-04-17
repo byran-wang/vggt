@@ -96,6 +96,97 @@ def _save_frame_list(path, frame_indices):
             f.write(f"{idx}\n")
 
 
+def _filter_by_boundary(frame_indices, mask_obj_dir, border_px=5):
+    """Filter out frames where the object mask touches the image boundary.
+
+    Returns list of frames whose mask does not touch any edge.
+    """
+    kept = []
+    for frame_idx in frame_indices:
+        fid = f"{frame_idx:04d}"
+        mask_path = mask_obj_dir / f"{fid}.png"
+        if not mask_path.exists():
+            raise FileNotFoundError(f"Object mask not found: {mask_path}")
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        h, w = mask.shape
+        edges_hit = []
+        if (mask[:border_px, :] > 0).any():
+            edges_hit.append("top")
+        if (mask[h - border_px:, :] > 0).any():
+            edges_hit.append("bottom")
+        if (mask[:, :border_px] > 0).any():
+            edges_hit.append("left")
+        if (mask[:, w - border_px:] > 0).any():
+            edges_hit.append("right")
+        if edges_hit:
+            logger.info(f"  Frame {fid}: mask touches boundary ({', '.join(edges_hit)}), dropping")
+        else:
+            kept.append(frame_idx)
+    return kept
+
+
+def _filter_by_dino_similarity(frame_indices, rgb_dir, mask_obj_dir, similarity_threshold=0.9, image_size=336):
+    """Filter out visually similar frames using DINOv2 CLS token cosine similarity.
+
+    Uses threshold-and-drop: sequentially scan frames, drop any frame whose
+    max cosine similarity to already-kept frames exceeds the threshold.
+    Returns list of kept frame indices.
+    """
+    import torch.nn.functional as F
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14_reg")
+    model = model.eval().to(device)
+
+    mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
+
+    # Load and preprocess all frames into a batch
+    tensors = []
+    frame_indices = list(range(0,100))
+    for frame_idx in frame_indices:
+        fid = f"{frame_idx:04d}"
+        rgb_path = rgb_dir / f"{fid}.jpg"
+        mask_path = mask_obj_dir / f"{fid}.png"
+        if not rgb_path.exists():
+            raise FileNotFoundError(f"RGB image not found: {rgb_path}")
+        image = cv2.imread(str(rgb_path))
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        image[mask == 0] = 0
+        img_tensor = torch.from_numpy(image).permute(2, 0, 1).float() / 255.0
+        tensors.append(img_tensor)
+
+    images = torch.stack(tensors).to(device)  # (N, 3, H, W)
+    images = F.interpolate(images, (image_size, image_size), mode="bilinear", align_corners=False)
+    images = (images - mean) / std
+
+    # Extract CLS token features
+    with torch.no_grad():
+        feats = model(images, is_training=True)
+    feat_norm = F.normalize(feats["x_norm_clstoken"], p=2, dim=1)  # (N, D)
+
+    # Threshold-and-drop
+    kept = []
+    kept_indices = []
+    for i, frame_idx in enumerate(frame_indices):
+        if not kept_indices:
+            kept.append(frame_idx)
+            kept_indices.append(i)
+            logger.info(f"  Frame {frame_idx:04d}: kept (first frame)")
+            continue
+        sims = (feat_norm[kept_indices] @ feat_norm[i]).cpu().numpy()  # (K,)
+        max_sim = float(sims.max())
+        most_similar_idx = kept[int(sims.argmax())]
+        if max_sim > similarity_threshold:
+            logger.info(f"  Frame {frame_idx:04d}: dropped (sim={max_sim:.3f} with frame {most_similar_idx:04d})")
+        else:
+            kept.append(frame_idx)
+            kept_indices.append(i)
+            logger.info(f"  Frame {frame_idx:04d}: kept (max_sim={max_sim:.3f})")
+    return kept
+
+
 def _filter_by_mask(frame_indices, mask_obj_dir, max_frames):
     """Filter frames by object mask pixel count, keep top max_frames.
 
@@ -206,14 +297,28 @@ def main(args):
     _save_frame_list(out_dir / "frame_list_after_mask_filtered.txt", mask_filtered_ordered)
     logger.info(f"Saved mask-filtered frame list ({len(mask_filtered_ordered)} frames)")
 
-    # Stage 2: Filter by geometry quality
+    # Stage 2: Filter by boundary
+    boundary_filtered = _filter_by_boundary(
+        mask_filtered_ordered, mask_obj_dir, border_px=args.border_px,
+    )
+    _save_frame_list(out_dir / "frame_list_after_boundary_filtered.txt", boundary_filtered)
+    logger.info(f"Saved boundary-filtered frame list ({len(boundary_filtered)} frames)")
+
+    # Stage 3: Filter by DINO similarity
+    dino_filtered = _filter_by_dino_similarity(
+        boundary_filtered, rgb_dir, mask_obj_dir, similarity_threshold=args.dino_similarity_threshold,
+    )
+    _save_frame_list(out_dir / "frame_list_after_dino_filtered.txt", dino_filtered)
+    logger.info(f"Saved DINO-filtered frame list ({len(dino_filtered)} frames)")
+
+    # Stage 4: Filter by geometry quality
     depth_filtered_ordered = _filter_by_geometry(
-        mask_filtered_ordered, depth_dir, meta_dir, mask_obj_dir, args.max_geometry_filtered_frames,
+        dino_filtered, depth_dir, meta_dir, mask_obj_dir, args.max_geometry_filtered_frames,
     )
     _save_frame_list(out_dir / "frame_list_after_depth_filtered.txt", depth_filtered_ordered)
     logger.info(f"Saved depth-filtered frame list ({len(depth_filtered_ordered)} frames)")
 
-    # Stage 3: Filter by feature point count
+    # Stage 5: Filter by feature point count
     ftp_filtered_ordered = _filter_by_feature_points(
         depth_filtered_ordered, rgb_dir, mask_obj_dir, args.max_ftp_filter_frames,
     )
@@ -239,8 +344,10 @@ if __name__ == "__main__":
     parser.add_argument("--frame_interval", type=int, default=5, help="Frame sampling interval")
     parser.add_argument("--cond_idx", type=int, default=0, help="Condition frame index (always included)")
     parser.add_argument("--max_mask_filtered_frames", type=int, default=100, help="Max frames to keep after mask filtering")
-    parser.add_argument("--max_geometry_filtered_frames", type=int, default=50, help="Max frames to keep after geometry filtering")
-    parser.add_argument("--max_ftp_filter_frames", type=int, default=30, help="Max frames to keep after feature point filtering")
+    parser.add_argument("--border_px", type=int, default=3, help="Border pixel width for boundary filter")
+    parser.add_argument("--dino_similarity_threshold", type=float, default=0.9, help="Cosine similarity threshold for DINO dedup")
+    parser.add_argument("--max_geometry_filtered_frames", type=int, default=30, help="Max frames to keep after geometry filtering")
+    parser.add_argument("--max_ftp_filter_frames", type=int, default=20, help="Max frames to keep after feature point filtering")
 
     args = parser.parse_args()
     main(args)
