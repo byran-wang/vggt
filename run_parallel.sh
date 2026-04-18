@@ -101,6 +101,10 @@ for device in "${!device_sequences[@]}"; do
     #   --process_list pipeline_sam3d_align_filter pipeline_sam3d_best_id \
     #   --seq_list $sequences --rebuild 
    
+    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    #   --execute_list obj_process \
+    #   --process_list pipeline_sam3d_delete_unused \
+    #   --seq_list $sequences --rebuild    
 
     # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
     #   --execute_list obj_process \
