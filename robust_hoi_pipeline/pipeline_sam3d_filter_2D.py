@@ -143,7 +143,6 @@ def _filter_by_dino_similarity(frame_indices, rgb_dir, mask_obj_dir, similarity_
 
     # Load and preprocess all frames into a batch
     tensors = []
-    frame_indices = list(range(0,100))
     for frame_idx in frame_indices:
         fid = f"{frame_idx:04d}"
         rgb_path = rgb_dir / f"{fid}.jpg"
@@ -344,8 +343,8 @@ if __name__ == "__main__":
     parser.add_argument("--frame_interval", type=int, default=5, help="Frame sampling interval")
     parser.add_argument("--cond_idx", type=int, default=0, help="Condition frame index (always included)")
     parser.add_argument("--max_mask_filtered_frames", type=int, default=100, help="Max frames to keep after mask filtering")
-    parser.add_argument("--border_px", type=int, default=3, help="Border pixel width for boundary filter")
-    parser.add_argument("--dino_similarity_threshold", type=float, default=0.9, help="Cosine similarity threshold for DINO dedup")
+    parser.add_argument("--border_px", type=int, default=5, help="Border pixel width for boundary filter")
+    parser.add_argument("--dino_similarity_threshold", type=float, default=0.96, help="Cosine similarity threshold for DINO dedup")
     parser.add_argument("--max_geometry_filtered_frames", type=int, default=30, help="Max frames to keep after geometry filtering")
     parser.add_argument("--max_ftp_filter_frames", type=int, default=20, help="Max frames to keep after feature point filtering")
 
