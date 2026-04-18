@@ -31,3 +31,6 @@
 [submodule "third_party/hold"]
 	path = third_party/hold
 	url = git@github.com:byran-wang/hold.git
+[submodule "third_party/sam-3d-objects"]
+	path = third_party/sam-3d-objects
+	url = git@github.com:byran-wang/sam-3d-objects.git
