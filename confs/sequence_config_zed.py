@@ -55,71 +55,75 @@ sequences = {
     }, 
     "CUB1":
     {
-    "cond_idx": 70,
+    "cond_idx": 83,
     }, 
-    "CUP3":
+    "CUP3": 
     {
-    "cond_idx": 9,
+    "cond_idx": 112,
     }, 
     "DUC1":
     {
-    "cond_idx": 3,
+    "cond_idx": 1,
     }, 
     "GT1":
     {
-    "cond_idx": 13,
+    "cond_idx": 114,
     }, 
+    "HAM1": # sam3d is not good, auto 65. 锤子
+    {
+    "cond_idx": 42,
+    },     
     "TG1":
     {
-    "cond_idx": 8,
+    "cond_idx": 217,
     }, 
     "WC3":
     {
-    "cond_idx": 193,
+    "cond_idx": 195,
     }, 
     "KNI1":
     {
-    "cond_idx": 24,
+    "cond_idx": 0,
     }, 
-    "MEC1":
+    "MEC1": # mask error?
     {
-    "cond_idx": 84,
+    "cond_idx": 79,
     }, 
     "MED1":
     {
-    "cond_idx": 108,
+    "cond_idx": 58,
     }, 
-    "MOU1":
+    "MOU1": # sam3d is not good, auto 62. 鼠标
     {
-    "cond_idx": 124,
+    "cond_idx": 66,
     }, 
     "PIN1":
     {
-    "cond_idx": 120,
+    "cond_idx": 141,
     }, 
     "SCI1":
     {
-    "cond_idx": 8,
+    "cond_idx": 17,
     }, 
     "SHP1":
     {
-    "cond_idx": 3,
+    "cond_idx": 55,
     },                                                             
-    "SPA1":
+    "SPA1": # sam3d is not good, auto 63. 炒菜铲子
     {
-    "cond_idx": 46,
+    "cond_idx": 81,
     }, 
-    "SPN1":
+    "SPN1": # sam3d is not good, auto 161. 扳手
     {
-    "cond_idx": 126,
+    "cond_idx": 195,
     }, 
-    "TAB1":
+    "TAB1": # sam3d is not good, auto 65. 汤勺
     {
-    "cond_idx": 9999,
+    "cond_idx": 0,
     }, 
     "TC3":
     {
-    "cond_idx": 63,
+    "cond_idx": 70,
     },                                                         
 }
 
