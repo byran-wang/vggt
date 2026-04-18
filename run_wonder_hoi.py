@@ -954,7 +954,7 @@ class run_wonder_hoi:
         cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_aligned_vis.py "
         cmd += f"--dataset_dir {self.dataset_dir} "
         cmd += f"--scene_name {scene_name} "
-        cmd += f"--align_method pts "
+        cmd += f"--align_method fp "
         cmd += f"--frame_list_file {frame_list_file} "
         if self.seq_config["cond_select_strategy"] == "manual":
             cmd += f"--frame_indices {self._get_best_cond_id(scene_name)} "
@@ -1190,7 +1190,7 @@ class run_wonder_hoi:
     def ho3d_SAM3D_post_process(self, scene_name, **kwargs):
         self.print_header(f"Copy SAM3D results for {scene_name}")
         id = self._get_best_cond_id(scene_name)
-        src_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/{id}/"
+        src_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_fp/{id}/"
         dst_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_post_process/{id}/"
 
         if self.vis:
