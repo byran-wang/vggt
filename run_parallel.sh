@@ -92,7 +92,7 @@ for device in "${!device_sequences[@]}"; do
 
     # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
     #   --execute_list obj_process \
-    #   --process_list ho3d_align_SAM3D_mask ho3d_align_SAM3D_pts \
+    #   --process_list ho3d_align_SAM3D_mask ho3d_align_SAM3D_pts ho3d_align_SAM3D_fp \
     #   --seq_list $sequences --rebuild 
 
 
