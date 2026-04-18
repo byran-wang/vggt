@@ -839,7 +839,7 @@ def main(args):
     neus_joint_opt_dir = out_dir / "pipeline_joint_opt"
 
     # Parse per-frame log blocks from log.txt
-    frame_logs = parse_frame_logs(results_dir / "log.txt")
+    frame_logs = parse_frame_logs(results_dir / "txt.log")
 
     # Initialize Rerun
     import rerun.blueprint as rrb
