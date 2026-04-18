@@ -36,12 +36,32 @@ for device in "${!device_sequences[@]}"; do
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
       --execute_list hand_pose_postprocess \
       --process_list fit_hand_intrinsic fit_hand_trans \
-      --seq_list $sequences --rebuild            
+      --seq_list $sequences --rebuild
 
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
       --execute_list obj_process \
-      --process_list ho3d_align_SAM3D_mask ho3d_align_SAM3D_pts ho3d_SAM3D_post_process \
-      --seq_list $sequences --rebuild 
+      --process_list ho3d_obj_SAM3D_filter_2D ho3d_obj_SAM3D_filter_3D \
+      --seq_list $sequences --rebuild                   
+
+    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+      --execute_list obj_process \
+      --process_list ho3d_align_SAM3D_mask ho3d_align_SAM3D_pts ho3d_align_SAM3D_fp \
+      --seq_list $sequences --rebuild
+
+    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+      --execute_list obj_process \
+      --process_list pipeline_sam3d_align_filter pipeline_sam3d_best_id \
+      --seq_list $sequences --rebuild        
+
+    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+      --execute_list obj_process \
+      --process_list pipeline_sam3d_delete_unused \
+      --seq_list $sequences --rebuild    
+
+    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+      --execute_list obj_process \
+      --process_list ho3d_SAM3D_post_process \
+      --seq_list $sequences --rebuild        
 
 
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
