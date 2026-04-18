@@ -912,11 +912,13 @@ class run_wonder_hoi:
         os.system(cmd)
 
     def ho3d_SAM3D_aligned_fp_vis(self, scene_name, **kwargs):
+        frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_fp/frame_list_after_aligned_fp.txt"
         self.print_header(f"Visualize SAM3D FP-aligned frames in Rerun for {scene_name}")
         cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_aligned_vis.py "
         cmd += f"--dataset_dir {self.dataset_dir} "
         cmd += f"--scene_name {scene_name} "
         cmd += f"--align_method fp "
+        cmd += f"--frame_list_file {frame_list_file} "
         print(cmd)
         os.system(cmd)
 

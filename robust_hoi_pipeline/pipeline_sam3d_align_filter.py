@@ -193,8 +193,7 @@ def main(args):
     sam3d_dir = dataset_dir / args.scene_name / "SAM3D"
     aligned_dir = dataset_dir / args.scene_name / "SAM3D_aligned_pts"
 
-    # Load frame list from SAM3D_aligned_pts/frame_list_after_aligned_pts.txt
-    frame_list_file = aligned_dir / "frame_list_after_aligned_pts.txt"
+    frame_list_file = aligned_dir / "frame_list_after_aligned_fp.txt"
     if not frame_list_file.exists():
         logger.error(f"{frame_list_file} not found. Run ho3d_align_SAM3D_pts first.")
         return

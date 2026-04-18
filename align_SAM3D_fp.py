@@ -13,8 +13,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent / "third_party" / "utils_simba"))
 sys.path.insert(0, str(Path(__file__).parent / "third_party" / "FoundationPose"))
 
-from utils_simba.depth import get_depth, load_filtered_depth
+from utils_simba.depth import get_depth, load_filtered_depth, depth2xyzmap
 from utils_simba.rerun import load_mesh_as_trimesh
+from utils_simba.render import nvdiffrast_render
 from utils_simba.logger import get_logger
 from robust_hoi_pipeline.pipeline_joint_opt_debug import _save_depth_points_debug
 from robust_hoi_pipeline.pipeline_sam3d_filter_3D_vis import load_camera_pose
@@ -75,6 +76,39 @@ def _save_camera_json(path, K, o2c, scale):
         json.dump(camera_data, f, indent=2)
 
 
+def _compute_depth_chamfer(mesh, K, o2c, depth_obs, mask):
+    """Render mesh depth at the given pose and compute chamfer distance to observed depth.
+
+    Returns mean bidirectional point-to-point distance (in meters), or None on failure.
+    """
+    H, W = depth_obs.shape[:2]
+    ob_in_cvcams = torch.tensor(o2c, dtype=torch.float32, device="cuda")[None]
+    _, depth_render, _ = nvdiffrast_render(
+        K=K, H=H, W=W, ob_in_cvcams=ob_in_cvcams, mesh=mesh,
+    )
+    depth_render = depth_render[0].cpu().numpy()  # (H, W)
+
+    # Back-project both depth maps to 3D
+    valid_obs = (depth_obs > 0.01) & (mask > 0)
+    valid_render = depth_render > 0.01
+    if valid_obs.sum() < 10 or valid_render.sum() < 10:
+        return None
+
+    xyz_obs = depth2xyzmap(depth_obs, K)
+    xyz_render = depth2xyzmap(depth_render, K)
+    pts_obs = xyz_obs[valid_obs]        # (N, 3)
+    pts_render = xyz_render[valid_render]  # (M, 3)
+
+    # Chamfer: mean of nearest-neighbor distances in both directions
+    from scipy.spatial import cKDTree
+    tree_obs = cKDTree(pts_obs)
+    tree_render = cKDTree(pts_render)
+    d_obs_to_render, _ = tree_render.query(pts_obs)
+    d_render_to_obs, _ = tree_obs.query(pts_render)
+    chamfer = (d_obs_to_render.mean() + d_render_to_obs.mean()) / 2.0
+    return float(chamfer)
+
+
 def _run_fp_track(est, rgb, depth, K, current_o2c):
     """Run FoundationPose tracking from current_o2c and return refined 4x4 o2c."""
     tf_to_center = est.get_tf_to_centered_mesh()
@@ -108,6 +142,8 @@ def main(args):
     with open(frame_list_file, "r") as f:
         frame_indices = [int(line.strip()) for line in f if line.strip()]
     logger.info(f"Loaded {len(frame_indices)} frames from {frame_list_file}")
+
+    scores = {}
 
     for frame_idx in frame_indices:
         fid = f"{frame_idx:04d}"
@@ -167,13 +203,41 @@ def main(args):
             logger.warning(f"  Frame {fid}: FoundationPose tracking failed, keeping original pose")
             refined_o2c = o2c
 
+        # Evaluate: chamfer distance between rendered depth and observed depth
+        cd_before = _compute_depth_chamfer(mesh, K, o2c, depth, mask)
+        cd_after = _compute_depth_chamfer(mesh, K, refined_o2c, depth, mask)
+        logger.info(f"  Frame {fid}: chamfer before={cd_before:.4f}, after={cd_after:.4f}" if cd_before is not None and cd_after is not None
+                     else f"  Frame {fid}: chamfer computation skipped")
+
         # 5. Save camera.json in the same format as align_SAM3D_pts.py
         frame_out_dir = out_dir / fid
         frame_out_dir.mkdir(parents=True, exist_ok=True)
         _save_camera_json(str(frame_out_dir / "camera.json"), K, refined_o2c, scale)
         logger.info(f"  Frame {fid}: saved refined pose to {frame_out_dir / 'camera.json'}")
 
-        # cam = load_camera_pose(frame_out_dir / "camera.json")
+        if cd_before is not None and cd_after is not None:
+            scores[fid] = {"cd_before": cd_before, "cd_after": cd_after}
+
+    # Sort by cd_after (increasing = best first)
+    sorted_scores = dict(sorted(scores.items(), key=lambda item: item[1]["cd_after"]))
+
+    # Save scores.json
+    scores_path = out_dir / "scores.json"
+    with open(scores_path, "w") as f:
+        json.dump(sorted_scores, f, indent=2)
+    logger.info(f"Saved scores to {scores_path}")
+
+    # Save sorted frame list
+    frame_list_path = out_dir / "frame_list_after_aligned_fp.txt"
+    with open(frame_list_path, "w") as f:
+        for sid in sorted_scores:
+            f.write(f"{int(sid)}\n")
+    logger.info(f"Saved sorted frame list ({len(sorted_scores)} frames) to {frame_list_path}")
+
+    # Print ranking
+    logger.info("Ranking (best to worst):")
+    for rank, (sid, s) in enumerate(sorted_scores.items()):
+        logger.info(f"  {rank+1}. frame={sid} cd_before={s['cd_before']:.4f} cd_after={s['cd_after']:.4f}")
 
     logger.info(f"Done. Processed {len(frame_indices)} frames.")
 
