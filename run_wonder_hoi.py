@@ -817,8 +817,10 @@ class run_wonder_hoi:
         self.print_header(f"Generate object 3D model from SAM3D for {scene_name}")
         frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D/frame_list_after_ftp_filtered.txt"
         image_ids = self._get_cond_ids(frame_list_file)
-            
+
         print(f"image_ids for SAM3D generation: {image_ids}")
+
+        batch_entries = []
         for id in image_ids:
             image_path = f"{self.dataset_dir}/{scene_name}/rgb/{id}.jpg"
             depth_path = f"{self.dataset_dir}/{scene_name}/depth/{id}.png"
@@ -830,18 +832,34 @@ class run_wonder_hoi:
                 cmd = f"rm -rf {out_dir}/*"
                 print(cmd)
                 os.system(cmd)
+            if os.path.exists(f"{out_dir}/scene.glb"):
+                print(f"3D model for {out_dir}/scene.glb already exists.")
+                continue
+            batch_entries.append({
+                "image_path": image_path,
+                "mask_path": mask_path,
+                "depth_file": depth_path,
+                "meta_file": meta_path,
+                "out_dir": out_dir,
+            })
 
-            cmd = f"cd {home_dir}/Documents/project/sam-3d-objects && "
-            cmd += f"LIDRA_SKIP_INIT=1 {self.conda_dir}/envs/sam3d-objects/bin/python demo.py "
-            cmd += f"--image-path {image_path} "
-            cmd += f"--mask-path {mask_path} "
-            cmd += f"--depth-file {depth_path} "
-            cmd += f"--meta-file {meta_path} "
-            cmd += f"--out-dir {out_dir} "
-            if self.vis:
-                cmd += f"--vis "
-            print(cmd)
-            os.system(cmd)
+        if not batch_entries:
+            print("All frames already have scene.glb; skipping SAM3D generation.")
+            return
+
+        batch_file = os.path.join(os.path.dirname(frame_list_file), "sam3d_gen_batch.json")
+        with open(batch_file, "w") as f:
+            json.dump(batch_entries, f, indent=2)
+        print(f"Wrote {len(batch_entries)} entries to {batch_file}")
+
+        cmd = f"cd {home_dir}/Documents/project/sam-3d-objects && "
+        cmd += f"LIDRA_SKIP_INIT=1 {self.conda_dir}/envs/sam3d-objects/bin/python demo.py "
+        cmd += f"--batch-file {batch_file} "
+        if self.vis:
+            cmd += f"--vis "
+        print(cmd)
+        os.system(cmd)
+            
 
     def ho3d_obj_SAM3D_filter_2D(self, scene_name, **kwargs):
         self.print_header(f"Filter frames by mask size and geometry quality for SAM3D for {scene_name}")
