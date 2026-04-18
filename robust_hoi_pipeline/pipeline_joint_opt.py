@@ -1466,6 +1466,11 @@ def _reset_and_track_foundation_pose(image_info_work, frame_idx, obj_mesh, debug
     rgb = images[frame_idx] if images is not None and frame_idx < len(images) else None
     depth_priors = image_info_work.get("depth_priors")
     depth = depth_priors[frame_idx] if depth_priors is not None and frame_idx < len(depth_priors) else None
+    if depth is not None:
+        masks = image_info_work.get("image_masks")
+        obj_mask = masks[frame_idx] if masks is not None and frame_idx < len(masks) else None
+        if obj_mask is not None:
+            depth = np.where(obj_mask > 0, depth, 0).astype(depth.dtype)
     intrinsics_arr = image_info_work.get("intrinsics")
     K = intrinsics_arr[frame_idx] if intrinsics_arr is not None and intrinsics_arr.ndim == 3 else intrinsics_arr
     K = K.astype(np.float64) if K is not None else None
