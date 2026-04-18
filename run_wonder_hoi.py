@@ -978,11 +978,11 @@ class run_wonder_hoi:
 
     def pipeline_sam3d_align_filter_vis(self, scene_name, **kwargs):
         self.print_header(f"Visualize SAM3D align-filter coverage frames in Rerun for {scene_name}")
-        frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D_align_filter/frame_list_faces_coverage.txt"
+        frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D_align_filter/frame_list_align_filter.txt"
         cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_aligned_vis.py "
         cmd += f"--dataset_dir {self.dataset_dir} "
         cmd += f"--scene_name {scene_name} "
-        cmd += f"--align_method pts "
+        cmd += f"--align_method fp "
         cmd += f"--frame_list_file {frame_list_file} "
         print(cmd)
         os.system(cmd)
