@@ -852,7 +852,7 @@ class run_wonder_hoi:
             json.dump(batch_entries, f, indent=2)
         print(f"Wrote {len(batch_entries)} entries to {batch_file}")
 
-        cmd = f"cd {home_dir}/Documents/project/sam-3d-objects && "
+        cmd = f"cd {vggt_code_dir}/third_party/sam-3d-objects && "
         cmd += f"LIDRA_SKIP_INIT=1 {self.conda_dir}/envs/sam3d-objects/bin/python demo.py "
         cmd += f"--batch-file {batch_file} "
         if self.vis:

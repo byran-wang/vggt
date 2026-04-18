@@ -28,7 +28,7 @@ python run_wonder_hoi.py --execute_list data_convert --process_list ho3d_get_obj
 ####Note: following steps run on local pc with 32 GB RAM.
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_filter_2D --seq_list $seq_list
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_filter_2D_vis --seq_list $seq_list
-python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_gen --seq_list $seq_list --vis
+python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_gen --seq_list $seq_list #--vis
 
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_filter_3D --seq_list $seq_list
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_filter_3D_vis --seq_list $seq_list
