@@ -1778,13 +1778,21 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             refiner = _foundation_pose_cache.get("refiner")
             if refiner is not None:
                 refiner.cfg['crop_ratio'] = fp_crop_ratio
+            if sam3d_mesh is not None:
+                fp_pose_sam3d, fp_success_sam3d = _reset_and_track_foundation_pose(
+                    image_info_work, next_frame_idx, sam3d_mesh
+                )
+            else:
+                logger.warning(f"sam3d_mesh is None at frame {next_frame_idx}; skipping SAM3D FoundationPose track")
+                fp_pose_sam3d, fp_success_sam3d = None, False
 
-            fp_pose_sam3d, fp_success_sam3d = _reset_and_track_foundation_pose(
-                image_info_work, next_frame_idx, sam3d_mesh
-            )
-            fp_pose_neus, fp_success_neus = _reset_and_track_foundation_pose(
-                image_info_work, next_frame_idx, neus_mesh_trimesh
-            )
+            if neus_mesh_trimesh is not None:
+                fp_pose_neus, fp_success_neus = _reset_and_track_foundation_pose(
+                    image_info_work, next_frame_idx, neus_mesh_trimesh
+                )
+            else:
+                logger.warning(f"neus_mesh_trimesh is None at frame {next_frame_idx}; skipping NeuS FoundationPose track")
+                fp_pose_neus, fp_success_neus = None, False
             iter_pose, iter_success, iter_score = check_which_estimate_is_better_and_update(
                 image_info_work,
                 next_frame_idx,
