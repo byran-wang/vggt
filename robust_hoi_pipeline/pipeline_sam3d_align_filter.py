@@ -191,7 +191,7 @@ def main(args):
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     sam3d_dir = dataset_dir / args.scene_name / "SAM3D"
-    aligned_dir = dataset_dir / args.scene_name / "SAM3D_aligned_pts"
+    aligned_dir = dataset_dir / args.scene_name / "SAM3D_aligned_fp"
 
     frame_list_file = aligned_dir / "frame_list_after_aligned_fp.txt"
     if not frame_list_file.exists():

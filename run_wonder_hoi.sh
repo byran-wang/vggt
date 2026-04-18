@@ -41,6 +41,16 @@ python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_al
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_SAM3D_fp --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_aligned_fp_vis --seq_list $seq_list
 
+# Filter aligned frames by depth 3-axis coverage
+python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_align_filter --seq_list $seq_list --rebuild
+python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_align_filter_vis --seq_list $seq_list
+python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_delete_unused --seq_list $seq_list
+python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_best_id --seq_list $seq_list
+python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_best_id_vis --seq_list $seq_list
+python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_best_id_sum --seq_list $seq_list
+
+python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_post_process  --seq_list $seq_list --rebuild
+
 ####Note: following steps can be run on server, since they do not need the monitor. 
 # Remember to check the depth *.ply files in ply_fs by Meshlab after get_depth_from_foundation_stereo.
 python run_wonder_hoi.py --execute_list data_convert --process_list get_depth_from_foundation_stereo soft_link_depth --seq_list $seq_list --rebuild # only for zed dataset
@@ -52,16 +62,10 @@ python run_wonder_hoi.py --execute_list hand_pose_postprocess --process_list fit
 # python run_wonder_hoi.py --execute_list data_convert --process_list hot3d_sync_hands_to_local --seq_list $seq_list --rebuild
 
 
-# Filter aligned frames by depth 3-axis coverage
-python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_align_filter --seq_list $seq_list --rebuild
-python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_align_filter_vis --seq_list $seq_list
-python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_delete_unused --seq_list $seq_list
-python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_best_id --seq_list $seq_list
-python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_best_id_vis --seq_list $seq_list
-python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_best_id_sum --seq_list $seq_list
+
 
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_by_foundation_pose --seq_list $seq_list --rebuild #--vis
-python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_post_process  --seq_list $seq_list --rebuild
+
 # python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_keyframe_optimization --seq_list $seq_list --rebuild #--vis
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_data_preprocess hoi_pipeline_get_corres --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_eval_corres --seq_list $seq_list --rebuild
