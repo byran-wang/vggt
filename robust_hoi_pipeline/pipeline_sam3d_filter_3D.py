@@ -181,6 +181,11 @@ def main(args):
     # Filter 3: keep frames closest to optical center
     selected = _filter_by_projection_distance(frame_indices, sam3d_dir, args.max_frame)
 
+    # Ensure condition frame is always included
+    if args.cond_idx is not None and args.cond_idx not in selected:
+        logger.info(f"Condition frame {args.cond_idx:04d} not in selected list, prepending it")
+        selected = [args.cond_idx] + selected
+
     out_path = sam3d_dir / "frame_list_after_3d_filtered.txt"
     with open(out_path, "w") as f:
         for idx in selected:
@@ -193,6 +198,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_dir", type=str, required=True)
     parser.add_argument("--scene_name", type=str, required=True)
     parser.add_argument("--max_frame", type=int, default=20, help="Max frames to keep after 3D filtering")
+    parser.add_argument("--cond_idx", type=int, default=None, help="Condition frame index to always include in the selected list")
 
     args = parser.parse_args()
     main(args)

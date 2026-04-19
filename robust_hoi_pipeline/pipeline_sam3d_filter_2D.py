@@ -327,6 +327,11 @@ def main(args):
     # Keep only frames that pass all filters, preserving feature-point order
     filtered = [i for i in ftp_filtered_ordered if i in mask_filtered_set]
 
+    # Ensure condition frame is always included
+    if args.cond_idx not in filtered:
+        logger.info(f"Condition frame {args.cond_idx:04d} not in filtered list, prepending it")
+        filtered = [args.cond_idx] + filtered
+
     _save_frame_list(out_dir / "frame_list_filtered.txt", filtered)
     logger.info(f"Saved final filtered frame list ({len(filtered)} frames)")
 

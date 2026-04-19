@@ -889,6 +889,7 @@ class run_wonder_hoi:
         cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_filter_3D.py "
         cmd += f"--dataset_dir {self.dataset_dir} "
         cmd += f"--scene_name {scene_name} "
+        cmd += f"--cond_idx {self.seq_config.get('cond_idx', 0)} "
         print(cmd)
         os.system(cmd)
 
@@ -1000,6 +1001,7 @@ class run_wonder_hoi:
         cmd += f"--dataset_dir {self.dataset_dir} "
         cmd += f"--scene_name {scene_name} "
         cmd += f"--out_dir {out_dir} "
+        cmd += f"--cond_idx {self.seq_config.get('cond_idx', 0)} "
         print(cmd)
         os.system(cmd)
 
@@ -1066,7 +1068,8 @@ class run_wonder_hoi:
     def ho3d_align_SAM3D_mask(self, scene_name, **kwargs):
         self.print_header(f"Align SAM3D model for {scene_name}")
         frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D/frame_list_after_3d_filtered.txt"
-        image_ids = self._get_cond_ids(frame_list_file)
+        with open(frame_list_file, "r") as f:
+            image_ids = [f"{int(line.strip()):04d}" for line in f if line.strip()]
 
         print(f"image_ids for SAM3D mask alignment: {image_ids}")
         for id in image_ids:
@@ -1115,7 +1118,8 @@ class run_wonder_hoi:
     def ho3d_align_SAM3D_pts(self, scene_name, **kwargs):
         self.print_header(f"Align SAM3D model using 3D points for {scene_name}")
         frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D/frame_list_after_3d_filtered.txt"
-        image_ids = self._get_cond_ids(frame_list_file)
+        with open(frame_list_file, "r") as f:
+            image_ids = [f"{int(line.strip()):04d}" for line in f if line.strip()]
 
         print(f"image_ids for SAM3D pts alignment: {image_ids}")
         scores = {}
@@ -1149,27 +1153,26 @@ class run_wonder_hoi:
                 scores[id] = float("inf")
                 print(f"  id={id} alignment.json not found, score=inf")
 
-        if self.seq_config["cond_select_strategy"] == "auto":
-            # Sort scores in increasing order
-            sorted_scores = dict(sorted(scores.items(), key=lambda item: item[1]))
+        # Sort scores in increasing order
+        sorted_scores = dict(sorted(scores.items(), key=lambda item: item[1]))
 
-            # Save sorted scores
-            scores_path = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/scores.json"
-            with open(scores_path, "w") as f:
-                json.dump(sorted_scores, f, indent=2)
-            print(f"Saved scores to {scores_path}")
+        # Save sorted scores
+        scores_path = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/scores.json"
+        with open(scores_path, "w") as f:
+            json.dump(sorted_scores, f, indent=2)
+        print(f"Saved scores to {scores_path}")
 
-            # Save sorted frame list
-            frame_list_path = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/frame_list_after_aligned_pts.txt"
-            with open(frame_list_path, "w") as f:
-                for sid in sorted_scores:
-                    f.write(f"{sid}\n")
-            print(f"Saved sorted frame list to {frame_list_path}")
+        # Save sorted frame list
+        frame_list_path = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_pts/frame_list_after_aligned_pts.txt"
+        with open(frame_list_path, "w") as f:
+            for sid in sorted_scores:
+                f.write(f"{sid}\n")
+        print(f"Saved sorted frame list to {frame_list_path}")
 
-            # Print sorted ranking
-            print("Ranking (best to worst):")
-            for rank, (sid, err) in enumerate(sorted_scores.items()):
-                print(f"  {rank+1}. id={sid} mean_error={err:.4f}")
+        # Print sorted ranking
+        print("Ranking (best to worst):")
+        for rank, (sid, err) in enumerate(sorted_scores.items()):
+            print(f"  {rank+1}. id={sid} mean_error={err:.4f}")
 
     def ho3d_align_SAM3D_fp(self, scene_name, **kwargs):
         self.print_header(f"Refine SAM3D alignment with FoundationPose for {scene_name}")

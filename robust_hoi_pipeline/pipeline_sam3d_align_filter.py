@@ -269,6 +269,11 @@ def main(args):
             f.write(f"{frame_idx:04d} {num_covered}/6 {','.join(names)}\n")
     logger.info(f"Saved faces coverage info ({len(coverage_info)} frames) to {coverage_path}")
 
+    # Ensure condition frame is always included
+    if args.cond_idx is not None and args.cond_idx not in filtered:
+        logger.info(f"Condition frame {args.cond_idx:04d} not in filtered list, prepending it")
+        filtered = [args.cond_idx] + filtered
+
     # Save filtered frame list
     out_path = out_dir / "frame_list_align_filter.txt"
     with open(out_path, "w") as f:
@@ -287,6 +292,8 @@ if __name__ == "__main__":
                         help="Max distance from mesh surface to keep a depth point")
     parser.add_argument("--face_ratio", type=float, default=0.2,
                         help="Min fraction of points near a bbox face to consider it covered")
+    parser.add_argument("--cond_idx", type=int, default=None,
+                        help="Condition frame index to always include in the filtered list")
 
 
     args = parser.parse_args()
