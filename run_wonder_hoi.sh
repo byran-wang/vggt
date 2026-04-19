@@ -31,19 +31,14 @@ python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_filter_3D --seq_list $seq_list #--vis
 
 # python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_post_opt_GS --seq_list $seq_list --rebuild
-python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_SAM3D_mask --seq_list $seq_list
-python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_aligned_mask_vis --seq_list $seq_list
-python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_SAM3D_pts --seq_list $seq_list
-python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_aligned_pts_vis --seq_list $seq_list
-python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_SAM3D_fp --seq_list $seq_list --rebuild
-python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_aligned_fp_vis --seq_list $seq_list
+python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_SAM3D_mask --seq_list $seq_list #--vis
+python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_SAM3D_pts --seq_list $seq_list #--vis
+python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_align_SAM3D_fp --seq_list $seq_list --rebuild  #--vis
 
 # Filter aligned frames by depth 3-axis coverage
-python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_align_filter --seq_list $seq_list --rebuild
-python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_align_filter_vis --seq_list $seq_list
+python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_align_filter --seq_list $seq_list --rebuild  #--vis
 python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_delete_unused --seq_list $seq_list
-python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_best_id --seq_list $seq_list
-python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_best_id_vis --seq_list $seq_list
+python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_best_id --seq_list $seq_list  #--vis
 python run_wonder_hoi.py --execute_list obj_process --process_list pipeline_sam3d_best_id_sum --seq_list $seq_list
 
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_SAM3D_post_process  --seq_list $seq_list --rebuild

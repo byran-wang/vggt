@@ -957,6 +957,10 @@ class run_wonder_hoi:
         os.system(cmd)
 
     def pipeline_sam3d_best_id(self, scene_name, **kwargs):
+        if self.vis:
+            self.pipeline_sam3d_best_id_vis(scene_name, **kwargs)
+            return
+                
         self.print_header(f"Find best id from filtered frames for {scene_name}")
         scene_dir = f"{self.dataset_dir}/{scene_name}"
         cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_best_id.py "
@@ -1006,6 +1010,10 @@ class run_wonder_hoi:
     def pipeline_sam3d_align_filter(self, scene_name, **kwargs):
         out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_align_filter/"
         self.print_header(f"Filter SAM3D aligned frames by depth coverage for {scene_name}")
+
+        if self.vis:
+            self.pipeline_sam3d_align_filter_vis(scene_name, **kwargs)
+            return
 
         if self.rebuild:
             cmd = f"rm -rf {out_dir}/*"
@@ -1082,6 +1090,11 @@ class run_wonder_hoi:
 
     def ho3d_align_SAM3D_mask(self, scene_name, **kwargs):
         self.print_header(f"Align SAM3D model for {scene_name}")
+
+        if self.vis:
+            self.ho3d_SAM3D_aligned_mask_vis(scene_name, **kwargs)
+            return
+
         frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D/frame_list_after_3d_filtered.txt"
         with open(frame_list_file, "r") as f:
             image_ids = [f"{int(line.strip()):04d}" for line in f if line.strip()]
@@ -1132,6 +1145,11 @@ class run_wonder_hoi:
 
     def ho3d_align_SAM3D_pts(self, scene_name, **kwargs):
         self.print_header(f"Align SAM3D model using 3D points for {scene_name}")
+
+        if self.vis:
+            self.ho3d_SAM3D_aligned_pts_vis(scene_name, **kwargs)
+            return
+                
         frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D/frame_list_after_3d_filtered.txt"
         with open(frame_list_file, "r") as f:
             image_ids = [f"{int(line.strip()):04d}" for line in f if line.strip()]
@@ -1191,6 +1209,11 @@ class run_wonder_hoi:
 
     def ho3d_align_SAM3D_fp(self, scene_name, **kwargs):
         self.print_header(f"Refine SAM3D alignment with FoundationPose for {scene_name}")
+
+        if self.vis:
+            self.ho3d_SAM3D_aligned_fp_vis(scene_name, **kwargs)
+            return
+
         out_dir = f"{self.dataset_dir}/{scene_name}/SAM3D_aligned_fp/"
 
         if self.rebuild:
