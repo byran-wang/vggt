@@ -40,7 +40,7 @@ for device in "${!device_sequences[@]}"; do
 
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
       --execute_list obj_process \
-      --process_list ho3d_obj_SAM3D_filter_2D ho3d_obj_SAM3D_filter_3D \
+      --process_list ho3d_obj_SAM3D_filter_3D \
       --seq_list $sequences --rebuild                   
 
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
