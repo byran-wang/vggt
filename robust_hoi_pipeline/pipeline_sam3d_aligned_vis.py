@@ -10,7 +10,7 @@ sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 
 from utils_simba.logger import get_logger
-from pipeline_sam3d_filter_3D_vis import init_rerun, load_camera_pose, log_mesh, log_image, log_depth_points, render_mesh_contour
+from pipeline_sam3d_filter_vis import init_rerun, load_camera_pose, log_mesh, log_image, log_depth_points, render_mesh_contour
 
 logger = get_logger(__name__)
 

@@ -18,7 +18,7 @@ from utils_simba.rerun import load_mesh_as_trimesh
 from utils_simba.render import nvdiffrast_render
 from utils_simba.logger import get_logger
 from robust_hoi_pipeline.pipeline_joint_opt_debug import _save_depth_points_debug
-from robust_hoi_pipeline.pipeline_sam3d_filter_3D_vis import load_camera_pose
+from robust_hoi_pipeline.pipeline_sam3d_filter_vis import load_camera_pose
 
 from estimater import FoundationPose, ScorePredictor, PoseRefinePredictor, set_logging_format, set_seed
 import nvdiffrast.torch as dr

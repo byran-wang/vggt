@@ -863,6 +863,11 @@ class run_wonder_hoi:
 
     def ho3d_obj_SAM3D_filter_2D(self, scene_name, **kwargs):
         self.print_header(f"Filter frames by mask size and geometry quality for SAM3D for {scene_name}")
+
+        if self.vis:
+            self.ho3d_obj_SAM3D_filter_2D_vis(scene_name, **kwargs)
+            return        
+        
         cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_filter_2D.py "
         cmd += f"--dataset_dir {self.dataset_dir} "
         cmd += f"--scene_name {scene_name} "
@@ -886,6 +891,11 @@ class run_wonder_hoi:
 
     def ho3d_obj_SAM3D_filter_3D(self, scene_name, **kwargs):
         self.print_header(f"Filter frames by 3D optical center distance for SAM3D for {scene_name}")
+
+        if self.vis:
+            self.ho3d_obj_SAM3D_filter_3D_vis(scene_name, **kwargs)
+            return
+
         cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_filter_3D.py "
         cmd += f"--dataset_dir {self.dataset_dir} "
         cmd += f"--scene_name {scene_name} "
@@ -893,18 +903,23 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
+
+
     def ho3d_obj_SAM3D_filter_3D_vis(self, scene_name, **kwargs):
         self.print_header(f"Visualize 3D-filtered SAM3D frames in Rerun for {scene_name}")
-        cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_filter_3D_vis.py "
+        
+        frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D/frame_list_after_3d_filtered.txt"
+        cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_filter_vis.py "
         cmd += f"--dataset_dir {self.dataset_dir} "
         cmd += f"--scene_name {scene_name} "
+        cmd += f"--frame_list_file {frame_list_file} "
         print(cmd)
         os.system(cmd)
 
     def ho3d_obj_SAM3D_filter_2D_vis(self, scene_name, **kwargs):
         self.print_header(f"Visualize 2D-filtered (ftp) SAM3D frames in Rerun for {scene_name}")
         frame_list_file = f"{self.dataset_dir}/{scene_name}/SAM3D/frame_list_after_ftp_filtered.txt"
-        cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_filter_3D_vis.py "
+        cmd = f"{self.conda_dir}/envs/vggsfm_tmp/bin/python {vggt_code_dir}/robust_hoi_pipeline/pipeline_sam3d_filter_vis.py "
         cmd += f"--dataset_dir {self.dataset_dir} "
         cmd += f"--scene_name {scene_name} "
         cmd += f"--frame_list_file {frame_list_file} "

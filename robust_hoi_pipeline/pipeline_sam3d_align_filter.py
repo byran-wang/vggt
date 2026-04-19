@@ -22,7 +22,7 @@ from utils_simba.visibility_test import (
     mesh_to_voxel_grid, voxel_centers, get_camera_pose,
 )
 from pipeline_sam3d_filter_2D import _load_intrinsics
-from pipeline_sam3d_filter_3D_vis import load_camera_pose
+from pipeline_sam3d_filter_vis import load_camera_pose
 
 logger = get_logger(__name__)
 

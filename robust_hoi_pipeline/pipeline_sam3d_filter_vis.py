@@ -67,39 +67,30 @@ def log_mesh(frame_dir, entity="world/sam3d_mesh", static=False):
     return mesh
 
 
-def render_mesh_contour(mesh, K, o2c, H, W, color=(0, 255, 0), thickness=2):
-    """Render a mesh silhouette contour onto an image.
-
-    Projects mesh faces onto the image plane, rasterizes a binary mask,
-    then extracts contours.
+def rasterize_mesh_mask(mesh, K, o2c, H, W):
+    """Rasterize a mesh silhouette to a binary mask.
 
     Args:
         mesh: trimesh object in object space.
         K: (3, 3) intrinsic matrix.
-        o2c: (4, 4) object-to-camera transform.
+        o2c: (4, 4) object-to-camera transform (rigid, matching mesh scale).
         H, W: image dimensions.
-        color: BGR contour color (default green).
-        thickness: contour line thickness.
 
     Returns:
-        contour_img: (H, W, 3) uint8 image with contours drawn on black background,
-                     or None if mesh has no visible faces.
+        mask: (H, W) uint8 mask (0 or 255), or None if no faces visible.
     """
     verts = np.array(mesh.vertices, dtype=np.float64)
     faces = np.array(mesh.faces, dtype=np.int32)
 
-    # Transform vertices to camera space
     R = o2c[:3, :3]
     t = o2c[:3, 3]
-    verts_cam = (R @ verts.T).T + t  # (V, 3)
+    verts_cam = (R @ verts.T).T + t
 
-    # Project to 2D
     z = verts_cam[:, 2]
     px = (K[0, 0] * verts_cam[:, 0] / z + K[0, 2]).astype(np.float32)
     py = (K[1, 1] * verts_cam[:, 1] / z + K[1, 2]).astype(np.float32)
-    pts_2d = np.stack([px, py], axis=-1)  # (V, 2)
+    pts_2d = np.stack([px, py], axis=-1)
 
-    # Rasterize: fill visible triangles (front-facing, z > 0)
     mask = np.zeros((H, W), dtype=np.uint8)
     for f in faces:
         tri_z = z[f]
@@ -110,10 +101,25 @@ def render_mesh_contour(mesh, K, o2c, H, W, color=(0, 255, 0), thickness=2):
 
     if mask.max() == 0:
         return None
+    return mask
 
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+def draw_mask_contour(img, mask, color, thickness=2):
+    """Draw the contour of a binary mask onto img in-place (RGB color)."""
+    if mask is None:
+        return
+    binary = (mask > 0).astype(np.uint8)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(img, contours, -1, color, thickness)
+
+
+def render_mesh_contour(mesh, K, o2c, H, W, color=(0, 255, 0), thickness=2):
+    """Render mesh silhouette contour onto a black background. Returns (H, W, 3) uint8 or None."""
+    mask = rasterize_mesh_mask(mesh, K, o2c, H, W)
+    if mask is None:
+        return None
     contour_img = np.zeros((H, W, 3), dtype=np.uint8)
-    cv2.drawContours(contour_img, contours, -1, color, thickness)
+    draw_mask_contour(contour_img, mask, color, thickness)
     return contour_img
 
 
@@ -126,6 +132,50 @@ def log_image(rgb_dir, fid, frame_idx, K, c2o, jpeg_quality=85):
         return False
     from PIL import Image
     img = np.array(Image.open(img_path).convert("RGB"))
+    img = stamp_frame_text(img, f"Frame {frame_idx:04d}")
+    log_camera_frame(
+        "world/camera", K, c2o, img,
+        image_plane_distance=10.0,
+        jpeg_quality=jpeg_quality,
+        static=False,
+    )
+    return True
+
+def log_image_with_contours(rgb_dir, fid, frame_idx, K, c2o, mask_obj_dir=None, mask_hand_dir=None,
+              mesh=None, jpeg_quality=85):
+    """Load camera image, overlay mask/mesh contours, and log. Returns True if image was found.
+
+    Overlays (RGB colors):
+        - object mask contour:  green   (0, 255, 0)
+        - hand mask contour:    green   (0, 255, 0)
+        - mesh silhouette:      blue    (0, 0, 255)
+    """
+    img_path = rgb_dir / f"{fid}.jpg"
+    if not img_path.exists():
+        img_path = rgb_dir / f"{fid}.png"
+    if not img_path.exists():
+        return False
+    from PIL import Image
+    img = np.array(Image.open(img_path).convert("RGB"))
+    H, W = img.shape[:2]
+
+    if mask_obj_dir is not None:
+        mask_obj_path = mask_obj_dir / f"{fid}.png"
+        if mask_obj_path.exists():
+            mask_obj = cv2.imread(str(mask_obj_path), cv2.IMREAD_GRAYSCALE)
+            draw_mask_contour(img, mask_obj, color=(0, 255, 0))
+
+    if mask_hand_dir is not None:
+        mask_hand_path = mask_hand_dir / f"{fid}.png"
+        if mask_hand_path.exists():
+            mask_hand = cv2.imread(str(mask_hand_path), cv2.IMREAD_GRAYSCALE)
+            draw_mask_contour(img, mask_hand, color=(0, 255, 0))
+
+    if mesh is not None:
+        o2c_rigid = np.linalg.inv(c2o)
+        mesh_mask = rasterize_mesh_mask(mesh, K, o2c_rigid, H, W)
+        draw_mask_contour(img, mesh_mask, color=(0, 0, 255))
+
     img = stamp_frame_text(img, f"Frame {frame_idx:04d}")
     log_camera_frame(
         "world/camera", K, c2o, img,
@@ -170,8 +220,7 @@ def main(args):
     sam3d_dir = Path(f"{args.dataset_dir}/{args.scene_name}/SAM3D")
 
     # Load frame list — default is after 3D filter, but can be overridden
-    frame_list_file = (Path(args.frame_list_file) if args.frame_list_file
-                       else sam3d_dir / "frame_list_after_3d_filtered.txt")
+    frame_list_file = Path(args.frame_list_file)
     if not frame_list_file.exists():
         print(f"Error: {frame_list_file} not found.")
         return
@@ -179,9 +228,11 @@ def main(args):
         frame_indices = [int(line.strip()) for line in f if line.strip()]
     print(f"Loaded {len(frame_indices)} frames from {frame_list_file}")
 
-    init_rerun("sam3d_filter_3D_vis")
+    init_rerun(f"sam3d_filter_{args.scene_name}")
 
     rgb_dir = Path(f"{args.dataset_dir}/{args.scene_name}/rgb")
+    mask_obj_dir = Path(f"{args.dataset_dir}/{args.scene_name}/mask_object")
+    mask_hand_dir = Path(f"{args.dataset_dir}/{args.scene_name}/mask_hand")
 
     for seq_i, frame_idx in enumerate(frame_indices):
         fid = f"{frame_idx:04d}"
@@ -196,7 +247,13 @@ def main(args):
         rr.set_time_sequence("frame", seq_i)
 
         mesh = log_mesh(frame_dir)
-        has_img = log_image(rgb_dir, fid, frame_idx, K, c2o, args.jpeg_quality)
+        has_img = log_image_with_contours(
+            rgb_dir, fid, frame_idx, K, c2o,
+            mask_obj_dir=mask_obj_dir,
+            mask_hand_dir=mask_hand_dir,
+            mesh=mesh,
+            jpeg_quality=args.jpeg_quality,
+        )
         has_pts = log_depth_points(args.dataset_dir, args.scene_name, fid, c2o, scale)
 
         print(f"  Frame {fid}: mesh={'yes' if mesh else 'no'}, image={'yes' if has_img else 'no'}, depth_pts={'yes' if has_pts else 'no'}")
