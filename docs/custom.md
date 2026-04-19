@@ -1,4 +1,7 @@
-所有代码都在vggt工程
+
+# create a new config
+- reference confs/seqence_config_template.py to create a new file confs/seqence_config_{your_name}.py. 
+- and add a new dataset data_{your_name} in sequence_config.py
 
 #### Note: following steps run on local pc, since they need the monitor.
 
@@ -6,7 +9,6 @@
 # record ZED raw data
 python run_wonder_hoi.py --execute_list data_read --process_list ZED_read_data  --seq_list $seq_list --rebuild
 
-# create a new file seqence_config_xxx.py and add a new dataset data_xxx in sequence_config.py
 
 # in the terminal, export new dataset data_xxx by 
 export DATASET=data_xxx
@@ -32,12 +34,12 @@ python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_filter_3D --seq_list $seq_list
 ```
 
-#### Note: following steps can be run on server, after rsync the local dataset to server1:/data1/shibo/Documents/dataset/ZED_wenxuan
-
+#### Note: following steps can be run on server, after rsync the local dataset to server
 ```bash
-export DATASET=data_xxx
+export DATASET=data_{your_name}
 cd /data1/shibo/Documents/project/vggt_in_the_wild
 run_parallel_zed.sh # execute in tmux
-```
 
 # the final result can be find in output/metrics_summary
+
+```
