@@ -1247,10 +1247,12 @@ class run_wonder_hoi:
             print(cmd)
             os.system(cmd)
 
+        sam3d_dir = f"{self.dataset_dir}/{scene_name}/SAM3D/{id}/"
         cmd = f"cd {home_dir}/Documents/project/vggt && "
         cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python SAM3D_post_process.py "
         cmd += f"--src-dir {src_dir} "
-        cmd += f"--dst-dir {dst_dir} "       
+        cmd += f"--sam3d-dir {sam3d_dir} "
+        cmd += f"--dst-dir {dst_dir} "
         print(cmd)
         os.system(cmd)
 
