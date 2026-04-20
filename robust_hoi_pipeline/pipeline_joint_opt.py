@@ -1452,10 +1452,43 @@ def _estimate_pose_from_nearest_registered(image_info_work, frame_idx):
     return image_info_work["extrinsics"][nearest_idx].astype(np.float64).copy(), nearest_idx
 
 
-def _reset_and_track_foundation_pose(image_info_work, frame_idx, obj_mesh, debug_dir=None):
+def _select_fp_init_pose(image_info_work, frame_idx, pnp_pose, pnp_success):
+    """Pick the better of PnP vs nearest-registered pose for initializing FoundationPose.
+
+    Scores each candidate by mean depth-NN distance (in object space) against the
+    nearest-registered frame's depth points. Falls back gracefully if either
+    candidate or the reference point cloud is unavailable.
+
+    Returns the chosen 4x4 o2c pose, or None if neither candidate exists.
+    """
+    nearby_pose, nearby_idx = _estimate_pose_from_nearest_registered(image_info_work, frame_idx)
+    pnp_pose_arr = np.asarray(pnp_pose, dtype=np.float64) if (pnp_success and pnp_pose is not None) else None
+
+    ref_pts_obj = None
+    if nearby_idx is not None:
+        ref_pts_obj = _build_depth_points_obj_for_pose(image_info_work, nearby_idx, nearby_pose)
+
+    def _score(pose):
+        if pose is None or ref_pts_obj is None:
+            return np.inf
+        curr = _build_depth_points_obj_for_pose(image_info_work, frame_idx, pose)
+        return _mean_nn_distance(curr, ref_pts_obj)
+
+    pnp_score = _score(pnp_pose_arr)
+    nearby_score = _score(nearby_pose)
+    logger.info(f"[register] Frame {frame_idx} init scoring: pnp={pnp_score:.6f}, nearby={nearby_score:.6f}")
+
+    if pnp_pose_arr is not None and nearby_pose is not None:
+        return pnp_pose_arr if pnp_score <= nearby_score else nearby_pose
+    return pnp_pose_arr if pnp_pose_arr is not None else nearby_pose
+
+
+def _reset_and_track_foundation_pose(image_info_work, frame_idx, obj_mesh, debug_dir=None, init_pose=None):
     """Estimate frame pose via nearest-pose reset + FoundationPose tracking.
 
     Does not update ``image_info_work["extrinsics"][frame_idx]``.
+    If ``init_pose`` (4x4 o2c) is provided, it is used as the initial pose
+    instead of the nearest-registered fallback.
     Returns (estimated_o2c_pose, success).
     """
     if obj_mesh is None:
@@ -1474,12 +1507,16 @@ def _reset_and_track_foundation_pose(image_info_work, frame_idx, obj_mesh, debug
     intrinsics_arr = image_info_work.get("intrinsics")
     K = intrinsics_arr[frame_idx] if intrinsics_arr is not None and intrinsics_arr.ndim == 3 else intrinsics_arr
     K = K.astype(np.float64) if K is not None else None
-    current_o2c, nearest_idx = _estimate_pose_from_nearest_registered(image_info_work, frame_idx)
-    if current_o2c is None:
-        current_o2c = image_info_work["extrinsics"][frame_idx].astype(np.float64)
-        logger.warning(f"[FoundationPose] Frame {frame_idx}: no nearest registered frame, using current pose as init")
+    if init_pose is not None:
+        current_o2c = np.asarray(init_pose, dtype=np.float64)
+        logger.debug(f"[FoundationPose] Frame {frame_idx}: using provided init_pose")
     else:
-        logger.debug(f"[FoundationPose] Frame {frame_idx}: using nearest registered frame {nearest_idx} pose as init")
+        current_o2c, nearest_idx = _estimate_pose_from_nearest_registered(image_info_work, frame_idx)
+        if current_o2c is None:
+            current_o2c = image_info_work["extrinsics"][frame_idx].astype(np.float64)
+            logger.warning(f"[FoundationPose] Frame {frame_idx}: no nearest registered frame, using current pose as init")
+        else:
+            logger.debug(f"[FoundationPose] Frame {frame_idx}: using nearest registered frame {nearest_idx} pose as init")
     # _save_depth_points_debug(debug_dir, frame_idx, depth, K, rgb=rgb, o2c=current_o2c)
     fp_pose = _run_foundation_pose_track(
         obj_mesh, rgb, depth, None, K, current_o2c,
@@ -1577,20 +1614,20 @@ def check_which_estimate_is_better_and_update(
 
     if not candidates:
         logger.warning(f"[pose_select] Frame {frame_idx}: no valid pose estimate candidates")
-        return None, False, np.inf
+        return None, False, np.inf, None
 
     nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
     if nearest_idx is None:
         src, pose = candidates[0]
         logger.warning(f"[pose_select] Frame {frame_idx}: no nearby registered frame, choose {src}")
-        return pose, True, np.inf
+        return pose, True, np.inf, None
 
     nearby_pose = image_info_work["extrinsics"][nearest_idx].astype(np.float64)
     nearby_pts_obj = _build_depth_points_obj_for_pose(image_info_work, nearest_idx, nearby_pose)
     if nearby_pts_obj is None:
         src, pose = candidates[0]
         logger.warning(f"[pose_select] Frame {frame_idx}: nearby depth points unavailable, choose {src}")
-        return pose, True, np.inf
+        return pose, True, np.inf, None
 
     best_src = None
     best_pose = None
@@ -1606,10 +1643,10 @@ def check_which_estimate_is_better_and_update(
 
     if best_pose is None:
         logger.warning(f"[pose_select] Frame {frame_idx}: pose scoring failed")
-        return None, False, np.inf
+        return None, False, np.inf, nearby_pts_obj
 
     logger.info(f"[pose_select] Frame {frame_idx}: selected {best_src} (score={best_score:.6f})")
-    return best_pose, True, best_score
+    return best_pose, True, best_score, nearby_pts_obj
 
 
 def _check_pose_moved(image_info_work, frame_idx, min_rot=2, min_trans=0.01):
@@ -1778,9 +1815,23 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             refiner = _foundation_pose_cache.get("refiner")
             if refiner is not None:
                 refiner.cfg['crop_ratio'] = fp_crop_ratio
+
+            # First iteration: pick the better of PnP vs nearest-registered pose
+            # by depth-NN score. Later iterations: use the best pose so far
+            # (fall back to PnP or nearest if nothing yet).
+            if iters == 0:
+                fp_init_pose = _select_fp_init_pose(image_info_work, next_frame_idx, pnp_pose, pnp_success)
+            else:
+                if best_pose_overall is not None:
+                    fp_init_pose = best_pose_overall
+                elif pnp_success and pnp_pose is not None:
+                    fp_init_pose = pnp_pose
+                else:
+                    fp_init_pose = None
+
             if sam3d_mesh is not None:
                 fp_pose_sam3d, fp_success_sam3d = _reset_and_track_foundation_pose(
-                    image_info_work, next_frame_idx, sam3d_mesh
+                    image_info_work, next_frame_idx, sam3d_mesh, init_pose=fp_init_pose,
                 )
             else:
                 logger.warning(f"sam3d_mesh is None at frame {next_frame_idx}; skipping SAM3D FoundationPose track")
@@ -1788,12 +1839,12 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
             if neus_mesh_trimesh is not None:
                 fp_pose_neus, fp_success_neus = _reset_and_track_foundation_pose(
-                    image_info_work, next_frame_idx, neus_mesh_trimesh
+                    image_info_work, next_frame_idx, neus_mesh_trimesh, init_pose=fp_init_pose,
                 )
             else:
                 logger.warning(f"neus_mesh_trimesh is None at frame {next_frame_idx}; skipping NeuS FoundationPose track")
                 fp_pose_neus, fp_success_neus = None, False
-            iter_pose, iter_success, iter_score = check_which_estimate_is_better_and_update(
+            iter_pose, iter_success, iter_score, nearby_pts_obj = check_which_estimate_is_better_and_update(
                 image_info_work,
                 next_frame_idx,
                 pnp_pose=pnp_pose,
