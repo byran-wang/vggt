@@ -559,19 +559,34 @@ def visualize_frame(
             valid_points_3d = points_3d[valid_3d_mask]
             if align_pred_to_gt is not None:
                 valid_points_3d = (align_pred_to_gt[:3, :3] @ valid_points_3d.T).T + align_pred_to_gt[:3, 3]
-            # Color by track visibility count: green = well-observed, red = poorly-observed
-            colors_3d = np.zeros((len(valid_points_3d), 3))
+
+            # Split by track visibility count: well-observed (green) vs poorly-observed (red)
             if track_vis_count is not None:
                 well_observed = track_vis_count[valid_3d_mask] >= min_track_number
-                colors_3d[well_observed, 1] = 1.0   # Green
-                colors_3d[~well_observed, 0] = 1.0  # Red
             else:
-                colors_3d[:, 1] = 1.0  # Default green
+                well_observed = np.ones(len(valid_points_3d), dtype=bool)
 
-            rr.log(
-                f"{frame_entity}/points_3d",
-                rr.Points3D(valid_points_3d, colors=colors_3d, radii=0.003),
-            )
+            high_pts = valid_points_3d[well_observed]
+            low_pts = valid_points_3d[~well_observed]
+
+            if len(high_pts) > 0:
+                rr.log(
+                    f"{frame_entity}/points_3d_high_confidence",
+                    rr.Points3D(
+                        high_pts,
+                        colors=np.broadcast_to(np.array([0.0, 1.0, 0.0]), high_pts.shape),
+                        radii=0.001,
+                    ),
+                )
+            if len(low_pts) > 0:
+                rr.log(
+                    f"{frame_entity}/points_3d_low_confidence",
+                    rr.Points3D(
+                        low_pts,
+                        colors=np.broadcast_to(np.array([1.0, 0.0, 0.0]), low_pts.shape),
+                        radii=0.001,
+                    ),
+                )
 
         # Log depth points in object space (from depth-mesh alignment)
         depth_pts_obj = image_info.get('depth_points_obj')
@@ -704,12 +719,15 @@ def visualize_frame(
         mask_obj = preprocess_data.get('mask_obj')
         mask_hand = preprocess_data.get('mask_hand')
 
-        def _backproject_masked_depth(depth_map, mask, K, c2o, scale, max_pts=5000):
-            """Back-project masked depth pixels to 3D object-space points."""
+        rgb = preprocess_data.get('image')
+
+        def _backproject_masked_depth(depth_map, mask, K, c2o, scale, rgb=None, max_pts=5000):
+            """Back-project masked depth pixels to 3D object-space points, sampling
+            colors from the RGB image when available."""
             valid = (depth_map > 0) & (mask > 0)
             ys, xs = np.where(valid)
             if len(ys) == 0:
-                return None
+                return None, None
             if len(ys) > max_pts:
                 sel = np.random.choice(len(ys), max_pts, replace=False)
                 ys, xs = ys[sel], xs[sel]
@@ -718,36 +736,35 @@ def visualize_frame(
             yc = (ys.astype(np.float32) - K[1, 2]) * zs / K[1, 1]
             pts_cam = np.stack([xc, yc, zs], axis=-1)
             pts_obj = (c2o[:3, :3] @ pts_cam.T).T * scale + c2o[:3, 3]
-            return pts_obj
+            colors = None
+            if rgb is not None and rgb.shape[:2] == depth_map.shape[:2]:
+                colors = rgb[ys, xs]
+                if colors.dtype != np.uint8:
+                    colors = np.clip(colors, 0, 255).astype(np.uint8)
+                if colors.ndim == 2 and colors.shape[1] > 3:
+                    colors = colors[:, :3]
+            return pts_obj, colors
 
-        # Object depth points (orange)
+        # Object depth points (colored from RGB)
         if mask_obj is not None:
-            pts_obj_depth = _backproject_masked_depth(depth, mask_obj, K, c2o, scale)
+            pts_obj_depth, colors_obj = _backproject_masked_depth(depth, mask_obj, K, c2o, scale, rgb=rgb)
             if pts_obj_depth is not None:
                 rr.log(
                     f"{frame_entity}/depth_obj",
-                    rr.Points3D(
-                        pts_obj_depth,
-                        colors=np.broadcast_to(np.array([255, 165, 0], dtype=np.uint8), pts_obj_depth.shape),
-                        radii=0.0005,
-                    ),
+                    rr.Points3D(pts_obj_depth, colors=colors_obj, radii=0.0005),
                     static=False,
                 )
             else:
                 rr.log(f"{frame_entity}/depth_obj",
                        rr.Points3D([[0, 0, 0]], colors=[[0, 0, 0, 0]], radii=0.0))
 
-        # Hand depth points (cyan)
+        # Hand depth points (colored from RGB)
         if mask_hand is not None:
-            pts_hand_depth = _backproject_masked_depth(depth, mask_hand, K, c2o, scale)
+            pts_hand_depth, colors_hand = _backproject_masked_depth(depth, mask_hand, K, c2o, scale, rgb=rgb)
             if pts_hand_depth is not None:
                 rr.log(
                     f"{frame_entity}/depth_hand",
-                    rr.Points3D(
-                        pts_hand_depth,
-                        colors=np.broadcast_to(np.array([0, 200, 255], dtype=np.uint8), pts_hand_depth.shape),
-                        radii=0.0005,
-                    ),
+                    rr.Points3D(pts_hand_depth, colors=colors_hand, radii=0.0005),
                     static=False,
                 )
             else:

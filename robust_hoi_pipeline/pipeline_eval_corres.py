@@ -171,7 +171,7 @@ if __name__ == "__main__":
                         help="Output directory for correspondence visualizations")
     parser.add_argument("--cond_index", type=int, required=True,
                         help="Condition frame index to visualize correspondences from")
-    parser.add_argument("--max_vis_matches", type=int, default=2000,
+    parser.add_argument("--max_vis_matches", type=int, default=200,
                         help="Maximum number of correspondences to draw per pair")
     parser.add_argument("--vis_thresh", type=float, default=0.3,
                         help="Minimum visibility score threshold for valid correspondences")
