@@ -974,7 +974,7 @@ def register_new_frame_by_PnP(
     image_info,
     frame_idx,
     args,
-    iters=100,
+    iters=200,
     update_pose=True,
     return_pose=False,
 ):
@@ -1079,7 +1079,7 @@ def register_new_frame_by_PnP(
         tvec=t_init.reshape(3, 1).copy(),
         useExtrinsicGuess=True,
         iterationsCount=iters,
-        reprojectionError=args.pnp_reproj_thresh,
+        reprojectionError=2,
         flags=cv2.SOLVEPNP_ITERATIVE,
     )
 
