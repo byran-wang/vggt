@@ -142,3 +142,79 @@ def _save_depth_points_debug(debug_dir, frame_idx, depth, K, rgb=None, o2c=None)
 
     pc = _trimesh.PointCloud(pts, colors=colors)
     pc.export(_dbg / f"depth_pts_frame_{frame_idx:04d}.ply")
+
+
+def _gather_frame_depth_assets(image_info_work, frame_idx):
+    """Collect the per-frame tensors needed by the register debug helpers.
+
+    Returns (depth_masked, K, rgb) where depth_masked has object-mask pixels
+    zeroed out. Any of the three may be None if unavailable.
+    """
+    depth_priors = image_info_work.get("depth_priors")
+    depth = depth_priors[frame_idx] if depth_priors is not None else None
+    depth_masked = depth.copy() if depth is not None else None
+
+    masks = image_info_work.get("image_masks")
+    obj_mask = masks[frame_idx] if masks is not None else None
+    if depth_masked is not None and obj_mask is not None:
+        depth_masked[obj_mask == 0] = 0
+
+    intrinsics = image_info_work.get("intrinsics")
+    if intrinsics is None:
+        K = None
+    elif intrinsics.ndim == 3:
+        K = intrinsics[frame_idx]
+    else:
+        K = intrinsics
+
+    images = image_info_work.get("images")
+    rgb = images[frame_idx] if images is not None else None
+    return depth_masked, K, rgb
+
+
+def _dump_register_frame_inputs(debug_dir, image_info_work, frame_idx,
+                                sam3d_mesh, neus_mesh, pnp_pose):
+    """Dump per-frame register inputs: SAM3D mesh, NeuS mesh, and PnP-pose depth.
+
+    No-op when ``debug_dir`` is None.
+    """
+    if debug_dir is None:
+        return
+    _dbg = Path(debug_dir)
+    _dbg.mkdir(parents=True, exist_ok=True)
+    if sam3d_mesh is not None:
+        sam3d_mesh.export(_dbg / "sam3d_mesh.obj")
+    if neus_mesh is not None:
+        neus_mesh.export(_dbg / "neus_mesh.obj")
+
+    if pnp_pose is not None:
+        depth_masked, K, rgb = _gather_frame_depth_assets(image_info_work, frame_idx)
+        _save_depth_points_debug(_dbg / "pnp", frame_idx, depth_masked, K, rgb=rgb, o2c=pnp_pose)
+
+
+def _dump_fp_iter_depth_points(debug_dir, image_info_work, frame_idx,
+                               fp_pose_sam3d=None, fp_pose_neus=None):
+    """Dump object-space depth point clouds for each FP candidate pose.
+
+    Writes ``<debug_dir>/sam3d/`` and ``<debug_dir>/neus/`` PLYs. No-op when
+    ``debug_dir`` is None.
+    """
+    if debug_dir is None:
+        return
+    depth_masked, K, rgb = _gather_frame_depth_assets(image_info_work, frame_idx)
+    if fp_pose_sam3d is not None:
+        _save_depth_points_debug(Path(debug_dir) / "sam3d", frame_idx, depth_masked, K,
+                                 rgb=rgb, o2c=fp_pose_sam3d)
+    if fp_pose_neus is not None:
+        _save_depth_points_debug(Path(debug_dir) / "neus", frame_idx, depth_masked, K,
+                                 rgb=rgb, o2c=fp_pose_neus)
+
+
+def _dump_nearby_pts_obj(debug_dir, nearby_pts_obj, filename="nearby_pts_obj.ply"):
+    """Save the nearby-frame depth points (object space) used for pose scoring."""
+    if debug_dir is None or nearby_pts_obj is None or len(nearby_pts_obj) == 0:
+        return
+    import trimesh as _trimesh
+    _dbg = Path(debug_dir)
+    _dbg.mkdir(parents=True, exist_ok=True)
+    _trimesh.PointCloud(np.asarray(nearby_pts_obj)).export(_dbg / filename)

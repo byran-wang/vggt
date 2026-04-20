@@ -27,6 +27,9 @@ from robust_hoi_pipeline.pipeline_joint_opt_debug import (
     _save_binary_mask_debug,
     _save_depth_points_debug,
     _save_hand_obj_meshes_in_cam_space,
+    _dump_register_frame_inputs,
+    _dump_fp_iter_depth_points,
+    _dump_nearby_pts_obj,
 )
 from utils_simba.logger import get_logger
 
@@ -1805,6 +1808,19 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         pnp_pose, pnp_success = register_new_frame_by_PnP(
             image_info_work, next_frame_idx, args, update_pose=False, return_pose=True
         )        
+
+        # Debug: dump SAM3D/NeuS meshes and PnP-pose depth points for this frame
+        _frame_dbg_dir = None
+        if not RUN_ON_SERVER:
+            _frame_dbg_dir = (
+                output_dir / "pipeline_joint_opt"
+                / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
+            )
+            _dump_register_frame_inputs(
+                _frame_dbg_dir, image_info_work, next_frame_idx,
+                sam3d_mesh, neus_mesh_trimesh, pnp_pose,
+            )
+
         for iters in range(max_iter_number):
             if best_score <= 0.01:
                 break
@@ -1844,6 +1860,14 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             else:
                 logger.warning(f"neus_mesh_trimesh is None at frame {next_frame_idx}; skipping NeuS FoundationPose track")
                 fp_pose_neus, fp_success_neus = None, False
+
+            # Debug: object-space depth point clouds for each candidate FP pose
+            _iter_dbg_dir = (_frame_dbg_dir / f"iter_{iters:02d}") if _frame_dbg_dir is not None else None
+            _dump_fp_iter_depth_points(
+                _iter_dbg_dir, image_info_work, next_frame_idx,
+                fp_pose_sam3d=fp_pose_sam3d, fp_pose_neus=fp_pose_neus,
+            )
+
             iter_pose, iter_success, iter_score, nearby_pts_obj = check_which_estimate_is_better_and_update(
                 image_info_work,
                 next_frame_idx,
@@ -1854,6 +1878,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 fp_pose_neus=fp_pose_neus,
                 fp_success_neus=fp_success_neus,
             )
+            _dump_nearby_pts_obj(_iter_dbg_dir, nearby_pts_obj)
             logger.debug(f"[register] Frame {next_frame_idx} iter {iters}: score={iter_score:.6f}, fp_crop_ratio={fp_crop_ratio:.2f}")
             if iter_success and iter_score < best_score:
                 best_score = iter_score
