@@ -1955,7 +1955,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             # ).astype(image_info_work["track_mask"].dtype)
 
             # Align the frame with SAM3D mesh using depth with outlier rejection
-            if 0:
+            if 1:
                 debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
                 if RUN_ON_SERVER:
                     debug_dir = None
@@ -1969,12 +1969,8 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
 
                     _, mean_error = check_reprojection_error(image_info_work, next_frame_idx, args, skip_check=True)
                     logger.info(f"[register_remaining_frames] After object_hand alignment, reprojection error for frame {next_frame_idx}: {mean_error:.2f}")
-                    _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_align_mesh")
-
-
-        
-                # mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
-
+                    _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_align_mesh")        
+                    mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
 
         image_info_work["registered"][next_frame_idx] = True
         logger.info(f"Successfully registered frame {image_info['frame_indices'][next_frame_idx]}")
