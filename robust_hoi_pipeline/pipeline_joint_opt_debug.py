@@ -218,3 +218,15 @@ def _dump_nearby_pts_obj(debug_dir, nearby_pts_obj, filename="nearby_pts_obj.ply
     _dbg = Path(debug_dir)
     _dbg.mkdir(parents=True, exist_ok=True)
     _trimesh.PointCloud(np.asarray(nearby_pts_obj)).export(_dbg / filename)
+
+
+def _dump_ref_pts_obj(debug_dir, ref_pts_obj, ref_source):
+    """Save the reference cloud used for pose scoring, labelled by its source.
+
+    ``ref_source`` should be ``"high_confidence_points_3d"`` or ``"nearby_frame"``
+    (or any other short tag); it is used in the output filename.
+    """
+    if debug_dir is None or ref_pts_obj is None or len(ref_pts_obj) == 0:
+        return
+    tag = ref_source if ref_source else "unknown"
+    _dump_nearby_pts_obj(debug_dir, ref_pts_obj, filename=f"ref_pts_obj_{tag}.ply")

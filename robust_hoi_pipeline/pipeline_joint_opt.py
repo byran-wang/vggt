@@ -30,6 +30,7 @@ from robust_hoi_pipeline.pipeline_joint_opt_debug import (
     _dump_register_frame_inputs,
     _dump_fp_iter_depth_points,
     _dump_nearby_pts_obj,
+    _dump_ref_pts_obj,
 )
 from utils_simba.logger import get_logger
 
@@ -1591,6 +1592,34 @@ def _mean_nn_distance(src_pts, dst_pts):
     return float(dists.mean())
 
 
+def _get_high_confidence_points_3d(image_info_work, min_track_number=3):
+    """Return (M, 3) object-space 3D points visible in >= min_track_number keyframes.
+
+    Filters out NaN/inf rows. Returns None if no such points exist.
+    """
+    points_3d = image_info_work.get("points_3d")
+    if points_3d is None:
+        return None
+    pts = np.asarray(points_3d)
+    tracks_mask = image_info_work.get("tracks_mask")
+    keyframes = image_info_work.get("keyframe")
+    if tracks_mask is not None and keyframes is not None:
+        kf_flags = np.asarray(keyframes).astype(bool)
+        if kf_flags.any():
+            vis_count = np.asarray(tracks_mask)[kf_flags].astype(bool).sum(axis=0)
+            well_observed = vis_count >= min_track_number
+        else:
+            well_observed = np.ones(len(pts), dtype=bool)
+    else:
+        well_observed = np.ones(len(pts), dtype=bool)
+
+    finite = np.isfinite(pts).all(axis=-1)
+    selected = pts[well_observed & finite]
+    if len(selected) == 0:
+        return None
+    return selected.astype(np.float64)
+
+
 def check_which_estimate_is_better_and_update(
     image_info_work,
     frame_idx,
@@ -1600,12 +1629,20 @@ def check_which_estimate_is_better_and_update(
     fp_success,
     fp_pose_neus=None,
     fp_success_neus=False,
+    min_track_number=3,
 ):
-    """Select the best pose estimate using depth 3D NN distance in object space.
+    """Select the best pose estimate by depth-to-high-confidence-3D NN distance.
+
+    The reference cloud is ``image_info_work["points_3d"]`` filtered to tracks
+    visible in >= ``min_track_number`` keyframes (object space). Each candidate
+    pose is scored by mean NN distance from the current frame's depth points
+    (in object space under that pose) to the reference cloud.
 
     Returns:
-        (best_pose, success, best_score) — does NOT update extrinsics;
-        the caller is responsible for applying the pose.
+        (best_pose, success, best_score, ref_pts_obj, ref_source) — does NOT
+        update extrinsics; the caller is responsible for applying the pose.
+        ``ref_source`` is one of ``"high_confidence_points_3d"`` / ``"nearby_frame"``
+        / ``None`` and identifies where the reference cloud came from.
     """
     candidates = []
     if pnp_success and pnp_pose is not None:
@@ -1617,27 +1654,32 @@ def check_which_estimate_is_better_and_update(
 
     if not candidates:
         logger.warning(f"[pose_select] Frame {frame_idx}: no valid pose estimate candidates")
-        return None, False, np.inf, None
+        return None, False, np.inf, None, None
 
-    nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
-    if nearest_idx is None:
-        src, pose = candidates[0]
-        logger.warning(f"[pose_select] Frame {frame_idx}: no nearby registered frame, choose {src}")
-        return pose, True, np.inf, None
-
-    nearby_pose = image_info_work["extrinsics"][nearest_idx].astype(np.float64)
-    nearby_pts_obj = _build_depth_points_obj_for_pose(image_info_work, nearest_idx, nearby_pose)
-    if nearby_pts_obj is None:
-        src, pose = candidates[0]
-        logger.warning(f"[pose_select] Frame {frame_idx}: nearby depth points unavailable, choose {src}")
-        return pose, True, np.inf, None
+    ref_pts_obj = _get_high_confidence_points_3d(image_info_work, min_track_number=min_track_number)
+    ref_source = "high_confidence_points_3d" if ref_pts_obj is not None else None
+    if ref_pts_obj is None:
+        # Fallback: use the nearest registered frame's depth (already object-mask
+        # filtered inside _build_depth_points_obj_for_pose) as the reference cloud.
+        nearest_idx = _find_nearest_registered_frame(image_info_work, frame_idx)
+        if nearest_idx is not None:
+            nearby_pose = image_info_work["extrinsics"][nearest_idx].astype(np.float64)
+            ref_pts_obj = _build_depth_points_obj_for_pose(image_info_work, nearest_idx, nearby_pose)
+            if ref_pts_obj is not None:
+                ref_source = "nearby_frame"
+                logger.info(f"[pose_select] Frame {frame_idx}: no high-confidence 3D points, "
+                            f"falling back to nearest frame {nearest_idx} depth")
+        if ref_pts_obj is None:
+            src, pose = candidates[0]
+            logger.warning(f"[pose_select] Frame {frame_idx}: no reference points available, choose {src}")
+            return pose, True, np.inf, None, None
 
     best_src = None
     best_pose = None
     best_score = np.inf
     for src, pose in candidates:
         curr_pts_obj = _build_depth_points_obj_for_pose(image_info_work, frame_idx, pose)
-        score = _mean_nn_distance(curr_pts_obj, nearby_pts_obj)
+        score = _mean_nn_distance(curr_pts_obj, ref_pts_obj)
         logger.debug(f"[pose_select] Frame {frame_idx}: {src} depth NN mean distance = {score:.6f}")
         if score < best_score:
             best_score = score
@@ -1646,10 +1688,10 @@ def check_which_estimate_is_better_and_update(
 
     if best_pose is None:
         logger.warning(f"[pose_select] Frame {frame_idx}: pose scoring failed")
-        return None, False, np.inf, nearby_pts_obj
+        return None, False, np.inf, ref_pts_obj, ref_source
 
-    logger.info(f"[pose_select] Frame {frame_idx}: selected {best_src} (score={best_score:.6f})")
-    return best_pose, True, best_score, nearby_pts_obj
+    logger.info(f"[pose_select] Frame {frame_idx}: selected {best_src} (score={best_score:.6f}, ref={ref_source})")
+    return best_pose, True, best_score, ref_pts_obj, ref_source
 
 
 def _check_pose_moved(image_info_work, frame_idx, min_rot=2, min_trans=0.01):
@@ -1866,7 +1908,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 fp_pose_sam3d=fp_pose_sam3d, fp_pose_neus=fp_pose_neus,
             )
 
-            iter_pose, iter_success, iter_score, nearby_pts_obj = check_which_estimate_is_better_and_update(
+            iter_pose, iter_success, iter_score, ref_pts_obj, ref_source = check_which_estimate_is_better_and_update(
                 image_info_work,
                 next_frame_idx,
                 pnp_pose=pnp_pose,
@@ -1876,7 +1918,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 fp_pose_neus=fp_pose_neus,
                 fp_success_neus=fp_success_neus,
             )
-            _dump_nearby_pts_obj(_iter_dbg_dir, nearby_pts_obj)
+            _dump_ref_pts_obj(_iter_dbg_dir, ref_pts_obj, ref_source)
             logger.debug(f"[register] Frame {next_frame_idx} iter {iters}: score={iter_score:.6f}, fp_crop_ratio={fp_crop_ratio:.2f}")
             if iter_success and iter_score < best_score:
                 best_score = iter_score
