@@ -61,7 +61,9 @@ class run_wonder_hoi:
                 "ho3d_estimate_hand_pose": self.ho3d_estimate_hand_pose,
                 "ho3d_interpolate_hamer": self.ho3d_interpolate_hamer,
                 "ho3d_get_hand_mask": self.ho3d_get_hand_mask,
+                "ho3d_get_hand_mask_prompt": self.ho3d_get_hand_mask_prompt,
                 "ho3d_get_obj_mask": self.ho3d_get_obj_mask,
+                "ho3d_get_obj_mask_prompt": self.ho3d_get_obj_mask_prompt,
                 "ho3d_inpaint": self.ho3d_inpaint,
             },
             "obj_process": {
@@ -368,73 +370,131 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
-    def ho3d_get_hand_mask(self, scene_name, **kwargs):
-        self.print_header(f"ho3d get mask for {scene_name}")
-
+    def _hand_mask_paths(self, scene_name):
         data_dir = f"{self.dataset_dir}/{scene_name}/rgb/"
         out_mask_dir = f"{self.dataset_dir}/{scene_name}/mask_hand"
+        prompt_file = f"{self.dataset_dir}/{scene_name}/sam3_prompts/hand.json"
+        return data_dir, out_mask_dir, prompt_file
+
+    def ho3d_get_hand_mask_prompt(self, scene_name, **kwargs):
+        """Collect and save the first-frame SAM3 prompt for the hand mask.
+        Only loads the first image (no model load, no full-video scan)."""
+        self.print_header(f"ho3d get hand mask PROMPT for {scene_name}")
+        data_dir, _, prompt_file = self._hand_mask_paths(scene_name)
         text_prompt = "right_hand"
 
+        if self.rebuild:
+            cmd = f"rm -f {prompt_file}"
+            print(cmd)
+            os.system(cmd)
+
+        cmd = f"cd {vggt_code_dir}/third_party/sam3/ && "
+        cmd += f"{self.conda_dir}/envs/sam3/bin/python run_HO3D_video.py "
+        cmd += f"--video_path {data_dir} "
+        cmd += f"--out_path /tmp/sam3_prompt_only "
+        cmd += f"--text_prompt '{text_prompt}' "
+        cmd += f"--prompt_file {prompt_file} "
+        cmd += f"--prompt_title hand_mask "
+        cmd += f"--prompt_only "
+        print(cmd)
+        os.system(cmd)
+
+    def ho3d_get_hand_mask(self, scene_name, **kwargs):
+        """Run SAM3 to produce the hand masks. Uses a cached prompt file when available,
+        otherwise falls back to the interactive prompt window (like before)."""
+        self.print_header(f"ho3d get hand mask for {scene_name}")
+        data_dir, out_mask_dir, prompt_file = self._hand_mask_paths(scene_name)
+        text_prompt = "right_hand"
 
         if self.rebuild:
             cmd = f"rm -rf {out_mask_dir}"
             print(cmd)
             os.system(cmd)
-        
-        
+
+        has_prompt = os.path.exists(prompt_file)
+
         cmd = f"cd {vggt_code_dir}/third_party/sam3/ && "
         cmd += f"{self.conda_dir}/envs/sam3/bin/python run_HO3D_video.py "
         cmd += f"--video_path {data_dir} "
         cmd += f"--out_path {out_mask_dir} "
         cmd += f"--text_prompt '{text_prompt}' "
-        cmd += f"--check_mask_result 1 "
+        cmd += f"--prompt_file {prompt_file} "
+        cmd += f"--check_mask_result {0 if has_prompt else 1} "
         # cmd += f"--use_both_text_and_point_prompt "
         print(cmd)
         os.system(cmd)
 
-    def ho3d_get_obj_mask(self, scene_name, **kwargs):
-        self.print_header(f"ho3d get mask for {scene_name}")
+    _OBJ_MASK_TEXT_PROMPTS = {
+        'AP': 'blue pitcher base',
+        'MPM': 'potted meatal can',
+        'SB': 'white clean bleach',
+        'SM': 'yellow mustard bottle',
+        "ABF": "white clean bleach",
+        "BB": "yello banana",
+        "GPMF": "potted meatal can",
+        "GSF": "scissors",
+        "MC": "red cracker_box",
+        "MDF": "orange power drill",
+        "ND": "orange power drill",
+        "SMu": "red mug",
+        "SS": "yellow sugar box",
+        "ShSu": "yellow sugar box",
+        "SiBF": "yellow banana",
+        "SiS": "yellow sugar box",
+    }
 
+    def _obj_mask_paths(self, scene_name):
         data_dir = f"{self.dataset_dir}/{scene_name}/rgb/"
         out_mask_dir = f"{self.dataset_dir}/{scene_name}/mask_object"
+        prompt_file = f"{self.dataset_dir}/{scene_name}/sam3_prompts/object.json"
         obj_name = scene_name.rstrip("0123456789")
+        text_prompt = self._OBJ_MASK_TEXT_PROMPTS.get(obj_name, None)
+        return data_dir, out_mask_dir, prompt_file, text_prompt
 
+    def ho3d_get_obj_mask_prompt(self, scene_name, **kwargs):
+        """Collect and save the first-frame SAM3 prompt for the object mask.
+        Only loads the first image (no model load, no full-video scan)."""
+        self.print_header(f"ho3d get object mask PROMPT for {scene_name}")
+        data_dir, _, prompt_file, text_prompt = self._obj_mask_paths(scene_name)
 
-        obj2text_prompt = {
-            'AP': 'blue pitcher base',
-            'MPM': 'potted meatal can',
-            'SB': 'white clean bleach',
-            'SM': 'yellow mustard bottle',
-            "ABF": "white clean bleach",
-            "BB": "yello banana",
-            "GPMF": "potted meatal can",
-            "GSF": "scissors",
-            "MC": "red cracker_box",
-            "MDF": "orange power drill",
-            "ND": "orange power drill",
-            "SMu": "red mug",
-            "SS": "yellow sugar box",
-            "ShSu": "yellow sugar box",
-            "SiBF": "yellow banana",
-            "SiS": "yellow sugar box",         
-        }
+        if self.rebuild:
+            cmd = f"rm -f {prompt_file}"
+            print(cmd)
+            os.system(cmd)
 
-        prompt_text_str = obj2text_prompt.get(obj_name, None)
+        cmd = f"cd {vggt_code_dir}/third_party/sam3/ && "
+        cmd += f"{self.conda_dir}/envs/sam3/bin/python run_HO3D_video.py "
+        cmd += f"--video_path {data_dir} "
+        cmd += f"--out_path /tmp/sam3_prompt_only "
+        cmd += f"--text_prompt '{text_prompt}' "
+        cmd += f"--prompt_file {prompt_file} "
+        cmd += f"--prompt_title object_mask "
+        cmd += f"--prompt_only "
+        print(cmd)
+        os.system(cmd)
+
+    def ho3d_get_obj_mask(self, scene_name, **kwargs):
+        """Run SAM3 to produce the object masks. Uses a cached prompt file when
+        available, otherwise falls back to the interactive prompt window."""
+        self.print_header(f"ho3d get object mask for {scene_name}")
+        data_dir, out_mask_dir, prompt_file, text_prompt = self._obj_mask_paths(scene_name)
 
         if self.rebuild:
             cmd = f"rm -rf {out_mask_dir}"
             print(cmd)
             os.system(cmd)
-        
-        
+
+        has_prompt = os.path.exists(prompt_file)
+
         cmd = f"cd {vggt_code_dir}/third_party/sam3/ && "
         cmd += f"{self.conda_dir}/envs/sam3/bin/python run_HO3D_video.py "
         cmd += f"--video_path {data_dir} "
         cmd += f"--out_path {out_mask_dir} "
-        cmd += f"--text_prompt '{prompt_text_str}' "
-        cmd += f"--check_mask_result 1 "
+        cmd += f"--text_prompt '{text_prompt}' "
+        cmd += f"--prompt_file {prompt_file} "
+        cmd += f"--check_mask_result {0 if has_prompt else 1} "
         print(cmd)
-        os.system(cmd)        
+        os.system(cmd)
     
      
 
@@ -2640,7 +2700,9 @@ if __name__ == "__main__":
                 "ho3d_estimate_hand_pose",
                 "ho3d_interpolate_hamer",
                 "ho3d_get_hand_mask",
+                "ho3d_get_hand_mask_prompt",
                 "ho3d_get_obj_mask",
+                "ho3d_get_obj_mask_prompt",
                 "ho3d_inpaint",
                 "hoi_pipeline_neus_init",
                 "hoi_pipeline_neus_global",

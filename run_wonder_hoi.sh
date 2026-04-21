@@ -23,7 +23,10 @@ python run_wonder_hoi.py --execute_list data_read --process_list ZED_read_data  
 python run_wonder_hoi.py --execute_list data_convert --process_list ZED_parse_data  --seq_list $seq_list --rebuild --downsample 3
 # Remember to check the depth *.ply files in ply_zed by Meshlab after convert_zed_depth_to_ply.
 python run_wonder_hoi.py --execute_list data_convert --process_list convert_depth_to_ply --seq_list $seq_list --rebuild
-# get the hand and object mask by sam3
+# Step 1/2: interactively collect and save the first-frame SAM3 prompts (text/points/box) so mask generation can be re-run without the popup.
+python run_wonder_hoi.py --execute_list data_convert --process_list ho3d_get_obj_mask_prompt --seq_list $seq_list --rebuild
+python run_wonder_hoi.py --execute_list data_convert --process_list ho3d_get_hand_mask_prompt --seq_list $seq_list --rebuild
+# Step 2/2: run SAM3 mask propagation; loads the saved prompt from step 1 if it exists, otherwise falls back to the interactive popup.
 python run_wonder_hoi.py --execute_list data_convert --process_list ho3d_get_obj_mask ho3d_get_hand_mask --seq_list $seq_list --rebuild
 ####Note: following steps run on local pc with 32 GB RAM.
 python run_wonder_hoi.py --execute_list obj_process --process_list ho3d_obj_SAM3D_filter_2D --seq_list $seq_list #--vis
