@@ -114,3 +114,7 @@ Host 3090_server1
 ### 2026-04-14
 #### Top Priorities
 - [x] rsync -azvP  3090_server1:/data1/shibo/Documents/dataset/ZED_wenxuan/ /home/simba/Documents/dataset/ZED_wenxuan/
+
+### 2026-04-21
+#### Top Priorities
+- [x] rsync  /data1/shibo/Documents/project/vggt/output[4_29_22_45][285742a][sam3d_align_by_foundation_pose]/metrics_summary on 3090 server to /home/simba/Documents/project/vggt/output[4_29_22_45][285742a][sam3d_align_by_foundation_pose]

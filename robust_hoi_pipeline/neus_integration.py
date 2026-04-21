@@ -5,7 +5,6 @@ caching, and save the resulting mesh after each keyframe.
 """
 
 import os
-import pickle
 import re
 import shutil
 import sys
@@ -13,8 +12,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from PIL import Image
-from utils_simba.depth import save_depth
 
 
 # ---------------------------------------------------------------------------
@@ -23,6 +20,13 @@ from utils_simba.depth import save_depth
 # checkpoint loading on every keyframe.
 # ---------------------------------------------------------------------------
 _neus_cache: Dict = {}
+
+# Module-level in-memory cache keyed by absolute neus_data_dir path.
+# Populated by prepare_neus_data(); consumed by the NeuS dataset loader in
+# third_party/instant-nsr-pl/datasets/robust_hoi.py via get_neus_in_memory_data().
+# Using in-memory arrays avoids encoding images/masks/depths to PNG and decoding
+# them back on every keyframe, which dominated prepare_neus_data cost.
+_neus_inmem_cache: Dict[str, Dict] = {}
 
 
 def _ensure_neus_imports() -> None:
@@ -37,6 +41,23 @@ def reset_neus_cache() -> None:
     _neus_cache.clear()
 
 
+def _inmem_key(neus_data_dir) -> str:
+    return str(Path(neus_data_dir).resolve())
+
+
+def get_neus_in_memory_data(neus_data_dir) -> Optional[Dict]:
+    """Return keyframe data previously stashed by prepare_neus_data, or None."""
+    return _neus_inmem_cache.get(_inmem_key(neus_data_dir))
+
+
+def clear_neus_in_memory_data(neus_data_dir=None) -> None:
+    """Drop cached keyframe arrays. Clears everything if neus_data_dir is None."""
+    if neus_data_dir is None:
+        _neus_inmem_cache.clear()
+    else:
+        _neus_inmem_cache.pop(_inmem_key(neus_data_dir), None)
+
+
 
 def prepare_neus_data(
     images: List[np.ndarray],
@@ -47,14 +68,11 @@ def prepare_neus_data(
     neus_data_dir: Path,
     masks_hand: Optional[List[np.ndarray]] = None,
 ) -> None:
-    """Write keyframe data to disk in the format expected by ObjDataProvider / robust_hoi dataset.
+    """Stash keyframe data in an in-memory cache for the NeuS dataset loader.
 
-    Creates the following structure under neus_data_dir:
-        images/0000.png, 0001.png, ...
-        masks/0000.png, 0001.png, ...
-        depth_prior/0000.png, 0001.png, ...
-        key_frame_idx.txt
-        0000/results.pkl  (contains intrinsics, extrinsics, keyframe flags)
+    The cached entry — keyed by the absolute ``neus_data_dir`` path — is read by
+    ``RobustHOIDatasetBase.setup`` (see third_party/instant-nsr-pl/datasets/
+    robust_hoi.py), bypassing PNG encode/decode and disk I/O entirely.
 
     Args:
         images: List of (H, W, 3) uint8 RGB images for each keyframe.
@@ -62,19 +80,12 @@ def prepare_neus_data(
         depths: List of (H, W) float32 depth maps for each keyframe.
         extrinsics_o2c: (N_kf, 4, 4) object-to-camera (w2c) matrices.
         intrinsics: (N_kf, 3, 3) camera intrinsic matrices.
-        neus_data_dir: Output directory for NeuS data.
+        neus_data_dir: Identity key used by run_neus_training; also created on
+            disk so downstream code that inspects the directory still works.
         masks_hand: Optional list of (H, W) uint8 hand masks for each keyframe.
-            When provided, the final mask is the union of object and hand masks.
     """
     neus_data_dir = Path(neus_data_dir)
-
-    # Create subdirectories
-    img_dir = neus_data_dir / "images"
-    mask_dir = neus_data_dir / "masks"
-    mask_hand_dir = neus_data_dir / "masks_hand"
-    depth_dir = neus_data_dir / "depth_prior"
-    for d in [img_dir, mask_dir, mask_hand_dir, depth_dir]:
-        d.mkdir(parents=True, exist_ok=True)
+    neus_data_dir.mkdir(parents=True, exist_ok=True)
 
     n_kf = len(images)
     assert len(masks) == n_kf
@@ -82,56 +93,24 @@ def prepare_neus_data(
     assert extrinsics_o2c.shape[0] == n_kf
     assert intrinsics.shape[0] == n_kf
 
-    # Write images, masks, depths
-    for i in range(n_kf):
-        fname = f"{i:04d}.png"
+    def _squeeze_mask(m):
+        if m is None:
+            return None
+        return m[:, :, 0] if m.ndim == 3 else m
 
-        # RGB image
-        if images[i] is not None:
-            Image.fromarray(images[i]).save(str(img_dir / fname))
-
-        # mask: object mask only
-        if masks[i] is not None:
-            mask = masks[i]
-            if mask.ndim == 3:
-                mask = mask[:, :, 0]
-            Image.fromarray(mask).save(str(mask_dir / fname))
-
-        # hand mask
-        if masks_hand is not None and masks_hand[i] is not None:
-            hand_mask = masks_hand[i]
-            if hand_mask.ndim == 3:
-                hand_mask = hand_mask[:, :, 0]
-            Image.fromarray(hand_mask).save(str(mask_hand_dir / fname))
-
-        # Depth (24-bit encoded PNG)
-        if depths[i] is not None:
-            save_depth(depths[i], str(depth_dir / fname))
-
-    # Write key_frame_idx.txt (all frames are keyframes in this context)
-    kf_idx_path = neus_data_dir / "key_frame_idx.txt"
-    with open(kf_idx_path, "w") as f:
-        for i in range(n_kf):
-            f.write(f"{i}\n")
-
-    # Build and save results.pkl in a "0000" subdirectory
-    # The ObjDataProvider reads the last step's results.pkl which contains
-    # intrinsics, extrinsics (w2c, 3x4), and keyframe flags for all frames.
-    results_dir = neus_data_dir / "0000"
-    results_dir.mkdir(parents=True, exist_ok=True)
-
-    # extrinsics_o2c is (N_kf, 4, 4), store as (N_kf, 3, 4)
-    extrinsics_3x4 = extrinsics_o2c[:, :3, :4].astype(np.float32)
-
-    results_pkl = {
+    _neus_inmem_cache[_inmem_key(neus_data_dir)] = {
+        "images": list(images),
+        "masks": [_squeeze_mask(m) for m in masks],
+        "masks_hand": (
+            [_squeeze_mask(m) for m in masks_hand] if masks_hand is not None else None
+        ),
+        "depths": list(depths),
         "intrinsics": intrinsics.astype(np.float32),  # (N_kf, 3, 3)
-        "extrinsics": extrinsics_3x4,  # (N_kf, 3, 4) w2c
-        "keyframe": [True] * n_kf,
+        "extrinsics_o2c": extrinsics_o2c[:, :3, :4].astype(np.float32),  # (N_kf, 3, 4) w2c
+        "n_kf": n_kf,
     }
-    with open(results_dir / "results.pkl", "wb") as f:
-        pickle.dump(results_pkl, f)
 
-    print(f"[NeuS] Prepared data for {n_kf} keyframes in {neus_data_dir}")
+    print(f"[NeuS] Cached {n_kf} keyframes in-memory for {neus_data_dir}")
 
 
 def run_neus_training(
