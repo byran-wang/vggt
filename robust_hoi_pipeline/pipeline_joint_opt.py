@@ -1803,8 +1803,8 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         best_pose_overall = None
         estimate_success = False
         max_iter_number = 3
-        fp_crop_ratio = 1.0
         fp_crop_ratio_scale = 1.2
+        fp_crop_ratio = fp_crop_ratio_scale ** max_iter_number
         pnp_pose, pnp_success = register_new_frame_by_PnP(
             image_info_work, next_frame_idx, args, update_pose=False, return_pose=True
         )        
@@ -1822,9 +1822,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             )
 
         for iters in range(max_iter_number):
-            if best_score <= 0.01:
-                break
-            fp_crop_ratio *= fp_crop_ratio_scale
+            fp_crop_ratio *= (1 / fp_crop_ratio_scale)
 
 
             # Set crop_ratio on the shared refiner before FoundationPose tracking
