@@ -347,14 +347,19 @@ def _prune_stale_trial_dirs(output_dir: Path, keep_paths) -> None:
             continue
         if child.resolve() in keep_dirs:
             continue
-        if child.name == "save":
-            # Preserve the save/ directory (exported meshes) across prunes.
-            continue
+        # For each stale sibling, preserve its 'save/' subdirectory (exported
+        # meshes) and delete every other file/subdirectory inside.
         try:
-            shutil.rmtree(child)
-            print(f"[NeuS] Deleted stale trial dir: {child}")
+            for entry in (child / "joint_opt").iterdir():
+                if entry.is_dir() and entry.name == "save":
+                    continue
+                if entry.is_dir():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+                print(f"[NeuS] Deleted stale entry: {entry}")
         except OSError as exc:
-            print(f"[NeuS] Failed to delete {child}: {exc}")
+            print(f"[NeuS] Failed to clean {child}: {exc}")
 
 
 def _get_checkpoint_global_step(checkpoint_path: Optional[str]) -> Optional[int]:
