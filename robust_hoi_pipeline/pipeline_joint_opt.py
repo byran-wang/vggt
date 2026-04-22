@@ -773,15 +773,19 @@ def _cam_points_to_object_points(pts_cam, extrinsic):
     return (R.T @ (pts_cam - t).T).T
 
 
-def _filter_depth_by_object_bbox(image_info_work, frame_idx, bbox_min=[-0.8, -0.8, -0.8], bbox_max=[0.8, 0.8, 0.8]):
-    """Zero out depth pixels whose object-space 3D points fall outside a bounding box."""
+def _filter_depth_by_object_bbox(image_info_work, frame_idx, bbox_min=[-0.7, -0.7, -0.7], bbox_max=[0.7, 0.7, 0.7], extrinsic=None):
+    """Zero out depth pixels whose object-space 3D points fall outside a bounding box.
+
+    If ``extrinsic`` (4x4 o2c) is provided, it is used in place of the frame's own
+    pose — useful when filtering depth for a frame that hasn't been registered
+    yet (use a nearby registered frame's pose as a proxy).
+    """
     depth_priors = image_info_work.get("depth_priors")
     if depth_priors is None or depth_priors[frame_idx] is None:
         return
 
     d = depth_priors[frame_idx]
     intrinsics = image_info_work.get("intrinsics")
-    extrinsics = image_info_work.get("extrinsics")
     K = intrinsics[frame_idx] if intrinsics.ndim == 3 else intrinsics
 
     vmask = d > 0
@@ -794,19 +798,19 @@ def _filter_depth_by_object_bbox(image_info_work, frame_idx, bbox_min=[-0.8, -0.
         return
 
     pts_cam = _depth_pixels_to_cam_points(d, K, ys, xs)
-    ext = extrinsics[frame_idx].astype(np.float64)
+    if extrinsic is None:
+        logger.warn(f"[filter_depth_bbox] Frame {frame_idx}: No extrinsic provided, skipping depth filtering")
+        return
+    ext = np.asarray(extrinsic, dtype=np.float64)
     pts_obj = _cam_points_to_object_points(pts_cam, ext)
 
-
     bbox_min = np.array(bbox_min, dtype=np.float64)
-
     bbox_max = np.array(bbox_max, dtype=np.float64)
-
 
     outside = ~np.all((pts_obj >= bbox_min) & (pts_obj <= bbox_max), axis=1)
     if outside.any():
         d[ys[outside], xs[outside]] = 0
-        logger.debug(f"[filter_depth_bbox] Frame {frame_idx}: zeroed {int(outside.sum())}/{len(ys)} depth pixels outside object bbox")
+        logger.info(f"[filter_depth_bbox] Frame {frame_idx}: zeroed {int(outside.sum())}/{len(ys)} depth pixels outside object bbox")
 
 
 def _prepare_render_inputs(mesh, K, H, W, device):
@@ -1827,20 +1831,17 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         logger.info("+" * 50)
         logger.info(f"Next frame to register: {image_info['frame_indices'][next_frame_idx]} (local idx {next_frame_idx})")
 
+        # Use the nearest registered frame's pose as a proxy to back-project the
+        # current frame's depth into object space and zero out pixels that fall
+        # outside the [-0.7, 0.7]^3 cube (matches NeuS export_radius). This
+        # cleans background clutter before PnP / FoundationPose see the depth.
+        _nearby_pose, _ = _estimate_pose_from_nearest_registered(image_info_work, next_frame_idx)
+        if _nearby_pose is not None:
+            _filter_depth_by_object_bbox(
+                image_info_work, next_frame_idx,
+                extrinsic=_nearby_pose,
+            )
 
-        # if check_frame_invalid(
-        #     image_info_work,
-        #     next_frame_idx,
-        #     min_inlier_per_frame=args.min_inlier_per_frame,
-        #     min_depth_pixels=args.min_depth_pixels,
-        # ):
-        if 0:
-            image_info["invalid"][next_frame_idx] = image_info_work["invalid"][next_frame_idx] = True  
-            logger.warning(f"[register_remaining_frames] Frame {next_frame_idx} marked as invalid due to insufficient inliers/depth pixels")
-            invalid_cnt["insufficient_pixel"] += 1
-            save_results(image_info=image_info, register_idx= image_info['frame_indices'][next_frame_idx], preprocessed_data=preprocessed_data, results_dir=output_dir / "pipeline_joint_opt", only_save_register_order=args.only_save_register_order)
-            print_image_info_stats(image_info_work, invalid_cnt)
-            continue
         best_score = np.inf
         best_pose_overall = None
         estimate_success = False
@@ -1943,18 +1944,6 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             
 
         if is_moved:
-            # _reset_pose_to_nearest_registered(image_info_work, next_frame_idx)
-            # _save_depth_points_obj(image_info_work, next_frame_idx, tag="after_reset_when_pnp_fail")
-            # _init_pose_from_hand(image_info_work, next_frame_idx)
-            # mask_track_for_outliers(image_info_work, next_frame_idx, args.pnp_reproj_thresh, min_track_number=1)
-
-            # # Mask tracks without valid (finite) 3D points
-            # finite_3d = np.isfinite(image_info_work["points_3d"]).all(axis=-1)
-            # image_info_work["track_mask"][next_frame_idx] = (
-            #     np.asarray(image_info_work["track_mask"][next_frame_idx]).astype(bool) & finite_3d
-            # ).astype(image_info_work["track_mask"].dtype)
-
-            # Align the frame with SAM3D mesh using depth with outlier rejection
             if 1:
                 debug_dir = output_dir / "pipeline_joint_opt" / f"debug_frame_{image_info_work['frame_indices'][next_frame_idx]:04d}_{image_info_work['registered'].sum():04d}"
                 if RUN_ON_SERVER:
