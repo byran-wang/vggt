@@ -95,6 +95,8 @@ python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_eval_vis_gt --seq_list $seq_list
 # Teaser: fade-in RGBA renders + MP4 of object+hand normals on transparent background
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_teaser --seq_list $seq_list --rebuild
+# Export hand/object/merged meshes (camera space) for a single frame (defaults to cond_index)
+python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_hand_object_mesh --seq_list $seq_list --rebuild
 
 python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum --seq_list $seq_list
 python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum_vis --seq_list $seq_list --rebuild

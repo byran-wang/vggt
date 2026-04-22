@@ -128,6 +128,7 @@ class run_wonder_hoi:
                 "hoi_pipeline_eval_vis": self.hoi_pipeline_eval_vis,
                 "hoi_pipeline_eval_vis_gt": self.hoi_pipeline_eval_vis_gt,
                 "hoi_pipeline_teaser": self.hoi_pipeline_teaser,
+                "hoi_pipeline_hand_object_mesh": self.hoi_pipeline_hand_object_mesh,
                 "hoi_pipeline_joint_opt_global": self.hoi_pipeline_joint_opt_global,
                 "hoi_pipeline_reg_remaining": self.hoi_pipeline_reg_remaining,
                 "hoi_pipeline_HY_gen": self.hoi_pipeline_HY_gen,
@@ -2171,6 +2172,34 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
+    def hoi_pipeline_hand_object_mesh(self, scene_name, **kwargs):
+        mode = self.seq_config.get("hand_object_mesh_mode", "ho")
+        mesh_type = self.seq_config.get("hand_object_mesh_type", "neus")
+        cond_index = int(self._get_best_cond_id(scene_name))
+        frame_index = int(self.seq_config.get("hand_object_mesh_frame_index", cond_index))
+
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+        result_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/"
+        out_dir = f"{vggt_code_dir}/output/{scene_name}/hand_object_mesh/"
+
+        self.print_header(f"hoi pipeline hand/object mesh export for {scene_name} (frame {frame_index})")
+        if self.rebuild:
+            cmd = f"rm -rf {out_dir}"
+            print(cmd)
+            os.system(cmd)
+
+        cmd = f"cd {vggt_code_dir} && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_hand_object_mesh.py "
+        cmd += f"--result_folder {result_dir} "
+        cmd += f"--SAM3D_dir {data_dir}/SAM3D_aligned_post_process "
+        cmd += f"--cond_index {cond_index} "
+        cmd += f"--frame_index {frame_index} "
+        cmd += f"--out_dir {out_dir} "
+        cmd += f"--mesh_type {mesh_type} "
+        cmd += f"--hand_mode {mode} "
+        print(cmd)
+        os.system(cmd)
+
     def hoi_pipeline_eval_vis_gt(self, scene_name, **kwargs):
         self.print_header(f"Visualize GT mesh/pose/image in Rerun for {scene_name}")
         data_dir = f"{self.dataset_dir}/{scene_name}"
@@ -2719,6 +2748,7 @@ if __name__ == "__main__":
                 "hoi_pipeline_eval_vis",
                 "hoi_pipeline_eval_vis_gt",
                 "hoi_pipeline_teaser",
+                "hoi_pipeline_hand_object_mesh",
                 "hoi_pipeline_joint_opt_global",
                 "hoi_pipeline_reg_remaining",
                 "hoi_pipeline_HY_gen",
