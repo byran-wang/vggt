@@ -117,4 +117,7 @@ Host 3090_server1
 
 ### 2026-04-21
 #### Top Priorities
-- [x] rsync  /data1/shibo/Documents/project/vggt/output[4_29_22_45][285742a][sam3d_align_by_foundation_pose]/metrics_summary on 3090 server to /home/simba/Documents/project/vggt/output[4_29_22_45][285742a][sam3d_align_by_foundation_pose]
+- [x] rsync all the *.mp4 files in /data1/shibo/Documents/project/vggt_in_the_wild/output/metrics_summary on 3090 server to /home/simba/Documents/project/vggt/output_server_in_the_wild/
+- [x] rsync /home/simba/Documents/dataset/ZED_wenxuan/CUB1/mask_hand/ to 3090_server1:/data1/shibo/Documents/dataset/ZED_wenxuan/CUB1/
+- [x] rsync /home/simba/Documents/dataset/ZED_wenxuan/SHP1/mask_hand/ to 3090_server1:/data1/shibo/Documents/dataset/ZED_wenxuan/SHP1/ 
+- [x] find . -name "hoi_mask_projection_frame_*" -printf "%T@ %TY-%Tm-%Td %TH:%TM:%TS %p\n" | sort -n | cut -d' ' -f2-
