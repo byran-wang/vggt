@@ -19,10 +19,7 @@ sys.path.insert(0, str(project_root / "third_party" / "utils_simba"))
 from utils_simba.depth import depth2xyzmap
 from utils_simba.rerun import log_mesh, log_camera_frame
 from robust_hoi_pipeline.pipeline_utils import load_frame_list, load_preprocessed_frame
-from robust_hoi_pipeline.frame_management import (
-    high_confidence_points_mask,
-    load_register_indices,
-)
+from robust_hoi_pipeline.frame_management import load_register_indices
 from robust_hoi_pipeline.pipeline_utils import load_sam3d_transform
 
 
@@ -563,16 +560,9 @@ def visualize_frame(
             if align_pred_to_gt is not None:
                 valid_points_3d = (align_pred_to_gt[:3, :3] @ valid_points_3d.T).T + align_pred_to_gt[:3, 3]
 
-            # Split by track visibility count: well-observed (green) vs poorly-observed (red).
-            # Use the shared selection rule so vis / opt / keyframe-check stay in sync.
-            full_high_conf = high_confidence_points_mask(
-                points_3d=np.asarray(image_info["points_3d"]),
-                track_vis_count=track_vis_count,
-                min_track_number=min_track_number,
-                require_finite=False,  # finite handled by valid_3d_mask above
-            )
-            if full_high_conf.shape[0] == len(valid_3d_mask):
-                well_observed = full_high_conf[valid_3d_mask]
+            # Split by track visibility count: well-observed (green) vs poorly-observed (red)
+            if track_vis_count is not None:
+                well_observed = track_vis_count[valid_3d_mask] >= min_track_number
             else:
                 well_observed = np.ones(len(valid_points_3d), dtype=bool)
 
