@@ -1599,29 +1599,12 @@ def _mean_nn_distance(src_pts, dst_pts):
 def _get_high_confidence_points_3d(image_info_work, min_track_number=3):
     """Return (M, 3) object-space 3D points visible in >= min_track_number keyframes.
 
-    Filters out NaN/inf rows. Returns None if no such points exist.
+    Thin wrapper around ``frame_management.get_high_confidence_points_3d`` so
+    the selection rule stays in sync across pipeline_joint_opt, the visualizer,
+    and the keyframe-HOI-mask check in frame_management.check_key_frame.
     """
-    points_3d = image_info_work.get("points_3d")
-    if points_3d is None:
-        return None
-    pts = np.asarray(points_3d)
-    tracks_mask = image_info_work.get("tracks_mask")
-    keyframes = image_info_work.get("keyframe")
-    if tracks_mask is not None and keyframes is not None:
-        kf_flags = np.asarray(keyframes).astype(bool)
-        if kf_flags.any():
-            vis_count = np.asarray(tracks_mask)[kf_flags].astype(bool).sum(axis=0)
-            well_observed = vis_count >= min_track_number
-        else:
-            well_observed = np.ones(len(pts), dtype=bool)
-    else:
-        well_observed = np.ones(len(pts), dtype=bool)
-
-    finite = np.isfinite(pts).all(axis=-1)
-    selected = pts[well_observed & finite]
-    if len(selected) == 0:
-        return None
-    return selected.astype(np.float64)
+    from robust_hoi_pipeline.frame_management import get_high_confidence_points_3d
+    return get_high_confidence_points_3d(image_info_work, min_track_number=min_track_number)
 
 
 def check_which_estimate_is_better_and_update(
@@ -1973,6 +1956,7 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 trans_thresh=args.kf_trans_thresh,
                 depth_thresh=args.kf_depth_thresh,
                 frame_inliner_thresh=args.kf_inlier_thresh,
+                debug_dir=_frame_dbg_dir,
             ):
                 try:
                     image_info_work = process_key_frame(image_info_work, next_frame_idx, args)

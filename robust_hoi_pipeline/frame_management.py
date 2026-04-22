@@ -9,9 +9,93 @@ Frame registration and keyframe management functions for the COLMAP pipeline.
 """
 
 import os
+from typing import Optional
 
 import numpy as np
 import torch
+
+
+def high_confidence_points_mask(
+    image_info=None,
+    *,
+    points_3d=None,
+    track_vis_count=None,
+    tracks_mask=None,
+    keyframes=None,
+    min_track_number: int = 3,
+    require_finite: bool = True,
+) -> np.ndarray:
+    """Return a (N,) boolean mask selecting well-observed, finite 3D points.
+
+    A point is "high confidence" when it is visible in >= ``min_track_number``
+    past keyframes (and, if ``require_finite``, all coordinates are finite).
+
+    Visibility is taken from, in priority order:
+      1. ``track_vis_count`` — precomputed per-point keyframe-visibility count.
+      2. ``tracks_mask`` (N_frames, N_pts) intersected with ``keyframes``.
+      3. Neither available -> all points are treated as well-observed.
+
+    Pass either a dict via ``image_info`` (keys: ``points_3d``, ``track_vis_count``,
+    ``tracks_mask``/``track_mask``, ``keyframe``) or explicit arrays via kwargs.
+    """
+    if image_info is not None:
+        if points_3d is None:
+            points_3d = image_info.get("points_3d")
+        if track_vis_count is None:
+            track_vis_count = image_info.get("track_vis_count")
+        if tracks_mask is None:
+            tracks_mask = image_info.get("tracks_mask")
+            if tracks_mask is None:
+                tracks_mask = image_info.get("track_mask")
+        if keyframes is None:
+            keyframes = image_info.get("keyframe")
+
+    if points_3d is None:
+        return np.zeros(0, dtype=bool)
+
+    pts = np.asarray(points_3d)
+    n = pts.shape[0] if pts.ndim >= 1 else 0
+
+    vis_count: Optional[np.ndarray] = None
+    if track_vis_count is not None:
+        vc = np.asarray(track_vis_count)
+        if vc.shape[0] == n:
+            vis_count = vc
+
+    if vis_count is None and tracks_mask is not None and keyframes is not None:
+        kf_flags = np.asarray(keyframes, dtype=bool)
+        tm = np.asarray(tracks_mask, dtype=bool)
+        if kf_flags.any() and tm.ndim == 2 and tm.shape[0] == len(kf_flags) and tm.shape[1] == n:
+            vis_count = tm[kf_flags].sum(axis=0)
+
+    if vis_count is not None:
+        well_observed = vis_count >= min_track_number
+    else:
+        well_observed = np.ones(n, dtype=bool)
+
+    if require_finite and pts.ndim == 2 and pts.shape[1] >= 1:
+        finite = np.isfinite(pts).all(axis=-1)
+        well_observed = well_observed & finite
+
+    return well_observed.astype(bool)
+
+
+def get_high_confidence_points_3d(image_info, min_track_number: int = 3):
+    """Return (M, 3) object-space points observed in >= ``min_track_number`` keyframes.
+
+    Returns None if no such points exist or ``points_3d`` is absent.
+    """
+    points_3d = image_info.get("points_3d") if image_info is not None else None
+    if points_3d is None:
+        return None
+    pts = np.asarray(points_3d)
+    mask = high_confidence_points_mask(image_info, min_track_number=min_track_number)
+    if mask.shape[0] != pts.shape[0]:
+        return None
+    sel = pts[mask]
+    if len(sel) == 0:
+        return None
+    return sel.astype(np.float64)
 
 
 def save_keyframe_indices(output_dir, frame_idx):
@@ -162,7 +246,127 @@ def check_frame_invalid(image_info, frame_idx, min_inlier_per_frame=10, min_dept
     return False
 
 
-def check_key_frame(image_info, frame_idx, rot_thresh, trans_thresh, depth_thresh, frame_inliner_thresh):
+def reject_by_hoi_mask_projection(
+    image_info,
+    frame_idx,
+    R_curr,
+    t_curr,
+    min_track_obs: int = 3,
+    mask_dilate_px: int = 3,
+    outside_ratio_thresh: float = 0.15,
+    min_points_for_check: int = 300,
+    debug_dir=None,
+):
+    """Check if too many high-confidence 3D points project outside the expanded HOI mask.
+
+    Projects object-space points (observed in >= ``min_track_obs`` past keyframes) into
+    the current camera and measures the fraction that land outside the hand+object
+    mask dilated by ``mask_dilate_px``. A large ratio means the current pose is badly
+    misaligned with the observed HOI region.
+
+    When ``debug_dir`` is provided, writes an overlay of the merged mask (purple),
+    dilated mask ring (blue), inside projected points (green) and outside projected
+    points (red) on the RGB image.
+
+    Returns True if the frame should be rejected as a keyframe. Returns False on any
+    missing data, insufficient points, or exception (soft-fail so the heuristic cannot
+    break keyframe selection).
+    """
+    try:
+        import cv2
+
+        points_3d = image_info.get("points_3d")
+        intrinsics = image_info.get("intrinsics")
+        obj_masks = image_info.get("image_masks")
+        hand_masks = image_info.get("image_masks_hand")
+
+        if not (
+            points_3d is not None
+            and intrinsics is not None
+            and obj_masks is not None
+            and frame_idx < len(obj_masks)
+            and obj_masks[frame_idx] is not None
+        ):
+            return False
+
+        pts = np.asarray(points_3d, dtype=np.float64)
+        sel = high_confidence_points_mask(image_info, min_track_number=min_track_obs)
+        pts_sel = pts[sel] if sel.shape[0] == len(pts) else pts[np.isfinite(pts).all(axis=-1)]
+
+        if len(pts_sel) < min_points_for_check:
+            return False
+
+        cam_pts = (R_curr @ pts_sel.T).T + t_curr  # (M, 3)
+        cam_pts = cam_pts[cam_pts[:, 2] > 1e-6]
+        if len(cam_pts) < min_points_for_check:
+            return False
+
+        K = intrinsics[frame_idx] if np.asarray(intrinsics).ndim == 3 else intrinsics
+        fx, fy = K[0, 0], K[1, 1]
+        cx, cy = K[0, 2], K[1, 2]
+        u = cam_pts[:, 0] * fx / cam_pts[:, 2] + cx
+        v = cam_pts[:, 1] * fy / cam_pts[:, 2] + cy
+
+        obj_m = np.asarray(obj_masks[frame_idx]) > 0
+        if hand_masks is not None and frame_idx < len(hand_masks) and hand_masks[frame_idx] is not None:
+            hand_m = np.asarray(hand_masks[frame_idx]) > 0
+        else:
+            hand_m = np.zeros_like(obj_m)
+        merged = (obj_m | hand_m).astype(np.uint8)
+        if mask_dilate_px > 0:
+            k = 2 * mask_dilate_px + 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+            merged_dilate = cv2.dilate(merged, kernel).astype(bool)
+        else:
+            merged_dilate = merged.astype(bool)
+
+        H, W = merged_dilate.shape
+        ui = np.round(u).astype(int)
+        vi = np.round(v).astype(int)
+        in_image = (ui >= 0) & (ui < W) & (vi >= 0) & (vi < H)
+
+        # Points that project outside the image cannot be tested against the mask,
+        # so we treat them as invalid and exclude them from the ratio.
+        valid = in_image
+        if valid.sum() < min_points_for_check:
+            return False
+
+        outside = np.zeros(int(valid.sum()), dtype=bool)
+        idx_in = np.where(in_image)[0]
+        hits = merged_dilate[vi[idx_in], ui[idx_in]]
+        outside[~hits] = True
+
+        outside_ratio = float(outside.sum()) / float(len(outside))
+        print(f"[check_key_frame] Frame {frame_idx}: ratio {outside_ratio:.2%}, inside {np.sum(~outside)}, outside {np.sum(outside)}, valid {len(outside)}, invalid {len(ui) - len(outside)}.")
+
+        if debug_dir is not None:
+            try:
+                from .pipeline_joint_opt_debug import _save_hoi_mask_projection_debug
+                images = image_info.get("images")
+                rgb = images[frame_idx] if images is not None and frame_idx < len(images) else None
+                _save_hoi_mask_projection_debug(
+                    debug_dir, frame_idx, rgb,
+                    merged.astype(bool), merged_dilate,
+                    u[idx_in], v[idx_in], outside, outside_ratio=outside_ratio,
+                )
+            except Exception as _vis_exc:
+                print(f"[check_key_frame] Frame {frame_idx}: debug overlay skipped ({_vis_exc})")
+
+        if outside_ratio > outside_ratio_thresh:
+            print(
+                f"[check_key_frame] Frame {frame_idx} rejected: "
+                f"{outside_ratio:.2%} of {len(outside)} high-confidence points "
+                f"project outside expanded HOI mask (>{outside_ratio_thresh:.0%})."
+            )
+            return True
+        return False
+    except Exception as _exc:
+        # Don't let this heuristic break keyframe selection if data is missing.
+        print(f"[check_key_frame] Frame {frame_idx}: HOI-mask check skipped ({_exc})")
+        return False
+
+
+def check_key_frame(image_info, frame_idx, rot_thresh, trans_thresh, depth_thresh, frame_inliner_thresh, _reject_if_points_outside_hoi_mask = True, debug_dir=None):
     """Heuristically decide if frame should become a keyframe based on validity + pose delta.
 
     Args:
@@ -216,6 +420,14 @@ def check_key_frame(image_info, frame_idx, rot_thresh, trans_thresh, depth_thres
 
     T_curr = extrinsics[frame_idx]
     R_curr, t_curr = T_curr[:3, :3], T_curr[:3, 3]
+
+    # Reject the frame as a keyframe if too many high-confidence 3D points
+    # (observed in >=3 past keyframes) project outside the hand+object mask
+    # expanded by a few pixels. Large outside-ratio means the current pose
+    # is badly misaligned with the observed HOI region.
+    if _reject_if_points_outside_hoi_mask:
+        if reject_by_hoi_mask_projection(image_info, frame_idx, R_curr, t_curr, debug_dir=debug_dir):
+            return False
 
     for kf_idx in past_keys:
         T_prev = extrinsics[kf_idx]
