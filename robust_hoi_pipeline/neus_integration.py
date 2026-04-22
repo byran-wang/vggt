@@ -299,6 +299,7 @@ def run_neus_training(
     # ------------------------------------------------------------------
     latest_ckpt = _find_latest_checkpoint(output_dir)
     latest_mesh = _find_latest_mesh(output_dir)
+    _prune_stale_trial_dirs(output_dir, [latest_ckpt, latest_mesh])
     _neus_cache["ckpt_path"] = latest_ckpt
 
     print(f"[NeuS] Latest checkpoint: {latest_ckpt}")
@@ -321,6 +322,39 @@ def _find_latest_mesh(output_dir: Path) -> Optional[str]:
     if not mesh_files:
         return None
     return str(max(mesh_files, key=lambda p: p.stat().st_mtime))
+
+
+def _prune_stale_trial_dirs(output_dir: Path, keep_paths) -> None:
+    """Delete trial folders under output_dir other than the ones producing the latest artifacts.
+
+    Each trial lives at ``output_dir/<trial_name>/joint_opt/{ckpt|save|...}`` (see
+    run_neus_training), so the trial folder is the grandparent of any .ckpt or
+    .obj file. Older trials accumulate when tags or timestamps change across
+    runs; keep only the trial(s) that produced the latest checkpoint/mesh.
+    """
+    output_dir = Path(output_dir).resolve()
+    keep_dirs = set()
+    for p in keep_paths:
+        if p is None:
+            continue
+        trial_dir = Path(p).resolve().parent.parent.parent  # <trial>/joint_opt/{ckpt|save}/<file>
+        if trial_dir == output_dir:
+            keep_dirs.add(trial_dir)
+    if not keep_dirs:
+        return
+    for child in output_dir.parent.iterdir():
+        if not child.is_dir():
+            continue
+        if child.resolve() in keep_dirs:
+            continue
+        if child.name == "save":
+            # Preserve the save/ directory (exported meshes) across prunes.
+            continue
+        try:
+            shutil.rmtree(child)
+            print(f"[NeuS] Deleted stale trial dir: {child}")
+        except OSError as exc:
+            print(f"[NeuS] Failed to delete {child}: {exc}")
 
 
 def _get_checkpoint_global_step(checkpoint_path: Optional[str]) -> Optional[int]:
