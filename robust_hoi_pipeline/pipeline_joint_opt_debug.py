@@ -182,8 +182,8 @@ def _dump_register_frame_inputs(debug_dir, image_info_work, frame_idx,
         return
     _dbg = Path(debug_dir)
     _dbg.mkdir(parents=True, exist_ok=True)
-    if sam3d_mesh is not None:
-        sam3d_mesh.export(_dbg / "sam3d_mesh.obj")
+    # if sam3d_mesh is not None:
+    #     sam3d_mesh.export(_dbg / "sam3d_mesh.obj")
     if neus_mesh is not None:
         neus_mesh.export(_dbg / "neus_mesh.obj")
 
