@@ -20,6 +20,9 @@ from robust_hoi_pipeline.pipeline_joint_opt_eval_vis_nvdiffrast import (
 )
 from robust_hoi_pipeline.pipeline_utils import load_sam3d_transform
 from utils_simba.eval_vis import load_mesh_as_trimesh
+from utils_simba.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 _HAND_RGB = np.array([200, 180, 220], dtype=np.uint8)
@@ -82,7 +85,7 @@ def main(args):
     register_flags = np.asarray(image_info["register"], dtype=bool)
     invalid_flags = np.asarray(image_info["invalid"], dtype=bool)
     if not (register_flags[local_idx] and not invalid_flags[local_idx]):
-        print(f"[warn] frame {frame_idx} is not registered or marked invalid — exporting anyway")
+        logger.warning(f"frame {frame_idx} is not registered or marked invalid — exporting anyway")
 
     c2o = np.asarray(image_info["c2o"], dtype=np.float64)
 
@@ -95,7 +98,7 @@ def main(args):
         mesh_path = obj_files[-1]
     else:
         raise ValueError(f"Unsupported mesh type: {args.mesh_type}")
-    print(f"Using object mesh ({args.mesh_type}): {mesh_path}")
+    logger.info(f"Using object mesh ({args.mesh_type}): {mesh_path}")
 
     object_obj = load_mesh_as_trimesh(mesh_path)
 
@@ -124,9 +127,9 @@ def main(args):
     object_obj.export(str(object_path))
     merged_obj.export(str(merged_path))
 
-    print(f"Saved hand mesh    -> {hand_path}")
-    print(f"Saved object mesh  -> {object_path}")
-    print(f"Saved merged mesh  -> {merged_path}")
+    logger.info(f"Saved hand mesh    -> {hand_path}")
+    logger.info(f"Saved object mesh  -> {object_path}")
+    logger.info(f"Saved merged mesh  -> {merged_path}")
 
 
 def parse_args():
