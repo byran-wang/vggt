@@ -1007,7 +1007,8 @@ def _align_object_with_hand(image_info_work, frame_idx, obj_mesh, max_pts=2000, 
     Contact loss: distance between hand finger tips and object surface.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    debug_dir = debug_dir / "align_object_with_hand"
+    if debug_dir is not None:
+        debug_dir = debug_dir / "align_object_with_hand"
 
     ext = image_info_work["extrinsics"][frame_idx].astype(np.float64)
     K = (image_info_work["intrinsics"][frame_idx]
