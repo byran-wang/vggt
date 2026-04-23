@@ -1733,6 +1733,44 @@ def print_image_info_stats(image_info, invalid_cnt):
         f"reproj_err: {invalid_cnt['reproj_err']})"
     )   
 
+def _track_foundation_pose_one_iter(
+    image_info_work, next_frame_idx,
+    sam3d_mesh, neus_mesh_trimesh,
+    pnp_pose, pnp_success,
+    iters, fp_crop_ratio, best_pose_overall,
+):
+    refiner = _foundation_pose_cache.get("refiner")
+    if refiner is not None:
+        refiner.cfg['crop_ratio'] = fp_crop_ratio
+
+    if iters == 0:
+        fp_init_pose = _select_fp_init_pose(image_info_work, next_frame_idx, pnp_pose, pnp_success)
+    elif best_pose_overall is not None:
+        fp_init_pose = best_pose_overall
+    elif pnp_success and pnp_pose is not None:
+        fp_init_pose = pnp_pose
+    else:
+        fp_init_pose = None
+
+    if sam3d_mesh is not None:
+        fp_pose_sam3d, fp_success_sam3d = _reset_and_track_foundation_pose(
+            image_info_work, next_frame_idx, sam3d_mesh, init_pose=fp_init_pose,
+        )
+    else:
+        logger.warning(f"sam3d_mesh is None at frame {next_frame_idx}; skipping SAM3D FoundationPose track")
+        fp_pose_sam3d, fp_success_sam3d = None, False
+
+    if neus_mesh_trimesh is not None:
+        fp_pose_neus, fp_success_neus = _reset_and_track_foundation_pose(
+            image_info_work, next_frame_idx, neus_mesh_trimesh, init_pose=fp_init_pose,
+        )
+    else:
+        logger.warning(f"neus_mesh_trimesh is None at frame {next_frame_idx}; skipping NeuS FoundationPose track")
+        fp_pose_neus, fp_success_neus = None, False
+
+    return fp_pose_sam3d, fp_success_sam3d, fp_pose_neus, fp_success_neus
+
+
 def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, cond_idx: int,
                                neus_ckpt=None, neus_total_steps=0, sam3d_root_dir=None,
                                neus_mesh_path=None, optimize_3D_prior=False):
@@ -1846,13 +1884,9 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
         best_score = np.inf
         best_pose_overall = None
         estimate_success = False
-        max_iter_number = 3
-        fp_crop_ratio_scale = 1.2
-        fp_crop_ratio = fp_crop_ratio_scale ** max_iter_number
         pnp_pose, pnp_success = register_new_frame_by_PnP(
             image_info_work, next_frame_idx, args, update_pose=False, return_pose=True
         )        
-
         # Debug: dump SAM3D/NeuS meshes and PnP-pose depth points for this frame
         _frame_dbg_dir = None
         if not RUN_ON_SERVER:
@@ -1865,43 +1899,19 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
                 sam3d_mesh, neus_mesh_trimesh, pnp_pose,
             )
 
+        max_iter_number = 3
+        fp_crop_ratio_scale = 1.2
+        fp_crop_ratio = fp_crop_ratio_scale ** max_iter_number
         for iters in range(max_iter_number):
             fp_crop_ratio *= (1 / fp_crop_ratio_scale)
 
 
-            # Set crop_ratio on the shared refiner before FoundationPose tracking
-            refiner = _foundation_pose_cache.get("refiner")
-            if refiner is not None:
-                refiner.cfg['crop_ratio'] = fp_crop_ratio
-
-            # First iteration: pick the better of PnP vs nearest-registered pose
-            # by depth-NN score. Later iterations: use the best pose so far
-            # (fall back to PnP or nearest if nothing yet).
-            if iters == 0:
-                fp_init_pose = _select_fp_init_pose(image_info_work, next_frame_idx, pnp_pose, pnp_success)
-            else:
-                if best_pose_overall is not None:
-                    fp_init_pose = best_pose_overall
-                elif pnp_success and pnp_pose is not None:
-                    fp_init_pose = pnp_pose
-                else:
-                    fp_init_pose = None
-
-            if sam3d_mesh is not None:
-                fp_pose_sam3d, fp_success_sam3d = _reset_and_track_foundation_pose(
-                    image_info_work, next_frame_idx, sam3d_mesh, init_pose=fp_init_pose,
-                )
-            else:
-                logger.warning(f"sam3d_mesh is None at frame {next_frame_idx}; skipping SAM3D FoundationPose track")
-                fp_pose_sam3d, fp_success_sam3d = None, False
-
-            if neus_mesh_trimesh is not None:
-                fp_pose_neus, fp_success_neus = _reset_and_track_foundation_pose(
-                    image_info_work, next_frame_idx, neus_mesh_trimesh, init_pose=fp_init_pose,
-                )
-            else:
-                logger.warning(f"neus_mesh_trimesh is None at frame {next_frame_idx}; skipping NeuS FoundationPose track")
-                fp_pose_neus, fp_success_neus = None, False
+            fp_pose_sam3d, fp_success_sam3d, fp_pose_neus, fp_success_neus = _track_foundation_pose_one_iter(
+                image_info_work, next_frame_idx,
+                sam3d_mesh, neus_mesh_trimesh,
+                pnp_pose, pnp_success,
+                iters, fp_crop_ratio, best_pose_overall,
+            )
 
             # Debug: object-space depth point clouds for each candidate FP pose
             _iter_dbg_dir = (_frame_dbg_dir / f"iter_{iters:02d}") if _frame_dbg_dir is not None else None
