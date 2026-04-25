@@ -48,7 +48,7 @@ def _save_hand_in_obj_space(hand_cam: dict, c2o_with_scale_i: np.ndarray, out_pa
 def _render_with_camera_pose(*, image_resolution, num_samples, obj_mesh_path, hand_mesh_path,
                              output_path, camera_pose_obj, light_angle, focal_length,
                              obj_rgb, hand_rgb, shading="smooth", subdivision_iteration=0,
-                             shadow_brightness=0.9, save_blend=False):
+                             shadow_brightness=0.9, save_blend=False, plane_z=-0.6):
     """Render object (in obj space) + hand (in cam space) by placing the Blender camera
     and the hand mesh's object transform at ``camera_pose_obj`` (4x4, c2o_with_scale).
 
@@ -85,7 +85,7 @@ def _render_with_camera_pose(*, image_resolution, num_samples, obj_mesh_path, ha
     else:
         raise ValueError(f"shading must be 'smooth' or 'flat', got {shading}")
 
-    invisibleGround(location=(0, 0, -0.6), shadowBrightness=shadow_brightness)
+    invisibleGround(location=(0, 0, float(plane_z)), shadowBrightness=shadow_brightness)
 
     bpy.ops.object.camera_add(location=(0, 0, 0))
     cam = bpy.context.object
@@ -169,6 +169,20 @@ def main(args):
     rendered_count = 0
     frame_list = np.asarray(image_info["frame_indices"]).tolist()
     iter_frames = args.frame_list if args.frame_list else frame_list
+
+    if args.plane_z is not None:
+        plane_z = float(args.plane_z)
+    else:
+        object_min_z = float(np.asarray(object_mesh.vertices)[:, 2].min())
+        cam_zs = [
+            float(c2o[frame_list.index(int(f))][2, 3])
+            for f in iter_frames
+            if int(f) in frame_list and bool(valid_flags[frame_list.index(int(f))])
+        ]
+        scene_min_z = min([object_min_z] + cam_zs) if cam_zs else object_min_z
+        plane_z = scene_min_z - float(args.plane_margin)
+    logger.info(f"Shadow-catcher plane z = {plane_z:.4f}")
+
     for frame_idx in iter_frames:
         frame_idx = int(frame_idx)
         if frame_idx not in frame_list:
@@ -206,6 +220,7 @@ def main(args):
             obj_rgb=args.obj_mesh_RGB,
             hand_rgb=args.hand_mesh_RGB,
             save_blend=bool(args.debug),
+            plane_z=plane_z,
         )
         logger.info(f"Rendered frame {frame_idx} -> {png_path}")
         rendered_count += 1
@@ -254,6 +269,11 @@ def parse_args():
     parser.add_argument("--frame_list", type=int, nargs="+", default=None,
                         help="Optional explicit list of frame indices to render such as --frame_list 290 295 300"
                              "If omitted, iterates over all frames from image_info[\"frame_indices\"].")
+    parser.add_argument("--plane_z", type=float, default=None,
+                        help="Shadow-catcher plane z (obj space). If unset, auto-set below "
+                             "min(object_min_z, min camera_z) by --plane_margin.")
+    parser.add_argument("--plane_margin", type=float, default=0.05,
+                        help="Margin below the scene used when --plane_z is auto-computed.")
     return parser.parse_args()
 
 
