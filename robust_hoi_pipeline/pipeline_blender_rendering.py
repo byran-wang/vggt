@@ -48,7 +48,7 @@ def _save_hand_in_obj_space(hand_cam: dict, c2o_with_scale_i: np.ndarray, out_pa
 def _render_with_camera_pose(*, image_resolution, num_samples, obj_mesh_path, hand_mesh_path,
                              output_path, camera_pose_obj, light_angle, focal_length,
                              obj_rgb, hand_rgb, shading="smooth", subdivision_iteration=0,
-                             shadow_brightness=0.9):
+                             shadow_brightness=0.9, save_blend=False):
     """Render object (in obj space) + hand (in cam space) by placing the Blender camera
     and the hand mesh's object transform at ``camera_pose_obj`` (4x4, c2o_with_scale).
 
@@ -98,8 +98,9 @@ def _render_with_camera_pose(*, image_resolution, num_samples, obj_mesh_path, ha
     shadowThreshold(alphaThreshold=0.05, interpolationMode="CARDINAL")
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    blend_path = Path(output_path).with_suffix(".blend")
-    bpy.ops.wm.save_mainfile(filepath=str(blend_path))
+    if save_blend:
+        blend_path = Path(output_path).with_suffix(".blend")
+        bpy.ops.wm.save_mainfile(filepath=str(blend_path))
     renderImage(str(output_path), cam)
 
 
@@ -167,8 +168,8 @@ def main(args):
 
     rendered_count = 0
     frame_list = np.asarray(image_info["frame_indices"]).tolist()
-    frame_indices = [290]
-    for frame_idx in frame_indices:
+    iter_frames = args.frame_list if args.frame_list else frame_list
+    for frame_idx in iter_frames:
         frame_idx = int(frame_idx)
         if frame_idx not in frame_list:
             logger.warning(f"[skip] frame {frame_idx}: not in frame_indices")
@@ -204,6 +205,7 @@ def main(args):
             focal_length=args.focal_length,
             obj_rgb=args.obj_mesh_RGB,
             hand_rgb=args.hand_mesh_RGB,
+            save_blend=bool(args.debug),
         )
         logger.info(f"Rendered frame {frame_idx} -> {png_path}")
         rendered_count += 1
@@ -247,6 +249,11 @@ def parse_args():
                         default=[144.0 / 255, 210.0 / 255, 236.0 / 255])
     parser.add_argument("--hand_mesh_RGB", type=float, nargs=3,
                         default=[200.0 / 255, 180.0 / 255, 220.0 / 255])
+    parser.add_argument("--debug", action="store_true",
+                        help="Save the per-frame .blend file alongside each rendered PNG")
+    parser.add_argument("--frame_list", type=int, nargs="+", default=None,
+                        help="Optional explicit list of frame indices to render such as --frame_list 290 295 300"
+                             "If omitted, iterates over all frames from image_info[\"frame_indices\"].")
     return parser.parse_args()
 
 

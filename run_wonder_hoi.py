@@ -2167,6 +2167,8 @@ class run_wonder_hoi:
         cmd += f"--out_dir {out_dir} "
         cmd += f"--mesh_type {mesh_type} "
         cmd += f"--hand_mode {mode} "
+        # cmd += f"--frame_list 100 "
+        # cmd += f"--debug "
         cmd += f"--fps {self.seq_config.get('blender_rendering_fps', 6)} "
         if dataset_type != "ho3d":
             cmd += f"--vis_gt 0 "
