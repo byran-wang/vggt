@@ -34,3 +34,6 @@
 [submodule "third_party/sam-3d-objects"]
 	path = third_party/sam-3d-objects
 	url = git@github.com:byran-wang/sam-3d-objects.git
+[submodule "third_party/BlenderToolbox"]
+	path = third_party/BlenderToolbox
+	url = git@github.com:byran-wang/BlenderToolbox.git

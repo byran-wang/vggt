@@ -126,6 +126,7 @@ class run_wonder_hoi:
                 "hoi_pipeline_joint_opt": self.hoi_pipeline_joint_opt,
                 "hoi_pipeline_eval": self.hoi_pipeline_eval,
                 "hoi_pipeline_eval_vis": self.hoi_pipeline_eval_vis,
+                "hoi_pipeline_blender_rendering": self.hoi_pipeline_blender_rendering,
                 "hoi_pipeline_eval_vis_gt": self.hoi_pipeline_eval_vis_gt,
                 "hoi_pipeline_teaser": self.hoi_pipeline_teaser,
                 "hoi_pipeline_hand_object_mesh": self.hoi_pipeline_hand_object_mesh,
@@ -2145,6 +2146,33 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
+    def hoi_pipeline_blender_rendering(self, scene_name, **kwargs):
+        mode = self.seq_config.get("hand_align_mode", "ho")
+        mesh_type = self.seq_config.get("mesh_type", "neus")
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+        result_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/"
+        out_dir = f"{vggt_code_dir}/output/{scene_name}/blender_rendering/"
+
+        self.print_header(f"hoi pipeline blender hand+object mesh render for {scene_name}")
+        if self.rebuild:
+            cmd = f"rm -rf {out_dir}"
+            print(cmd)
+            os.system(cmd)
+
+        cmd = f"cd {vggt_code_dir} && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_blender_rendering.py "
+        cmd += f"--result_folder {result_dir} "
+        cmd += f"--SAM3D_dir {data_dir}/SAM3D_aligned_post_process "
+        cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
+        cmd += f"--out_dir {out_dir} "
+        cmd += f"--mesh_type {mesh_type} "
+        cmd += f"--hand_mode {mode} "
+        cmd += f"--fps {self.seq_config.get('blender_rendering_fps', 6)} "
+        if dataset_type != "ho3d":
+            cmd += f"--vis_gt 0 "
+        print(cmd)
+        os.system(cmd)
+
     def hoi_pipeline_teaser(self, scene_name, **kwargs):
         mode = "ho"
         data_dir = f"{self.dataset_dir}/{scene_name}"
@@ -2193,7 +2221,7 @@ class run_wonder_hoi:
         cmd += f"--result_folder {result_dir} "
         cmd += f"--SAM3D_dir {data_dir}/SAM3D_aligned_post_process "
         cmd += f"--cond_index {cond_index} "
-        cmd += f"--frame_index {frame_index} "
+        cmd += f"--frame_index 290 "
         cmd += f"--out_dir {out_dir} "
         cmd += f"--mesh_type {mesh_type} "
         cmd += f"--hand_mode {mode} "
@@ -2746,6 +2774,7 @@ if __name__ == "__main__":
                 "hoi_pipeline_joint_opt",
                 "hoi_pipeline_eval",
                 "hoi_pipeline_eval_vis",
+                "hoi_pipeline_blender_rendering",
                 "hoi_pipeline_eval_vis_gt",
                 "hoi_pipeline_teaser",
                 "hoi_pipeline_hand_object_mesh",
