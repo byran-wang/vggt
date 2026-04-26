@@ -72,8 +72,33 @@ def _filter_depth_keyframes(depths_kf, masks_kf, K_kf, o2c_kf, bbox_half_extent:
         )
 
 
+def _save_iou_contour_overlay(
+    path: Path, rgb: np.ndarray, gt_full: np.ndarray, pred_full: np.ndarray, iou: float,
+) -> None:
+    import cv2
+    base = np.ascontiguousarray(rgb)
+    if base.dtype != np.uint8:
+        base = base.astype(np.uint8)
+    if base.ndim == 2:
+        canvas = cv2.cvtColor(base, cv2.COLOR_GRAY2BGR)
+    else:
+        canvas = cv2.cvtColor(base[..., :3], cv2.COLOR_RGB2BGR)
+
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    gt_u8 = (gt_full.astype(np.uint8) * 255)
+    pr_u8 = (pred_full.astype(np.uint8) * 255)
+    gt_boundary = cv2.dilate(gt_u8, kernel) - cv2.erode(gt_u8, kernel)
+    pr_boundary = cv2.dilate(pr_u8, kernel) - cv2.erode(pr_u8, kernel)
+    canvas[gt_boundary > 127] = [0, 255, 0]
+    canvas[pr_boundary > 127] = [0, 0, 255]
+    cv2.putText(canvas, f"IoU={iou:.3f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                (255, 255, 255), 2)
+    cv2.imwrite(str(path), canvas)
+
+
 def _filter_keyframes_by_mask_iou(
-    mesh, K_kf, o2c_kf, masks_kf, masks_hand_kf, H, W, threshold: float
+    mesh, K_kf, o2c_kf, images_kf, masks_kf, masks_hand_kf, H, W, threshold: float,
+    debug_dir: Path = None, frame_indices_kf=None,
 ):
     import nvdiffrast.torch as dr
     glctx = dr.RasterizeCudaContext()
@@ -81,6 +106,10 @@ def _filter_keyframes_by_mask_iou(
     n_kf = len(masks_kf)
     keep = np.zeros(n_kf, dtype=bool)
     ious = np.zeros(n_kf, dtype=np.float32)
+
+    if debug_dir is not None:
+        debug_dir = Path(debug_dir)
+        debug_dir.mkdir(parents=True, exist_ok=True)
 
     for i in range(n_kf):
         pred_obj = _render_object_mask(mesh, K_kf[i], o2c_kf[i], H, W, glctx)
@@ -99,6 +128,13 @@ def _filter_keyframes_by_mask_iou(
         iou = float(inter) / max(int(union), 1)
         ious[i] = iou
         keep[i] = iou >= threshold
+
+        if debug_dir is not None:
+            frame_idx = frame_indices_kf[i] if frame_indices_kf is not None else i
+            fname = f"kf{i:04d}_frame{int(frame_idx):04d}_iou{iou:.3f}.png"
+            _save_iou_contour_overlay(
+                debug_dir / fname, images_kf[i], gt_full, pred_full, iou,
+            )
 
     logger.info(
         f"[neus_global] mask IoU stats: min={ious.min():.3f}, "
@@ -165,10 +201,15 @@ def main(args):
                             args.bbox_half_extent)
 
     logger.info("[neus_global] computing mask IoU per keyframe")
+    frame_indices_kf = [int(frame_indices[i]) for i in keyframe_local_indices]
+    iou_debug_dir = out_dir / "iou_debug"
     keep, ious = _filter_keyframes_by_mask_iou(
-        mesh, K_keyframes, o2c_keyframes, masks_kf, masks_hand_kf, H, W,
+        mesh, K_keyframes, o2c_keyframes, images_kf, masks_kf, masks_hand_kf, H, W,
         args.mask_iou_threshold,
+        debug_dir=iou_debug_dir,
+        frame_indices_kf=frame_indices_kf,
     )
+    logger.info(f"[neus_global] saved IoU debug images to {iou_debug_dir}")
     n_kept = int(keep.sum())
     logger.info(
         f"[neus_global] kept {n_kept}/{n_kf} keyframes after IoU filter "
@@ -201,7 +242,7 @@ def main(args):
         masks_hand=masks_hand_kf,
     )
 
-    neus_ckpt, neus_mesh, _ = run_neus_training(
+    neus_ckpt, neus_mesh = run_neus_training(
         neus_data_dir,
         config_path="configs/neus-pipeline.yaml",
         max_steps=args.max_steps,
@@ -230,7 +271,7 @@ def parse_args():
     parser.add_argument("--sam3d_weight", type=float, default=0.0)
     parser.add_argument("--max_registered_frames", type=int, default=-1)
     parser.add_argument("--export_only", action="store_true", default=False)
-    parser.add_argument("--mask_iou_threshold", type=float, default=0.5,
+    parser.add_argument("--mask_iou_threshold", type=float, default=0.8,
                         help="Drop keyframes whose mask IoU is below this threshold")
     parser.add_argument("--bbox_half_extent", type=float, default=0.55,
                         help="Object-space bbox half-extent for depth filtering")
