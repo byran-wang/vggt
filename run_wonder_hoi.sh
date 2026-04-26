@@ -91,6 +91,8 @@ python run_wonder_hoi.py --execute_list obj_process --process_list eval_sum_intr
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_align_hand_object_h hoi_pipeline_align_hand_object_r hoi_pipeline_align_hand_object_o hoi_pipeline_align_hand_object_ho --seq_list $seq_list --rebuild #--vis
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_eval --seq_list $seq_list --rebuild
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_eval_vis --seq_list $seq_list --rebuild
+# Per-frame input visualization (RGB+masks overlay, depth colormap, hand mesh overlay)
+python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_input_visulize --seq_list $seq_list --rebuild
 # Render hand+object meshes per-frame with Blender (PNGs + MP4)
 python run_wonder_hoi.py --execute_list obj_process --process_list hoi_pipeline_blender_rendering --seq_list $seq_list --rebuild
 # Visualize GT mesh, pose, and images in Rerun

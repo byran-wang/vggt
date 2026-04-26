@@ -125,6 +125,7 @@ class run_wonder_hoi:
                 "hoi_pipeline_HY_to_SAM3D": self.hoi_pipeline_HY_to_SAM3D,
                 "hoi_pipeline_joint_opt": self.hoi_pipeline_joint_opt,
                 "hoi_pipeline_eval": self.hoi_pipeline_eval,
+                "hoi_pipeline_input_visulize": self.hoi_pipeline_input_visulize,
                 "hoi_pipeline_eval_vis": self.hoi_pipeline_eval_vis,
                 "hoi_pipeline_blender_rendering": self.hoi_pipeline_blender_rendering,
                 "hoi_pipeline_eval_vis_gt": self.hoi_pipeline_eval_vis_gt,
@@ -2117,6 +2118,27 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)     
 
+    def hoi_pipeline_input_visulize(self, scene_name, **kwargs):
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+        out_dir = f"{vggt_code_dir}/output/{scene_name}/input_visulize"
+        frame_index = 400
+        hand_mode = self.seq_config.get("input_visulize_hand_mode", "trans")
+
+        self.print_header(f"hoi pipeline input visualize for {scene_name} (frame {frame_index})")
+        if self.rebuild:
+            cmd = f"rm -rf {out_dir}"
+            print(cmd)
+            os.system(cmd)
+
+        cmd = f"cd {vggt_code_dir} && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/input_visulize.py "
+        cmd += f"--data_dir {data_dir} "
+        cmd += f"--frame_index {frame_index} "
+        cmd += f"--out_dir {out_dir} "
+        cmd += f"--hand_mode {hand_mode} "
+        print(cmd)
+        os.system(cmd)
+
     def hoi_pipeline_eval_vis(self, scene_name, **kwargs):
         mode = "ho"
         out_dir = f"{vggt_code_dir}/output/{scene_name}/align_hand_object"
@@ -2775,6 +2797,7 @@ if __name__ == "__main__":
                 "hoi_pipeline_HY_omni_gen",
                 "hoi_pipeline_joint_opt",
                 "hoi_pipeline_eval",
+                "hoi_pipeline_input_visulize",
                 "hoi_pipeline_eval_vis",
                 "hoi_pipeline_blender_rendering",
                 "hoi_pipeline_eval_vis_gt",
