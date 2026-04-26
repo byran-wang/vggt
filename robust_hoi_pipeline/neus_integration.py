@@ -124,6 +124,7 @@ def run_neus_training(
     robust_hoi_weight: float = 1.0,
     sam3d_weight: float = 0.3,
     export_only: bool = False,
+    mc_resolution: Optional[int] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     """Run NeuS training in-process with system caching.
 
@@ -200,6 +201,8 @@ def run_neus_training(
         ]
         if sam3d_root_dir and Path(sam3d_root_dir).exists() and sam3d_weight > 0.0:
             cli_args.append(f"dataset.sam3d_root_dir={sam3d_root_dir}")
+        if mc_resolution is not None:
+            cli_args.append(f"model.geometry.isosurface.resolution={int(mc_resolution)}")
 
         config = load_config(str(config_resolved), cli_args=cli_args)
 
@@ -238,6 +241,8 @@ def run_neus_training(
         config.dataset.sam3d_weight = sam3d_weight
         if sam3d_root_dir and Path(sam3d_root_dir).exists() and sam3d_weight > 0.0:
             config.dataset.sam3d_root_dir = str(sam3d_root_dir)
+        if mc_resolution is not None:
+            config.model.geometry.isosurface.resolution = int(mc_resolution)
         print(f"[NeuS] Reusing cached system")
 
     # ------------------------------------------------------------------

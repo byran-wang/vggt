@@ -252,6 +252,7 @@ def main(args):
         robust_hoi_weight=args.robust_hoi_weight,
         sam3d_weight=args.sam3d_weight,
         export_only=args.export_only,
+        mc_resolution=args.mc_resolution,
     )
 
     logger.info(f"NeuS global complete. Checkpoint: {neus_ckpt}, mesh: {neus_mesh}")
@@ -275,6 +276,8 @@ def parse_args():
                         help="Drop keyframes whose mask IoU is below this threshold")
     parser.add_argument("--bbox_half_extent", type=float, default=0.55,
                         help="Object-space bbox half-extent for depth filtering")
+    parser.add_argument("--mc_resolution", type=int, default=256,
+                        help="Marching-cubes resolution for NeuS mesh export")
     return parser.parse_args()
 
 

@@ -2090,6 +2090,7 @@ class run_wonder_hoi:
         cmd += f"--max_steps 10000 "
         cmd += f"--robust_hoi_weight 1.0 " # set to 0.0 to disable robust hoi in neus initialization
         cmd += f"--sam3d_weight 0.0 " # only run sam3d neus initialization without robust hoi
+        cmd += f"--mc_resolution {int(kwargs.get('mc_resolution', 256))} "
         if "max_registered_frames" in kwargs:
             cmd += f"--max_registered_frames {int(kwargs['max_registered_frames'])} "
         if "mask_iou_threshold" in kwargs:
