@@ -214,7 +214,7 @@ def eval_mesh_chamfer(
     hy_omni_mesh = results_dir.parent / "pipeline_HY_to_SAM3D" / "HY_omni_in_sam3d.obj"
     sam3d_mesh = SAM3D_dir.parent / "SAM3D" / f"{args.cond_index:04d}" / "scene.glb"
     joint_opt_ckpt_dir = (
-        results_dir.parent / "pipeline_joint_opt" / "neus_training"
+        results_dir.parent / "pipeline_neus_global" / "neus_training"
     )
     joint_opt_mesh = find_joint_opt_mesh_from_ckpt(joint_opt_ckpt_dir)
 

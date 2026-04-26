@@ -112,7 +112,7 @@ def main(args):
     mesh_cache_dir = out_dir / "mesh_cache"
     render_dir.mkdir(parents=True, exist_ok=True)
     mesh_cache_dir.mkdir(parents=True, exist_ok=True)
-    neus_dir = results_dir / "neus_training"
+    neus_dir = results_dir.parent / "pipeline_neus_global" / "neus_training"
 
     image_info = load_image_info(results_dir)
     sam3d_tf = load_sam3d_transform(sam3d_dir, args.cond_index)

@@ -196,9 +196,9 @@ def read_data_after_object_reconstruction(args):
     meta['mask_obj_paths'] = mask_obj_ps
     meta['mask_hand_paths'] = mask_hand_ps
     meta['depth_paths'] = depth_ps
-    # load object latest checkpoint and mesh from neus_training
+    # load object latest checkpoint and mesh from pipeline_neus_global
     result_dir = Path(args['result_dir'])
-    neus_training_dir = result_dir / "neus_training"
+    neus_training_dir = result_dir.parent / "pipeline_neus_global" / "neus_training"
     # find the latest subdirectory in neus_training
     subdirs = [d for d in neus_training_dir.iterdir() if d.is_dir()]
     assert subdirs, f"No subdirectory found in {neus_training_dir}"
