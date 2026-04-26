@@ -2082,17 +2082,20 @@ class run_wonder_hoi:
         
         CONDA_PREFIX = f"{self.conda_dir}/envs/vggsfm_tmp"
         cmd = f'''cd {vggt_code_dir} && export PATH={CONDA_PREFIX}/bin:$PATH && export CC={CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-gcc &&  export CXX={CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-g++ && '''
-        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_neus_init.py "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_neus_global.py "
         cmd += f"--data_dir {data_dir} "
         cmd += f"--output_dir {out_dir} "
         cmd += f"--result_dir {result_dir}/ "
         cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
-        cmd += f"--max_steps 2000 "
+        cmd += f"--max_steps 10000 "
         cmd += f"--robust_hoi_weight 1.0 " # set to 0.0 to disable robust hoi in neus initialization
         cmd += f"--sam3d_weight 0.0 " # only run sam3d neus initialization without robust hoi
-        # cmd += f"--gt_pose "
         if "max_registered_frames" in kwargs:
             cmd += f"--max_registered_frames {int(kwargs['max_registered_frames'])} "
+        if "mask_iou_threshold" in kwargs:
+            cmd += f"--mask_iou_threshold {float(kwargs['mask_iou_threshold'])} "
+        if "bbox_half_extent" in kwargs:
+            cmd += f"--bbox_half_extent {float(kwargs['bbox_half_extent'])} "
         if export_only:
             cmd += f"--export_only "
         print(cmd)
