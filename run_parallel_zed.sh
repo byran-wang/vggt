@@ -76,6 +76,11 @@ for device in "${!device_sequences[@]}"; do
 
     CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
       --execute_list obj_process \
+      --process_list hoi_pipeline_neus_global \
+      --seq_list $sequences --rebuild           
+
+    CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+      --execute_list obj_process \
       --process_list hoi_pipeline_align_hand_object_h hoi_pipeline_align_hand_object_r hoi_pipeline_align_hand_object_o hoi_pipeline_align_hand_object_ho \
       --seq_list $sequences --rebuild            
 
@@ -85,6 +90,11 @@ for device in "${!device_sequences[@]}"; do
       --execute_list obj_process \
       --process_list hoi_pipeline_eval_vis eval_sum_vis \
       --seq_list $sequences --rebuild
+
+    # CUDA_VISIBLE_DEVICES=$device python run_wonder_hoi.py \
+    #   --execute_list obj_process \
+    #   --process_list hoi_pipeline_blender_rendering \
+    #   --seq_list $sequences --rebuild
 
 
 
