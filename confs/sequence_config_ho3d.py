@@ -9,7 +9,6 @@ sequence_name_list = [
     "MDF14",
     "ShSu10",
     "ShSu12",
-    # "ShSu14",
     "SM2",
     "SM4",
     "SMu1",
@@ -56,71 +55,67 @@ sequences = {
         },     
     "ABF14":
         {
-        "cond_idx": 0,
+        "cond_idx": 405,
         },
     "GPMF12":
         {
         "cond_idx": 239,
-        }, 
+        },
     "GPMF14":
         {
-        "cond_idx": 1060,
+        "cond_idx": 410,
         },
     "MC1":
         {
-        "cond_idx": 487,
-        }, 
+        "cond_idx": 700,
+        },
     "MC4":
         {
         "cond_idx": 155,
         },
     "MDF12":
         {
-        "cond_idx": 1485,
-        }, 
+        "cond_idx": 1755,
+        },
     "MDF14":
         {
-        "cond_idx": 605,
-        },         
+        "cond_idx": 1790,
+        },
     "ShSu10":
         {
         "cond_idx": 518,
         },
     "ShSu12":
         {
-        "cond_idx": 303,
-        },          
-    "ShSu14":
-        {
-        "cond_idx": 870,
-        },          
+        "cond_idx": 550,
+        },
     "SM2":
         {
         "cond_idx": 18,
         },
     "SM4":
         {
-        "cond_idx": 0,
-        },          
+        "cond_idx": 630,
+        },
      "SMu1":
         {
-        "cond_idx": 1738,
-        }, 
+        "cond_idx": 780,
+        },
     "SMu40":
         {
         "cond_idx": 400,
         },
     "BB12":
         {
-        "cond_idx": 770,
+        "cond_idx": 485,
         },
     "BB13":
         {
         "cond_idx": 1024,
-        },                                      
+        },
     "GSF12":
         {
-        "cond_idx": 385,
+        "cond_idx": 940,
         },
     "GSF13":
         {
