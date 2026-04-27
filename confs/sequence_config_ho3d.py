@@ -52,43 +52,43 @@ sequences = {
     ########## HO3D Sequences ##########
     "ABF12":
         {
-        "cond_idx": 120,
+        "cond_idx": 1015,
         },     
     "ABF14":
         {
-        "cond_idx": 0,
+        "cond_idx": 1345,
         },
     "GPMF12":
         {
-        "cond_idx": 239,
+        "cond_idx": 245,
         }, 
     "GPMF14":
         {
-        "cond_idx": 1060,
+        "cond_idx": 940,
         },
     "MC1":
         {
-        "cond_idx": 487,
+        "cond_idx": 690,
         }, 
     "MC4":
         {
-        "cond_idx": 155,
+        "cond_idx": 520,
         },
     "MDF12":
         {
-        "cond_idx": 1485,
+        "cond_idx": 1470,
         }, 
     "MDF14":
         {
-        "cond_idx": 605,
+        "cond_idx": 1265,
         },         
     "ShSu10":
         {
-        "cond_idx": 518,
+        "cond_idx": 1680,
         },
     "ShSu12":
         {
-        "cond_idx": 303,
+        "cond_idx": 550,
         },          
     "ShSu14":
         {
@@ -96,35 +96,35 @@ sequences = {
         },          
     "SM2":
         {
-        "cond_idx": 18,
+        "cond_idx": 470,
         },
     "SM4":
         {
-        "cond_idx": 0,
+        "cond_idx": 665,
         },          
      "SMu1":
         {
-        "cond_idx": 1738,
+        "cond_idx": 660,
         }, 
     "SMu40":
         {
-        "cond_idx": 400,
+        "cond_idx": 465,
         },
     "BB12":
         {
-        "cond_idx": 770,
+        "cond_idx": 510,
         },
     "BB13":
         {
-        "cond_idx": 1024,
+        "cond_idx": 1185,
         },                                      
     "GSF12":
         {
-        "cond_idx": 385,
+        "cond_idx": 125,
         },
     "GSF13":
         {
-        "cond_idx": 755,
+        "cond_idx": 340,
         },        
 
 }
