@@ -203,7 +203,7 @@ def read_data_after_object_reconstruction(args):
     subdirs = [d for d in neus_training_dir.iterdir() if d.is_dir()]
     assert subdirs, f"No subdirectory found in {neus_training_dir}"
     latest_subdir = max(subdirs, key=lambda d: d.stat().st_mtime)
-    neus_training_dir = latest_subdir / "joint_opt"
+    neus_training_dir = latest_subdir 
     ckpt_files = sorted((neus_training_dir / "ckpt").rglob("*.ckpt"), key=lambda p: p.stat().st_mtime)
     mesh_files = sorted((neus_training_dir / "save").rglob("*.obj"), key=lambda p: p.stat().st_mtime)
     assert ckpt_files, f"No checkpoint found in {neus_training_dir / 'ckpt'}"
