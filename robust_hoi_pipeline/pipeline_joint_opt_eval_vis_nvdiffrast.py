@@ -298,7 +298,7 @@ def main(args):
     results_dir = Path(args.result_folder)
     sam3d_dir = Path(args.SAM3D_dir)
     output_dir = Path(args.out_dir)
-    neus_dir = results_dir / "neus_training"
+    neus_dir = results_dir.parent / "pipeline_neus_global" / "neus_training"
 
     image_info = load_image_info(results_dir)
     sam3d_tf = load_sam3d_transform(sam3d_dir, args.cond_index)
