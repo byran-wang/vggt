@@ -180,7 +180,7 @@ class run_wonder_hoi:
 
         os.makedirs(os.path.dirname(output_video_path), exist_ok=True)
         cmd = ""
-        cmd += f"/usr/bin/ffmpeg -y -i {search_pattern} "
+        cmd += f"ffmpeg -y -i {search_pattern} "
         cmd += f"-framerate {fps} -c:v libx264 -profile:v high -crf 20 -pix_fmt yuv420p "
         cmd += f'''-vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" '''
         cmd += f"{output_video_path}"
@@ -240,8 +240,9 @@ class run_wonder_hoi:
             print(cmd)
             os.system(cmd)
 
+        fs_python = os.environ.get("RHOI_FS_PYTHON", f"{self.conda_dir}/envs/foundation_stereo/bin/python")
         cmd = f"cd {home_dir}/Documents/project/FoundationStereo && "
-        cmd += f"{self.conda_dir}/envs/foundation_stereo/bin/python "
+        cmd += f"{fs_python} "
         cmd += f"scripts/hot3d_stereo.py "
         cmd += f"--data_dir {data_dir} "
         cmd += f"--ckpt_dir ./pretrained_models/model_best_bp2.pth "
@@ -1215,8 +1216,9 @@ class run_wonder_hoi:
             print(cmd)
             os.system(cmd)
 
+        fp_python = os.environ.get("RHOI_FP_PYTHON", f"{self.conda_dir}/envs/foundation_pose/bin/python")
         cmd = f"cd {vggt_code_dir}/third_party/FoundationPose && "
-        cmd += f"{self.conda_dir}/envs/foundation_pose/bin/python {vggt_code_dir}/align_by_foundation_pose.py "
+        cmd += f"{fp_python} {vggt_code_dir}/align_by_foundation_pose.py "
         cmd += f"--data_dir {data_dir} "
         cmd += f"--cond_index {int(id)} "
         cmd += f"--out_dir {out_dir} "
@@ -1517,8 +1519,9 @@ class run_wonder_hoi:
             print(cmd)
             os.system(cmd)
 
+        fs_python = os.environ.get("RHOI_FS_PYTHON", f"{self.conda_dir}/envs/foundation_stereo/bin/python")
         cmd = f"cd {vggt_code_dir}/third_party/FoundationStereo && " \
-            f"{self.conda_dir}/envs/foundation_stereo/bin/python " \
+            f"{fs_python} " \
             "scripts/run_video.py " \
             f"--left_dir {self.dataset_dir}/{seq_name}/ir/ " \
             f"--right_dir {self.dataset_dir}/{seq_name}/ir/ " \
