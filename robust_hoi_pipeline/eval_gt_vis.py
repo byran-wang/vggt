@@ -81,7 +81,7 @@ def _overlay_normal(raw_img, normal_tensor, depth_tensor, alpha):
 
 def _create_video(frame_dir: Path, output_video: Path, fps: int):
     cmd = [
-        "/usr/bin/ffmpeg",
+        "ffmpeg",
         "-y",
         "-framerate",
         str(fps),
