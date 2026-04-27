@@ -81,14 +81,18 @@ run_stage "4 MANO fit" \
     fit_hand_intrinsic fit_hand_trans \
     --seq_list $SEQS
 
-# Stage 5: HOI joint opt + align + eval vis (mp4)
+# Stage 5: HOI joint opt -> neus global -> align (h/r/o/ho) -> eval + summary.
+# hoi_pipeline_blender_rendering is intentionally NOT included: it re-renders
+# every frame with Blender (very slow). Run separately if needed.
 run_stage "5 joint_opt+eval" \
   python run_wonder_hoi.py --execute_list obj_process --process_list \
     hoi_pipeline_data_preprocess hoi_pipeline_get_corres \
     hoi_pipeline_joint_opt \
+    hoi_pipeline_neus_global \
     hoi_pipeline_align_hand_object_h hoi_pipeline_align_hand_object_r \
     hoi_pipeline_align_hand_object_o hoi_pipeline_align_hand_object_ho \
-    hoi_pipeline_eval_vis \
+    hoi_pipeline_eval hoi_pipeline_eval_vis \
+    eval_sum eval_sum_vis \
     --seq_list $SEQS --rebuild
 
 TOTAL=$(($(date +%s)-START))

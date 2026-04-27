@@ -2012,6 +2012,8 @@ def register_remaining_frames(image_info, preprocessed_data, output_dir: Path, c
             except Exception as exc:
                 logger.warning(f"[register_remaining_frames] joint optimization failed: {exc}")
 
+        _filter_depth_by_object_bbox(image_info_work, next_frame_idx, bbox_min=[-0.55, -0.55, -0.55], bbox_max=[0.55, 0.55, 0.55])
+
         if image_info_work['keyframe'][next_frame_idx] and (key_frame_num >= 5) and (key_frame_num % 5 == 0) and args.optimize_3D_prior:
             neus_data_dir = output_dir / "pipeline_joint_opt" / "neus_data" / f"{image_info_work['frame_indices'][next_frame_idx]:04d}"
             neus_training_dir = output_dir / "pipeline_joint_opt" / "neus_training" / f"{image_info_work['frame_indices'][next_frame_idx]:04d}"
