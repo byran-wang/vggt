@@ -36,7 +36,7 @@ sequences = {
     {
     "geometry_poor_frames": [],
     "cond_idx": 0,
-    "cond_select_strategy": "auto", # manual or object_hand_ratio    
+    "cond_select_strategy": "manual", # manual or object_hand_ratio    
     "frame_star": 0,
     "frame_end": 9999,
     "frame_interval": 5,
