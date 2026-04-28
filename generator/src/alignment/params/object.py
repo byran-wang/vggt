@@ -119,10 +119,10 @@ class ObjectParameters(nn.Module):
         self.register_buffer("o2c_all", o2c_all)
         self.register_buffer("obj_rot", obj_rot)
         self.register_buffer("obj_transl", obj_transl)
-        self.register_buffer("obj_cano", obj_cano)
-        self.register_buffer("obj_cam", obj_cam)
-        self.register_buffer("obj_f3d", obj_f3d)
-        self.register_buffer("obj_2d", obj_2d)
+        self.obj_cano = obj_cano
+        self.obj_cam = obj_cam
+        self.obj_f3d = obj_f3d
+        self.obj_2d = obj_2d
 
         self.K = meta["K"]
 

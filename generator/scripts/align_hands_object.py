@@ -26,7 +26,7 @@ class SaveCheckpointBeforeOptimization(Callback):
     def on_train_start(self, trainer, pl_module):
         # Save the checkpoint before the very first optimization
         if args.mode == "before":
-            trainer.save_checkpoint(f"{self.save_dir}/last.ckpt")
+            trainer.save_checkpoint(f"{self.save_dir}/last.ckpt", weights_only=True)
             print(f"Saved {self.save_dir}/last.ckpt")
             trainer.should_stop = True
 
@@ -42,6 +42,7 @@ def main(args):
     checkpoint_callback = ModelCheckpoint(
         dirpath=op.join(mano_path),
         save_last=True,
+        save_weights_only=True,
     )
     checkpoint_boefore_opti_callback = SaveCheckpointBeforeOptimization(
         dirpath=op.join(mano_path),
