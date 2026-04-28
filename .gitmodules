@@ -37,3 +37,6 @@
 [submodule "third_party/BlenderToolbox"]
 	path = third_party/BlenderToolbox
 	url = git@github.com:byran-wang/BlenderToolbox.git
+[submodule "third_party/RobustHOI_NeurIPS"]
+	path = third_party/RobustHOI_NeurIPS
+	url = git@github.com:byran-wang/RobustHOI_NeurIPS.git
