@@ -125,7 +125,7 @@ def _annotate_panel(img: np.ndarray, label: str):
 
 def _create_video(frame_dir: Path, out_video: Path, fps: int):
     cmd = [
-        "/usr/bin/ffmpeg",
+        "ffmpeg",
         "-y",
         "-framerate",
         str(fps),

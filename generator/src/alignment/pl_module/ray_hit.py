@@ -421,7 +421,7 @@ class RayHit():
 
     def delete_self_occluded_hits(self, hand_hits_idxs_list, nearest_hits_list, incident_rads_list, hand_hit_idxs_occ_list):
         for i in range(len(hand_hit_idxs_occ_list)):
-            if hand_hit_idxs_occ_list[i] == []:
+            if len(hand_hit_idxs_occ_list[i]) == 0:
                 continue
             hand_hit_idxs_occ = hand_hit_idxs_occ_list[i]
             hand_hits_idxs = hand_hits_idxs_list[i]
@@ -774,7 +774,7 @@ class RayHit():
         least_contact_number = 1
         for i in range(len(hand_hit_idxs)):
             hand_hit_idx = hand_hit_idxs[i]
-            if hand_hit_idx == []:
+            if len(hand_hit_idx) == 0:
                 obj_hit_valids.append(np.array([]))
                 continue
             obj_hit = obj_hits[i]
