@@ -108,6 +108,11 @@ def main(args):
     if 'object' in out and 'sdf' in out['object']:
         del out['object']['sdf']
     out = out.to("cpu").to_np()
+    # Drop large per-frame vertex arrays that are derived quantities and unused downstream.
+    # object mesh has ~190k vertices; storing them per-frame inflates the file by ~2.4 GB.
+    for _key in ('v3d_cam', 'j3d_cam', 'v3d_obj', 'j2d'):
+        if 'object' in out and _key in out['object']:
+            del out['object'][_key]
     np.save(out_p, out)
     print(f"Saved to {out_p}")
 
