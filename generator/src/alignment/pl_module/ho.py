@@ -306,7 +306,8 @@ def loss_fn_occluded_contact(preds, targets, conf, ray_hit, debug=False):
 def loss_fn_knn_contact(preds, targets, conf):
     v3d_h = preds["right.v3d_obj"]
     v3d_o = preds["object.v3d_obj"]
-    with open("./code/body_models/contact_zones.pkl", "rb") as f:
+    _contact_zones_path = os.path.join(os.path.dirname(__file__), "../../../../body_models/contact_zones.pkl")
+    with open(_contact_zones_path, "rb") as f:
         contact_zones = pkl.load(f)
     contact_zones = contact_zones["contact_zones"]
     contact_idx = np.array([item for sublist in contact_zones.values() for item in sublist])
@@ -317,6 +318,92 @@ def loss_fn_knn_contact(preds, targets, conf):
     loss_fine_ho = knn_points(v3d_tips, v3d_o, K=1, return_nn=False)[0].mean()
     loss = conf.vis_contact * loss_fine_ho
     return loss
+
+_mask_iou_glctx = None
+
+def loss_fn_hand_in_obj_mask(preds, targets, conf, valid_frames=None, frame_batch_size=50):
+    """Penalize the rendered hand mask from entering the GT object mask region."""
+    from third_party.utils_simba.utils_simba.render import diff_renderer, projection_matrix_from_intrinsics
+    import nvdiffrast.torch as dr
+
+    global _mask_iou_glctx
+    if _mask_iou_glctx is None:
+        _mask_iou_glctx = dr.RasterizeCudaContext()
+
+    hand_v3d = preds["right.v3d_cam"]
+    hand_f3d = preds["right.f3d"].int()
+    obj_v3d = preds["object.v3d_cam"]
+    obj_f3d = preds["object.f3d"].int()
+    K = preds["object.K"]
+
+    device = hand_v3d.device
+    mask_obj_gt = targets["object.mask.gt"].to(device).float()
+
+    if valid_frames is not None:
+        hand_v3d = hand_v3d[valid_frames]
+        obj_v3d = obj_v3d[valid_frames]
+        mask_obj_gt = mask_obj_gt[valid_frames]
+
+    N = hand_v3d.shape[0]
+    V_h = hand_v3d.shape[1]
+    V_o = obj_v3d.shape[1]
+
+    im_H_W = preds["right.renderer_depth"].raster_settings.image_size
+    H, W = im_H_W if isinstance(im_H_W, (tuple, list)) else (im_H_W, im_H_W)
+
+    K_np = K.cpu().numpy() if isinstance(K, torch.Tensor) else np.array(K)
+    proj_np = projection_matrix_from_intrinsics(K_np, H, W, znear=0.01, zfar=100.0)
+    projection = torch.tensor(proj_np, device=device, dtype=torch.float)
+    ob_in_cvcam = torch.eye(4, device=device, dtype=torch.float)
+
+    # hand=blue(ch2), object=red(ch0); z-buffering gives occlusion-correct hand mask
+    hand_colors = torch.zeros(1, V_h, 3, device=device)
+    hand_colors[..., 2] = 1.0
+    obj_colors = torch.zeros(1, V_o, 3, device=device)
+    obj_colors[..., 0] = 1.0
+    merged_faces = torch.cat([hand_f3d, obj_f3d + V_h], dim=0).int()
+
+    merged_verts_all = torch.cat([hand_v3d, obj_v3d], dim=1)                         # (N, V_h+V_o, 3)
+    merged_colors_all = torch.cat([hand_colors.expand(N, -1, -1), obj_colors.expand(N, -1, -1)], dim=1)
+
+    glcam_in_cvcam = np.array([[1,0,0,0],[0,-1,0,0],[0,0,-1,0],[0,0,0,1]], dtype=np.float32)
+    mtx = (projection @ torch.tensor(glcam_in_cvcam, device=device, dtype=torch.float)).unsqueeze(0)  # (1,4,4)
+
+    rendered_hand_masks = torch.zeros(N, H, W, device=device)
+    for start in range(0, N, frame_batch_size):
+        end = min(start + frame_batch_size, N)
+        B = end - start
+        verts_b  = merged_verts_all[start:end]                                       # (B, V, 3)
+        colors_b = merged_colors_all[start:end]                                      # (B, V, 3)
+        pos_homo = torch.cat([verts_b, torch.ones(B, verts_b.shape[1], 1, device=device)], dim=-1)  # (B, V, 4)
+        pos_clip = pos_homo @ mtx.mT                                                 # (B, V, 4)
+        rast_out, _ = dr.rasterize(_mask_iou_glctx, pos_clip, merged_faces, [H, W])
+        out, _      = dr.interpolate(colors_b, rast_out, merged_faces)
+        out         = dr.antialias(out, rast_out, pos_clip, merged_faces)
+        rendered_hand_masks[start:end] = torch.flip(out, dims=[1])[..., 2]          # blue channel
+
+    # penalize rendered hand mask entering GT object mask region
+    loss = (rendered_hand_masks * mask_obj_gt).mean()
+
+    debug_frame = 111
+    if 0 and debug_frame < N:
+        debug_dir = "debug_mask"
+        os.makedirs(debug_dir, exist_ok=True)
+        hand_np = (rendered_hand_masks[debug_frame].detach().cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+        obj_np  = (mask_obj_gt[debug_frame].detach().cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+        overlap_np = ((rendered_hand_masks[debug_frame] * mask_obj_gt[debug_frame]).detach().cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+        canvas = np.zeros((H, W, 3), dtype=np.uint8)
+        for mask_bin, color in [
+            (hand_np,    (255, 0,   0)),   # blue
+            (obj_np,     (0,   255, 0)),   # green
+            (overlap_np, (0,   0,   255)), # red
+        ]:
+            contours, _ = cv2.findContours((mask_bin > 127).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(canvas, contours, -1, color, 2)
+        cv2.imwrite(f"{debug_dir}/frame_{debug_frame:04d}_contours.png", canvas)
+
+    return loss * conf.mask_iou
+
 
 def loss_fn_vis_contact(preds, targets, conf, ray_hit, debug=False):
     hand_hit_idxs = ray_hit.hand_hit_idxs
@@ -450,6 +537,11 @@ class PLModule(pl.LightningModule):
                 targets[f"{key}.v3d.gt"] = self.entities[key]['v3d.gt']
                 targets[f"{key}.depth.gt"] = self.entities[key]['depth.gt']
                 targets[f"{key}.mask_hand.gt"] = self.entities[key]['mask_hand.gt']
+            from third_party.utils_simba.utils_simba.mask import load_mask_bool
+            mask_obj_gt = torch.stack([
+                torch.from_numpy(load_mask_bool(p)) for p in self.meta['mask_obj_paths']
+            ]).float()
+            targets["object.mask.gt"] = mask_obj_gt
             device = self.device
             self.targets = targets
             if self.args.mode == "o" or self.args.mode == "ho":
