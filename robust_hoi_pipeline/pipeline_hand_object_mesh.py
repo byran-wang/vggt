@@ -105,7 +105,7 @@ def main(args):
     data_preprocess_dir = sam3d_dir.parent / "pipeline_preprocess"
     if args.hand_mode == "trans":
         hand_cam_data = load_hand_mesh_for_frame(data_preprocess_dir, frame_idx)
-    elif args.hand_mode in ("h", "o", "ho"):
+    elif args.hand_mode in ("h", "o", "ho", "all"):
         hand_cam_data = load_hand_mesh_from_hand_object_alignment(
             results_dir, data_preprocess_dir, args.hand_mode, frame_idx
         )
@@ -150,7 +150,7 @@ def parse_args():
     )
     parser.add_argument("--out_dir", type=str, required=True, help="Output directory for mesh files")
     parser.add_argument("--mesh_type", type=str, default="neus", choices=["sam3d", "neus"])
-    parser.add_argument("--hand_mode", type=str, default="ho", choices=["trans", "h", "o", "ho"])
+    parser.add_argument("--hand_mode", type=str, default="ho", choices=["trans", "h", "o", "ho", "all"])
     return parser.parse_args()
 
 
