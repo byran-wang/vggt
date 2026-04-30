@@ -362,10 +362,9 @@ def loss_fn_hand_in_obj_mask(preds, targets, conf, valid_frames=None, frame_batc
     obj_colors = torch.zeros(1, V_o, 3, device=device)
     obj_colors[..., 0] = 1.0
     merged_faces = torch.cat([hand_f3d, obj_f3d + V_h], dim=0).int()
-
+    
     merged_verts_all = torch.cat([hand_v3d, obj_v3d], dim=1)                         # (N, V_h+V_o, 3)
     merged_colors_all = torch.cat([hand_colors.expand(N, -1, -1), obj_colors.expand(N, -1, -1)], dim=1)
-
     glcam_in_cvcam = np.array([[1,0,0,0],[0,-1,0,0],[0,0,-1,0],[0,0,0,1]], dtype=np.float32)
     mtx = (projection @ torch.tensor(glcam_in_cvcam, device=device, dtype=torch.float)).unsqueeze(0)  # (1,4,4)
 
@@ -402,7 +401,7 @@ def loss_fn_hand_in_obj_mask(preds, targets, conf, valid_frames=None, frame_batc
             cv2.drawContours(canvas, contours, -1, color, 2)
         cv2.imwrite(f"{debug_dir}/frame_{debug_frame:04d}_contours.png", canvas)
 
-    return loss * conf.mask_iou
+    return loss * conf.hand_in_obj
 
 
 def loss_fn_vis_contact(preds, targets, conf, ray_hit, debug=False):
@@ -673,7 +672,7 @@ class PLModule(pl.LightningModule):
             self.log("pen", loss_penetrate, on_step=True, on_epoch=False, prog_bar=True)
         elif self.args.mode == "all":
             if self.conf.contact_type == "vis":
-                loss_j2d = loss_fn_h_j2d(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device)) * 20.0
+                loss_j2d = loss_fn_h_j2d(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device)) * 1.0
                 loss_contact = loss_fn_vis_contact(preds, self.targets, self.conf, self.ray_hit)
             elif self.conf.contact_type == "knn":
                 loss_j2d = loss_fn_h_j2d(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device)) * 100.0
@@ -687,7 +686,8 @@ class PLModule(pl.LightningModule):
             # loss_contact_occluded = loss_fn_occluded_contact(preds, self.targets, self.conf, self.ray_hit)
             loss_penetrate = loss_fn_penetrate(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device))
             loss_reg =  loss_fn_reg(preds, self.targets, self.conf)
-            loss += loss_contact + loss_j2d + loss_smooth_pose + loss_smooth_verts + loss_penetrate + loss_reg
+            loss_hand_in_obj_mask = loss_fn_hand_in_obj_mask(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device)) * 20.0
+            loss += loss_contact + loss_j2d + loss_smooth_pose + loss_smooth_verts + loss_penetrate + loss_reg + loss_hand_in_obj_mask
             # loss += loss_j2d + loss_center + loss_smooth + loss_contact + loss_smooth_verts
             self.log("loss", loss, on_step=True, on_epoch=False, prog_bar=True)                        
             self.log("j2d", loss_j2d, on_step=True, on_epoch=False, prog_bar=True)
@@ -697,7 +697,8 @@ class PLModule(pl.LightningModule):
             self.log("cnt", loss_contact, on_step=True, on_epoch=False, prog_bar=True)
             # self.log("cnt_occ", loss_contact_occluded, on_step=True, on_epoch=False, prog_bar=True)
             self.log("reg", loss_reg, on_step=True, on_epoch=False, prog_bar=True)
-            self.log("pen", loss_penetrate, on_step=True, on_epoch=False, prog_bar=True)            
+            self.log("pen", loss_penetrate, on_step=True, on_epoch=False, prog_bar=True)
+            self.log("hand_in_obj", loss_hand_in_obj_mask, on_step=True, on_epoch=False, prog_bar=True)
         else:
             raise NotImplementedError
 

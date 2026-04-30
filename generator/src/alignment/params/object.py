@@ -83,7 +83,7 @@ def export_mesh(sdf, path='torus_mesh.obj'):
     mesh.export(path)
 
 class ObjectParameters(nn.Module):    
-    def __init__(self, data, meta, debug=False, target_face_count=30000):
+    def __init__(self, data, meta, debug=False, target_face_count=10000):
         super().__init__()
         # unpacking
         K = torch.FloatTensor(np.array(meta["K"]))
@@ -96,8 +96,7 @@ class ObjectParameters(nn.Module):
             meta['object_mesh_f'],
             process=False,
         )
-        # simplified_mesh = obj_mesh.simplify_quadratic_decimation(face_count=target_face_count)
-        simplified_mesh = obj_mesh
+        simplified_mesh = obj_mesh.simplify_quadratic_decimation(face_count=target_face_count)
         # simplified_mesh.show()
 
         obj_pts = simplified_mesh.vertices
