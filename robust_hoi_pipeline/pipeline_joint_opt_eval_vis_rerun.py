@@ -67,7 +67,6 @@ def main(args):
     valid_flags = register_flags & (~invalid_flags)
     gt_valid_flags = None
     if bool(args.vis_gt):
-        seq_name = sam3d_dir.parent.name
         gt_valid_flags = _load_gt_valid_flags(seq_name, frame_indices)
         valid_flags = valid_flags & gt_valid_flags
         logger.info(
@@ -108,8 +107,9 @@ def main(args):
     data_preprocess_dir = sam3d_dir.parent / "pipeline_preprocess"
 
     # --- Init rerun ---
+    seq_name = sam3d_dir.parent.name
     save_to_file = args.rrd_output_path is not None
-    rr.init("hoi_eval_vis", spawn=not save_to_file)
+    rr.init(f"hoi_eval_vis_{seq_name}", spawn=not save_to_file)
     blueprint = rrb.Blueprint(
         rrb.Horizontal(
             rrb.Spatial3DView(name="3D View", origin="world"),
@@ -223,7 +223,7 @@ def parse_args():
                         choices=["trans", "h", "o", "ho", "all"],
                         help="Hand fitting mode")
     parser.add_argument("--jpeg_quality", type=int, default=85)
-    parser.add_argument("--image_plane_distance", type=float, default=5.0,
+    parser.add_argument("--image_plane_distance", type=float, default=1.6,
                         help="Camera frustum image plane distance in rerun")
     return parser.parse_args()
 
