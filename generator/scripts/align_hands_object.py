@@ -84,6 +84,8 @@ def main(args):
         load_ckpt = f"{args.out_dir}/mano_fit_ckpt/h/last.ckpt"
     elif args.mode == 'ho':
         load_ckpt = f"{args.out_dir}/mano_fit_ckpt/o/last.ckpt"
+    elif args.mode == 'all':
+        load_ckpt = f"{args.out_dir}/mano_fit_ckpt/ho/last.ckpt"        
     else:
         assert False, f"Invalid args.mode {args.mode}"
 
@@ -135,6 +137,8 @@ def load_conf(args):
         conf = config["optim_configs"]["object_optim"]
     elif args.mode == "ho":
         conf = config["optim_configs"]["hand_object_optim"]
+    elif args.mode == "all":
+        conf = config["optim_configs"]["hand_object_all"]
     elif args.mode == "before":
         conf = config["optim_configs"]["save_before_optimization"]        
     else:

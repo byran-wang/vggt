@@ -383,7 +383,7 @@ class PLModule(pl.LightningModule):
         from src.alignment.params.object import ObjectParameters
         models = nn.ModuleDict()
         entities = data['entities']
-        if self.args.mode == "o" or self.args.mode == "ho":
+        if self.args.mode == "o" or self.args.mode == "ho" or self.args.mode == "all":
             ray_hit = RayHit(save_dir=f"{args.out_dir}/mano_fit_ckpt/r/")
             ray_hit.load_data()
             self.ray_hit = ray_hit
@@ -579,6 +579,33 @@ class PLModule(pl.LightningModule):
             # self.log("cnt_occ", loss_contact_occluded, on_step=True, on_epoch=False, prog_bar=True)
             # self.log("reg", loss_reg, on_step=True, on_epoch=False, prog_bar=True)
             self.log("pen", loss_penetrate, on_step=True, on_epoch=False, prog_bar=True)
+        elif self.args.mode == "all":
+            if self.conf.contact_type == "vis":
+                loss_j2d = loss_fn_h_j2d(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device)) * 20.0
+                loss_contact = loss_fn_vis_contact(preds, self.targets, self.conf, self.ray_hit)
+            elif self.conf.contact_type == "knn":
+                loss_j2d = loss_fn_h_j2d(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device)) * 100.0
+                loss_contact = loss_fn_knn_contact(preds, self.targets, self.conf)
+            else:
+                raise NotImplementedError
+            # loss_center = loss_fn_center(preds, self.targets, self.conf)
+            loss_smooth_pose = loss_fn_smooth_pose(preds, self.targets, self.conf)
+            loss_smooth_verts = loss_fn_smooth_verts(preds, self.targets, self.conf)
+            
+            # loss_contact_occluded = loss_fn_occluded_contact(preds, self.targets, self.conf, self.ray_hit)
+            loss_penetrate = loss_fn_penetrate(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device))
+            loss_reg =  loss_fn_reg(preds, self.targets, self.conf)
+            loss += loss_contact + loss_j2d + loss_smooth_pose + loss_smooth_verts + loss_penetrate + loss_reg
+            # loss += loss_j2d + loss_center + loss_smooth + loss_contact + loss_smooth_verts
+            self.log("loss", loss, on_step=True, on_epoch=False, prog_bar=True)                        
+            self.log("j2d", loss_j2d, on_step=True, on_epoch=False, prog_bar=True)
+            # self.log("center", loss_center, on_step=True, on_epoch=False, prog_bar=True)
+            self.log("smt_pose", loss_smooth_pose, on_step=True, on_epoch=False, prog_bar=True)
+            self.log("smt_verts", loss_smooth_verts, on_step=True, on_epoch=False, prog_bar=True)
+            self.log("cnt", loss_contact, on_step=True, on_epoch=False, prog_bar=True)
+            # self.log("cnt_occ", loss_contact_occluded, on_step=True, on_epoch=False, prog_bar=True)
+            self.log("reg", loss_reg, on_step=True, on_epoch=False, prog_bar=True)
+            self.log("pen", loss_penetrate, on_step=True, on_epoch=False, prog_bar=True)            
         else:
             raise NotImplementedError
 
@@ -682,6 +709,24 @@ class PLModule(pl.LightningModule):
                 self.models['right'].hand_scale.requires_grad = True
                 self.models['right'].hand_transl.requires_grad = True
                 # self.models['right'].hand_pose.requires_grad = True
+                get_learnable_parameters(self)
+            if step % self.conf.decay_every == 0:
+                print("Decay")
+                torch_utils.decay_lr(self.optimizer, self.conf.decay_factor)
+                get_learnable_parameters(self)
+        elif self.args.mode == "all":
+            # for key, val in self.models.items():
+            #     if key in ['right', 'left']:
+            #         val.hand_transl.requires_grad = True
+            #     else:
+            #         val.obj_scale.requires_grad = True
+            #         val.obj_transl.requires_grad = True
+            if step == 0:
+                # self.models['right'].hand_beta.requires_grad = True
+                self.models['right'].hand_scale.requires_grad = True
+                self.models['right'].hand_transl.requires_grad = True
+                self.models['right'].hand_pose.requires_grad = True
+                self.models['right'].hand_rot.requires_grad = True
                 get_learnable_parameters(self)
             if step % self.conf.decay_every == 0:
                 print("Decay")

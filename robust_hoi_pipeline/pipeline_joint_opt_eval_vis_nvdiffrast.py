@@ -281,7 +281,7 @@ def _build_render_frames(
         if render_hand:
             if hand_mode == "trans":
                 hand_mesh_cam = load_hand_mesh_for_frame(data_preprocess_dir, int(frame_idx))
-            elif hand_mode == "h" or hand_mode=="o" or hand_mode=="ho":
+            elif hand_mode == "h" or hand_mode=="o" or hand_mode=="ho" or hand_mode=="all":
                 hand_mesh_cam = load_hand_mesh_from_hand_object_alignment(results_dir, data_preprocess_dir, hand_mode, int(frame_idx))
             else:
                 raise ValueError(f"Unsupported hand_mode: {hand_mode}")
@@ -390,7 +390,7 @@ def parse_args():
     parser.add_argument("--vis_gt", type=int, default=1, help="Use GT-valid filtering (1) or not (0)")
     parser.add_argument("--render_hand", dest="render_hand", action="store_true", default=True, help="Render sealed right-hand mesh together with the object mesh")
     parser.add_argument("--mesh_type", type=str, default="neus", choices=["sam3d", "neus"], help="Mesh source to use: 'neus' (default) or 'sam3d'")
-    parser.add_argument("--hand_mode", type=str, default="trans", choices=["trans", "h","o", "ho"], help="Hand fitting mode: trans, h, o, ho, ")
+    parser.add_argument("--hand_mode", type=str, default="trans", choices=["trans", "h","o", "ho", "all"], help="Hand fitting mode: trans, h, o, ho, ")
     return parser.parse_args()
 
 

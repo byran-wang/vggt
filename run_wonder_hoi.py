@@ -138,7 +138,8 @@ class run_wonder_hoi:
                 "hoi_pipeline_align_hand_object_h": self.hoi_pipeline_align_hand_object_h,
                 "hoi_pipeline_align_hand_object_r": self.hoi_pipeline_align_hand_object_r,
                 "hoi_pipeline_align_hand_object_o": self.hoi_pipeline_align_hand_object_o,
-                "hoi_pipeline_align_hand_object_ho": self.hoi_pipeline_align_hand_object_ho
+                "hoi_pipeline_align_hand_object_ho": self.hoi_pipeline_align_hand_object_ho,
+                "hoi_pipeline_align_hand_object_all": self.hoi_pipeline_align_hand_object_all
             },
             "hand_pose_preprocess": {
                 "estimate_hand_pose": self.estimate_hand_pose,
@@ -2374,6 +2375,9 @@ class run_wonder_hoi:
     def hoi_pipeline_align_hand_object_ho(self, scene_name, **kwargs):
         self._align_hand_object(scene_name, "ho")
 
+    def hoi_pipeline_align_hand_object_all(self, scene_name, **kwargs):
+        self._align_hand_object(scene_name, "all")        
+
 
     def hoi_pipeline_reg_remaining(self, scene_name, **kwargs):
         self.print_header(f"hoi pipeline register remaining for {scene_name}")
@@ -2814,6 +2818,7 @@ if __name__ == "__main__":
                 "hoi_pipeline_align_hand_object_r",
                 "hoi_pipeline_align_hand_object_o",
                 "hoi_pipeline_align_hand_object_ho",
+                "hoi_pipeline_align_hand_object_all",
                 "ho3d_eval_intrinsic",
                 "ho3d_eval_trans",
                 "ho3d_eval_rot",
