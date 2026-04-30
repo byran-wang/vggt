@@ -21,6 +21,7 @@ class run_wonder_hoi:
         self.reconstruction_dir = args.reconstruction_dir
         self.rebuild = args.rebuild
         self.vis = args.vis
+        self.vis_rerun = args.vis_rerun
         self.eval = args.eval
         
         self.conda_type = args.conda_type # "anaconda3" or "miniconda3"
@@ -127,6 +128,7 @@ class run_wonder_hoi:
                 "hoi_pipeline_eval": self.hoi_pipeline_eval,
                 "hoi_pipeline_input_visulize": self.hoi_pipeline_input_visulize,
                 "hoi_pipeline_eval_vis": self.hoi_pipeline_eval_vis,
+                "hoi_pipeline_eval_vis_rerun": self.hoi_pipeline_eval_vis_rerun,
                 "hoi_pipeline_blender_rendering": self.hoi_pipeline_blender_rendering,
                 "hoi_pipeline_eval_vis_gt": self.hoi_pipeline_eval_vis_gt,
                 "hoi_pipeline_teaser": self.hoi_pipeline_teaser,
@@ -2173,6 +2175,34 @@ class run_wonder_hoi:
         print(cmd)
         os.system(cmd)
 
+    def hoi_pipeline_eval_vis_rerun(self, scene_name, **kwargs):
+        mode = "ho"
+        data_dir = f"{self.dataset_dir}/{scene_name}"
+        result_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/"
+        out_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/eval_vis_rerun/"
+        rrd_path = f"{out_dir}output.rrd"
+
+        self.print_header(f"hoi pipeline rerun eval vis for {scene_name}")
+        if self.rebuild:
+            cmd = f"rm -rf {out_dir}"
+            print(cmd)
+            os.system(cmd)
+
+        cmd = f"cd {vggt_code_dir} && "
+        cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_joint_opt_eval_vis_rerun.py "
+        cmd += f"--result_folder {result_dir} "
+        cmd += f"--SAM3D_dir {data_dir}/SAM3D_aligned_post_process "
+        cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
+        cmd += f"--rrd_output_path {rrd_path} "
+        cmd += f"--hand_mode {mode} "
+        cmd += f"--render_hand "
+        if dataset_type != "ho3d":
+            cmd += f"--vis_gt 0 "
+
+        print(cmd)
+        os.system(cmd)
+        print(f"View with: rerun {rrd_path}")
+
     def hoi_pipeline_blender_rendering(self, scene_name, **kwargs):
         mode = self.seq_config.get("hand_align_mode", "ho")
         mesh_type = self.seq_config.get("mesh_type", "neus")
@@ -2322,6 +2352,33 @@ class run_wonder_hoi:
         out_dir = f"{vggt_code_dir}/output/{scene_name}/align_hand_object"
         result_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/"
         data_dir = f"{self.dataset_dir}/{scene_name}"
+        if self.vis_rerun:
+            self.print_header(f"hoi pipeline rerun eval vis [{mode}] for {scene_name}")
+            result_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/"
+            out_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/eval_vis_rerun_{mode}/"
+            rrd_path = f"{out_dir}output.rrd"
+
+            if self.rebuild:
+                cmd = f"rm -rf {out_dir}"
+                print(cmd)
+                os.system(cmd)
+
+            cmd = f"cd {vggt_code_dir} && "
+            cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_joint_opt_eval_vis_rerun.py "
+            cmd += f"--result_folder {result_dir} "
+            cmd += f"--SAM3D_dir {data_dir}/SAM3D_aligned_post_process "
+            cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
+            # cmd += f"--rrd_output_path {rrd_path} "
+            cmd += f"--hand_mode {mode} "
+            cmd += f"--render_hand "
+            if dataset_type != "ho3d":
+                cmd += f"--vis_gt 0 "
+
+            print(cmd)
+            os.system(cmd)
+            print(f"View with: rerun {rrd_path}")
+            return
+
         if self.vis:
             self.print_header(f"hoi pipeline joint optimization eval vis for {scene_name}")
             data_dir = f"{self.dataset_dir}/{scene_name}"
@@ -2331,7 +2388,7 @@ class run_wonder_hoi:
             if self.rebuild:
                 cmd = f"rm -rf {out_dir}"
                 print(cmd)
-                os.system(cmd)            
+                os.system(cmd)
 
             cmd = f"cd {vggt_code_dir} && "
             cmd += f"{self.conda_dir}/envs/vggsfm_tmp/bin/python robust_hoi_pipeline/pipeline_joint_opt_eval_vis_nvdiffrast.py "
@@ -2342,7 +2399,7 @@ class run_wonder_hoi:
             cmd += f"--hand_mode {mode} "
             cmd += f"--render_hand "
             cmd += f"--vis_gt 0 "
-        
+
             print(cmd)
             os.system(cmd)
             return
@@ -2807,6 +2864,7 @@ if __name__ == "__main__":
                 "hoi_pipeline_eval",
                 "hoi_pipeline_input_visulize",
                 "hoi_pipeline_eval_vis",
+                "hoi_pipeline_eval_vis_rerun",
                 "hoi_pipeline_blender_rendering",
                 "hoi_pipeline_eval_vis_gt",
                 "hoi_pipeline_teaser",
@@ -2838,6 +2896,7 @@ if __name__ == "__main__":
     )
     parser.add_argument('--rebuild', action='store_true', help='Rebuild the process')
     parser.add_argument('--vis', action='store_true', help='Visualize the process')
+    parser.add_argument('--vis_rerun', action='store_true', help='Visualize using rerun (saves .rrd)')
     parser.add_argument('--eval', action='store_true', help='Evaluate the process')
     parser.add_argument('--reconstruction_dir', type=str, default=f"{home_dir}/Documents/project/WonderHOI/code/output_backup/[115][472254d][disable_global_ba]", help='Reconstruction folder')
     parser.add_argument('--conda_type', type=str, default=None, help='Conda environment type: anaconda3 or miniconda3')
