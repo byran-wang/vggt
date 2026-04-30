@@ -330,7 +330,7 @@ def main(args):
     # Ensure condition frame is always included
     if args.cond_idx not in filtered:
         logger.info(f"Condition frame {args.cond_idx:04d} not in filtered list, prepending it")
-        filtered = [args.cond_idx] + filtered
+        filtered = filtered + [args.cond_idx]
 
     _save_frame_list(out_dir / "frame_list_filtered.txt", filtered)
     logger.info(f"Saved final filtered frame list ({len(filtered)} frames)")

@@ -184,7 +184,7 @@ def main(args):
     # Ensure condition frame is always included
     if args.cond_idx is not None and args.cond_idx not in selected:
         logger.info(f"Condition frame {args.cond_idx:04d} not in selected list, prepending it")
-        selected = [args.cond_idx] + selected
+        selected = selected + [args.cond_idx]
 
     out_path = sam3d_dir / "frame_list_after_3d_filtered.txt"
     with open(out_path, "w") as f:
