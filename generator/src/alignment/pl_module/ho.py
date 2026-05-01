@@ -321,7 +321,7 @@ def loss_fn_knn_contact(preds, targets, conf):
 
 _mask_iou_glctx = None
 
-def loss_fn_hand_in_obj_mask(preds, targets, conf, valid_frames=None, frame_batch_size=50):
+def loss_fn_hand_in_obj_mask(preds, targets, conf, valid_frames=None, step=None, frame_batch_size=50):
     """Penalize the rendered hand mask from entering the GT object mask region."""
     from third_party.utils_simba.utils_simba.render import diff_renderer, projection_matrix_from_intrinsics
     import nvdiffrast.torch as dr
@@ -386,13 +386,20 @@ def loss_fn_hand_in_obj_mask(preds, targets, conf, valid_frames=None, frame_batc
     overlap = rendered_hand_masks * mask_obj_gt
     overlap = -F.max_pool2d(-overlap.unsqueeze(1), kernel_size=erode_k, stride=1, padding=erode_k // 2).squeeze(1)
 
-    debug_frame = 111
-    if 0 and debug_frame < N:
+    # debug_frame = 111
+    debug_frame = None
+    if debug_frame is not None:
+        loss = overlap[debug_frame].sum() if debug_frame < N else overlap.sum() * 0.0
+    else:
+        loss = overlap.sum()
+    
+    if 1 and debug_frame is not None and debug_frame < N:
         debug_dir = "debug_mask"
         os.makedirs(debug_dir, exist_ok=True)
         hand_np = (rendered_hand_masks[debug_frame].detach().cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
         obj_np  = (mask_obj_gt[debug_frame].detach().cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
-        overlap_np = ((rendered_hand_masks[debug_frame] * mask_obj_gt[debug_frame]).detach().cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+        overlap_np = overlap[debug_frame].detach().cpu().numpy() * 255
+        overlap_np = overlap_np.clip(0, 255).astype(np.uint8)
         canvas = np.zeros((H, W, 3), dtype=np.uint8)
         for mask_bin, color in [
             (hand_np,    (255, 0,   0)),   # blue
@@ -401,7 +408,10 @@ def loss_fn_hand_in_obj_mask(preds, targets, conf, valid_frames=None, frame_batc
         ]:
             contours, _ = cv2.findContours((mask_bin > 127).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             cv2.drawContours(canvas, contours, -1, color, 2)
-        cv2.imwrite(f"{debug_dir}/frame_{debug_frame:04d}_contours.png", canvas)
+        if step is not None:
+            cv2.imwrite(f"{debug_dir}/frame_{debug_frame:04d}_{step:04d}_contours.png", canvas)
+        else:
+            cv2.imwrite(f"{debug_dir}/frame_{debug_frame:04d}_contours.png", canvas)
 
     return loss * conf.hand_in_obj
 
@@ -688,7 +698,7 @@ class PLModule(pl.LightningModule):
             # loss_contact_occluded = loss_fn_occluded_contact(preds, self.targets, self.conf, self.ray_hit)
             loss_penetrate = loss_fn_penetrate(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device))
             loss_reg =  loss_fn_reg(preds, self.targets, self.conf)
-            loss_hand_in_obj_mask = loss_fn_hand_in_obj_mask(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device)) * 20.0
+            loss_hand_in_obj_mask = loss_fn_hand_in_obj_mask(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device), self.global_step) * 1.0
             loss += loss_contact + loss_j2d + loss_smooth_pose + loss_smooth_verts + loss_penetrate + loss_reg + loss_hand_in_obj_mask
             # loss += loss_j2d + loss_center + loss_smooth + loss_contact + loss_smooth_verts
             self.log("loss", loss, on_step=True, on_epoch=False, prog_bar=True)                        
