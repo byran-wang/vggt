@@ -123,4 +123,7 @@ Host 3090_server1
 - [x] find . -name "hoi_mask_projection_frame_*" -printf "%T@ %TY-%Tm-%Td %TH:%TM:%TS %p\n" | sort -n | cut -d' ' -f2-****
 - [x] rsync `3090_server1:/data1/shibo/Documents/project/vggt_in_the_wild/output[4_23_10_47][98c8404][3D_points_as_best_pose_reference]/metrics_summary/*.mp4` to `/media/simba/9d6027d0-f312-476a-ae5d-6b72a540d4ec/simba4090/simba/Documents/robust_hoi_results/zed_wenxuan/output[4_23_10_47][98c8404][3D_points_as_best_pose_reference]/metrics_summary/` 
 - [x] rsync `3090_server1:/data1/shibo/Documents/project/vggt_in_the_wild/output/metrics_summary/*.mp4` to `/media/simba/9d6027d0-f312-476a-ae5d-6b72a540d4ec/simba4090/simba/Documents/robust_hoi_results/zed_wenxuan/output[4_24_09_07][6154494][lambda_depth 0.2]/metrics_summary/` 
+- [x] rsync `3090_server1:/data1/shibo/Documents/project/vggt/output[4_23_20_42][497a1bb][SOTA][filter_depth_in_bbox]/metrics_summary/*.mp4` to `/home/simba/Documents/project/vggt/output_server/`
 - [x] rsync all the SAM3D directory in /mnt/sata/Documents/dataset/BundleSDF/HO3D_v3/train/*/ to `3090_server1:/data1/shibo/Documents/dataset/BundleSDF/HO3D_v3/train/*/'
+- [x] rsync '3090_server1://data1/shibo/Documents/dataset/ZED_wenxuan/AG1' and '3090_server1://data1/shibo/Documents/dataset/ZED_wenxuan/KNI1' to /mnt/sata/Documents/dataset/ZED_wenxuan
+- [x] rsync '3090_server1:/data1/shibo/Documents/project/vggt_in_the_wild/output/AG1' and '3090_server1:/data1/shibo/Documents/project/vggt_in_the_wild/output/KNI1' to /home/simba/Documents/project/vggt/output_server_in_the_wild
