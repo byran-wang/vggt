@@ -237,6 +237,8 @@ class HandDataProvider:
     def _load_fit(self, suffix: str):
         for prefix in ("hand_fit", "hold_fit"):
             path = self.base_dir / f"{prefix}.aligned_h_{suffix}.npy"
+            if not path.exists():
+                path = self.base_dir / f"{prefix}.aligned_{suffix}.npy"
             if path.exists():
                 try:
                     arr = np.load(path, allow_pickle=True)

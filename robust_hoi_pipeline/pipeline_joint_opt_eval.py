@@ -123,8 +123,8 @@ def parse_args():
                          help="Whether to evaluate Chamfer/F-score metrics for available meshes")
     parser.add_argument("--vis_gt_pred", action="store_true", default=False,
                          help="Whether to visualize GT and predicted poses with rotated 3D points in rerun")
-    parser.add_argument("--hand_mode", type=str, default="trans",
-                         help="Hand fit mode for HandDataProvider (e.g. 'rot', 'trans', 'intrinsic')")
+    parser.add_argument("--hand_mode", type=str, default="all",
+                         help="Hand fit mode for HandDataProvider (e.g. 'rot', 'trans', 'intrinsic', 'all')")
     
     args = parser.parse_args()
     from easydict import EasyDict
@@ -537,6 +537,8 @@ def load_hand_predictions(results_dir, hand_mode, frame_indices, valid_flags, de
         return None
 
     # Select only the pipeline frames from the full hand data (like gt.load_data)
+    # convert frame_indices to local indices
+    frame_indices = list(range(len(frame_indices)))
     max_fid = max(int(np.max(frame_indices)), 0)
     if len(hand_poses) <= max_fid:
         print(f"[hand] Hand data length {len(hand_poses)} too short for max frame index {max_fid}, skip")
@@ -602,7 +604,7 @@ def main():
     seq_name = results_dir.parent.name
 
     # Load hand predictions (before GT filtering so they get filtered together)
-    hand_data = load_hand_predictions(SAM3D_dir.parent, args.hand_mode, frame_indices, valid_flags)
+    hand_data = load_hand_predictions(results_dir.parent / "align_hand_object", args.hand_mode, frame_indices, valid_flags)
     if hand_data is not None:
         data_pred["j3d_ra.right"] = hand_data["j3d_ra.right"]
         data_pred["root.right"] = hand_data["root.right"]
