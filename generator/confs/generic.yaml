@@ -40,7 +40,7 @@ optim_configs:
     decay_factor: 0.5
     num_iters: 1000    
   hand_object_all:
-    lr: 0.01
+    lr: 0.003
     decay_every: 100
     decay_factor: 0.5
     num_iters: 200      
@@ -64,8 +64,9 @@ weights:
   occ_contact: 20.0
   reg: 20.0
   # penetrate: 50.0
-  penetrate: 0.003
+  penetrate: 10.0
     #o2d: 1.0
   o2d: 1.0
   hand_in_obj: 1.0
+  ho_mask_iou: 1.0
   z_min: 1000.0

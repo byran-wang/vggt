@@ -382,16 +382,21 @@ def loss_fn_hand_in_obj_mask(preds, targets, conf, valid_frames=None, step=None,
         rendered_hand_masks[start:end] = torch.flip(out, dims=[1])[..., 2]          # blue channel
 
     # penalize rendered hand mask entering GT object mask region
-    erode_k = 3
+    erode_k = 5
     overlap = rendered_hand_masks * mask_obj_gt
     overlap = -F.max_pool2d(-overlap.unsqueeze(1), kernel_size=erode_k, stride=1, padding=erode_k // 2).squeeze(1)
 
-    # debug_frame = 111
     debug_frame = None
     if debug_frame is not None:
-        loss = overlap[debug_frame].sum() if debug_frame < N else overlap.sum() * 0.0
+        hand_in_obj_values = overlap[debug_frame] if debug_frame < N else None
     else:
-        loss = overlap.sum()
+        hand_in_obj_values = overlap
+
+    if hand_in_obj_values is not None:
+        hand_in_obj_values = hand_in_obj_values[hand_in_obj_values > 0]
+    hand_in_obj_loss = hand_in_obj_values.mean() if hand_in_obj_values is not None and hand_in_obj_values.numel() > 0 else zero_loss
+
+
     
     if 1 and debug_frame is not None and debug_frame < N:
         debug_dir = "debug_mask"
@@ -413,7 +418,7 @@ def loss_fn_hand_in_obj_mask(preds, targets, conf, valid_frames=None, step=None,
         else:
             cv2.imwrite(f"{debug_dir}/frame_{debug_frame:04d}_contours.png", canvas)
 
-    return loss * conf.hand_in_obj
+    return hand_in_obj_loss * conf.hand_in_obj
 
 
 def loss_fn_vis_contact(preds, targets, conf, ray_hit, debug=False):
@@ -684,7 +689,7 @@ class PLModule(pl.LightningModule):
             self.log("pen", loss_penetrate, on_step=True, on_epoch=False, prog_bar=True)
         elif self.args.mode == "all":
             if self.conf.contact_type == "vis":
-                loss_j2d = loss_fn_h_j2d(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device)) * 1.0
+                loss_j2d = loss_fn_h_j2d(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device)) * 0.3
                 loss_contact = loss_fn_vis_contact(preds, self.targets, self.conf, self.ray_hit)
             elif self.conf.contact_type == "knn":
                 loss_j2d = loss_fn_h_j2d(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device)) * 100.0
@@ -692,13 +697,13 @@ class PLModule(pl.LightningModule):
             else:
                 raise NotImplementedError
             # loss_center = loss_fn_center(preds, self.targets, self.conf)
-            loss_smooth_pose = loss_fn_smooth_pose(preds, self.targets, self.conf)
-            loss_smooth_verts = loss_fn_smooth_verts(preds, self.targets, self.conf)
+            loss_smooth_pose = loss_fn_smooth_pose(preds, self.targets, self.conf) * 0.0
+            loss_smooth_verts = loss_fn_smooth_verts(preds, self.targets, self.conf) * 100.0
             
             # loss_contact_occluded = loss_fn_occluded_contact(preds, self.targets, self.conf, self.ray_hit)
             loss_penetrate = loss_fn_penetrate(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device))
             loss_reg =  loss_fn_reg(preds, self.targets, self.conf)
-            loss_hand_in_obj_mask = loss_fn_hand_in_obj_mask(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device), self.global_step) * 1.0
+            loss_hand_in_obj_mask = loss_fn_hand_in_obj_mask(preds, self.targets, self.conf, torch.tensor(self.ray_hit.valid_frames).to(device), self.global_step)
             loss += loss_contact + loss_j2d + loss_smooth_pose + loss_smooth_verts + loss_penetrate + loss_reg + loss_hand_in_obj_mask
             # loss += loss_j2d + loss_center + loss_smooth + loss_contact + loss_smooth_verts
             self.log("loss", loss, on_step=True, on_epoch=False, prog_bar=True)                        
@@ -827,11 +832,11 @@ class PLModule(pl.LightningModule):
             #         val.obj_scale.requires_grad = True
             #         val.obj_transl.requires_grad = True
             if step == 0:
-                # self.models['right'].hand_beta.requires_grad = True
+                self.models['right'].hand_beta.requires_grad = True
                 self.models['right'].hand_scale.requires_grad = True
                 self.models['right'].hand_transl.requires_grad = True
                 self.models['right'].hand_pose.requires_grad = True
-                self.models['right'].hand_rot.requires_grad = True
+                # self.models['right'].hand_rot.requires_grad = True
                 get_learnable_parameters(self)
             if step % self.conf.decay_every == 0:
                 print("Decay")
