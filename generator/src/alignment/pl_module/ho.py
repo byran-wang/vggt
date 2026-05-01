@@ -382,7 +382,9 @@ def loss_fn_hand_in_obj_mask(preds, targets, conf, valid_frames=None, frame_batc
         rendered_hand_masks[start:end] = torch.flip(out, dims=[1])[..., 2]          # blue channel
 
     # penalize rendered hand mask entering GT object mask region
-    loss = (rendered_hand_masks * mask_obj_gt).mean()
+    erode_k = 3
+    overlap = rendered_hand_masks * mask_obj_gt
+    overlap = -F.max_pool2d(-overlap.unsqueeze(1), kernel_size=erode_k, stride=1, padding=erode_k // 2).squeeze(1)
 
     debug_frame = 111
     if 0 and debug_frame < N:
