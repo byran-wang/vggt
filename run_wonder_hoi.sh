@@ -114,3 +114,4 @@ python run_wonder_hoi.py --execute_list baseline --process_list gt_eval_vis --se
 
 ######################################## data transfer #########################################
 cd /home/simba/Documents/dataset/BundleSDF && rsync -azvp --no-o --no-g -e "ssh -p 2026" HO3D_v3 root@180.184.148.133:/mnt/afs/shibo/Documents/dataset/BundleSDF/
+python compare_video.py --left_video video_compare/before.mp4 --right_video video_compare/after.mp4 --out_dir video_compare/
