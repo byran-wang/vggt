@@ -2106,6 +2106,7 @@ class run_wonder_hoi:
         os.system(cmd)
 
     def hoi_pipeline_eval(self, scene_name, **kwargs):
+        mode = "all"
         self.print_header(f"hoi pipeline joint optimization for {scene_name}")
         data_dir = f"{self.dataset_dir}/{scene_name}"
         out_dir = f"{vggt_code_dir}/output/{scene_name}"
@@ -2121,6 +2122,7 @@ class run_wonder_hoi:
         cmd += f"--out_dir {out_dir}/pipeline_joint_opt/eval/ "
         cmd += f"--SAM3D_dir {data_dir}/SAM3D_aligned_post_process "
         cmd += f"--cond_index {int(self._get_best_cond_id(scene_name))} "
+        cmd += f"--hand_mode {mode} "
 
         print(cmd)
         os.system(cmd)     
@@ -2147,7 +2149,7 @@ class run_wonder_hoi:
         os.system(cmd)
 
     def hoi_pipeline_eval_vis(self, scene_name, **kwargs):
-        mode = "ho"
+        mode = "all"
         out_dir = f"{vggt_code_dir}/output/{scene_name}/align_hand_object"
         result_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/"
 
@@ -2176,7 +2178,7 @@ class run_wonder_hoi:
         os.system(cmd)
 
     def hoi_pipeline_eval_vis_rerun(self, scene_name, **kwargs):
-        mode = "ho"
+        mode = "all"
         data_dir = f"{self.dataset_dir}/{scene_name}"
         result_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/"
         out_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/eval_vis_rerun/"
@@ -2233,7 +2235,7 @@ class run_wonder_hoi:
         os.system(cmd)
 
     def hoi_pipeline_teaser(self, scene_name, **kwargs):
-        mode = "ho"
+        mode = "all"
         data_dir = f"{self.dataset_dir}/{scene_name}"
         result_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/"
         out_dir = f"{vggt_code_dir}/output/{scene_name}/pipeline_joint_opt/teaser/"
