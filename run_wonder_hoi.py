@@ -383,27 +383,38 @@ class run_wonder_hoi:
         return data_dir, out_mask_dir, prompt_file
 
     def ho3d_get_hand_mask_prompt(self, scene_name, **kwargs):
-        """Collect and save the first-frame SAM3 prompt for the hand mask.
-        Only loads the first image (no model load, no full-video scan)."""
-        self.print_header(f"ho3d get hand mask PROMPT for {scene_name}")
-        data_dir, _, prompt_file = self._hand_mask_paths(scene_name)
-        text_prompt = "right_hand"
-
-        if self.rebuild:
-            cmd = f"rm -f {prompt_file}"
-            print(cmd)
-            os.system(cmd)
-
-        cmd = f"cd {vggt_code_dir}/third_party/sam3/ && "
-        cmd += f"{self.conda_dir}/envs/sam3/bin/python run_HO3D_video.py "
-        cmd += f"--video_path {data_dir} "
-        cmd += f"--out_path /tmp/sam3_prompt_only "
-        cmd += f"--text_prompt '{text_prompt}' "
-        cmd += f"--prompt_file {prompt_file} "
-        cmd += f"--prompt_title hand_mask "
-        cmd += f"--prompt_only "
+        """Collect and save first-frame SAM3 hand-mask prompt.
+        run_HO3D_video.py --prompt_only accepts nargs='+' on video_path /
+        prompt_file / prompt_title, so ALL seqs in self.seq_list share one
+        predictor load. Idempotent: existing prompt_file pre-fills the popup;
+        --rebuild intentionally does NOT wipe prompt files (they are user input,
+        not compute output — pre-filled popup lets the user re-confirm or edit)."""
+        import shlex
+        # Collapse run_wonder_hoi's outer per-seq loop into one SAM3 invocation.
+        if getattr(self, "_hand_prompt_batch_done", False):
+            return
+        self.print_header(f"ho3d get hand mask PROMPT ({len(self.seq_list)} seq(s))")
+        video_paths, prompt_files, titles = [], [], []
+        for s in self.seq_list:
+            data_dir, _, prompt_file = self._hand_mask_paths(s)
+            video_paths.append(data_dir)
+            prompt_files.append(prompt_file)
+            titles.append(shlex.quote(f"hand mask — {s}"))
+        cmd = (
+            f"cd {vggt_code_dir}/third_party/sam3/ && "
+            f"{self.sam3_python} run_HO3D_video.py --prompt_only "
+            f"--text_prompt right_hand "
+            f"--video_path {' '.join(video_paths)} "
+            f"--prompt_file {' '.join(prompt_files)} "
+            f"--prompt_title {' '.join(titles)}"
+        )
         print(cmd)
-        os.system(cmd)
+        rc = os.system(cmd)
+        self._hand_prompt_batch_done = True
+        # Propagate Ctrl+C / non-zero exit so callers (shell scripts with `|| exit 1`)
+        # can stop the pipeline instead of marching into Phase 1b / Phase 2.
+        if rc != 0:
+            raise SystemExit(1)
 
     def ho3d_get_hand_mask(self, scene_name, **kwargs):
         """Run SAM3 to produce the hand masks. Uses a cached prompt file when available,
@@ -458,26 +469,35 @@ class run_wonder_hoi:
         return data_dir, out_mask_dir, prompt_file, text_prompt
 
     def ho3d_get_obj_mask_prompt(self, scene_name, **kwargs):
-        """Collect and save the first-frame SAM3 prompt for the object mask.
-        Only loads the first image (no model load, no full-video scan)."""
-        self.print_header(f"ho3d get object mask PROMPT for {scene_name}")
-        data_dir, _, prompt_file, text_prompt = self._obj_mask_paths(scene_name)
-
-        if self.rebuild:
-            cmd = f"rm -f {prompt_file}"
-            print(cmd)
-            os.system(cmd)
-
-        cmd = f"cd {vggt_code_dir}/third_party/sam3/ && "
-        cmd += f"{self.conda_dir}/envs/sam3/bin/python run_HO3D_video.py "
-        cmd += f"--video_path {data_dir} "
-        cmd += f"--out_path /tmp/sam3_prompt_only "
-        cmd += f"--text_prompt '{text_prompt}' "
-        cmd += f"--prompt_file {prompt_file} "
-        cmd += f"--prompt_title object_mask "
-        cmd += f"--prompt_only "
+        """Collect and save first-frame SAM3 object-mask prompt. Mirrors
+        ho3d_get_hand_mask_prompt — one predictor load for all seqs in
+        self.seq_list. Per-seq text_prompt varies (see _OBJ_MASK_TEXT_PROMPTS).
+        --rebuild does not wipe saved prompts; they're pre-filled for re-edit."""
+        import shlex
+        if getattr(self, "_obj_prompt_batch_done", False):
+            return
+        self.print_header(f"ho3d get object mask PROMPT ({len(self.seq_list)} seq(s))")
+        video_paths, prompt_files, titles, text_prompts = [], [], [], []
+        for s in self.seq_list:
+            data_dir, _, prompt_file, text_prompt = self._obj_mask_paths(s)
+            video_paths.append(data_dir)
+            prompt_files.append(prompt_file)
+            titles.append(shlex.quote(f"object mask — {s}"))
+            # literal "None" maps to no-text inside run_HO3D_video.py
+            text_prompts.append(shlex.quote(text_prompt if text_prompt else "None"))
+        cmd = (
+            f"cd {vggt_code_dir}/third_party/sam3/ && "
+            f"{self.sam3_python} run_HO3D_video.py --prompt_only "
+            f"--video_path {' '.join(video_paths)} "
+            f"--prompt_file {' '.join(prompt_files)} "
+            f"--prompt_title {' '.join(titles)} "
+            f"--text_prompt {' '.join(text_prompts)}"
+        )
         print(cmd)
-        os.system(cmd)
+        rc = os.system(cmd)
+        self._obj_prompt_batch_done = True
+        if rc != 0:
+            raise SystemExit(1)
 
     def ho3d_get_obj_mask(self, scene_name, **kwargs):
         """Run SAM3 to produce the object masks. Uses a cached prompt file when

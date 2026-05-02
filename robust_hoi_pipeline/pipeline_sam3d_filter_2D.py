@@ -135,7 +135,14 @@ def _filter_by_dino_similarity(frame_indices, rgb_dir, mask_obj_dir, similarity_
     import torch.nn.functional as F
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14_reg")
+    # Prefer offline cached repo (torch.hub.load hits github even when weights
+    # are cached; env/proxy flakiness can time out the urlopen). Fall back to
+    # the standard GitHub-backed call if no cache present.
+    _dinov2_local = os.path.expanduser("~/.cache/torch/hub/facebookresearch_dinov2_main")
+    if os.path.isdir(_dinov2_local):
+        model = torch.hub.load(_dinov2_local, "dinov2_vitb14_reg", source="local")
+    else:
+        model = torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14_reg")
     model = model.eval().to(device)
 
     mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
