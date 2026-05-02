@@ -17,9 +17,19 @@ from robust_hoi_pipeline.pipeline_utils import load_preprocessed_frame, load_sam
 from third_party.utils_simba.utils_simba.eval_vis import (
     ensure_cuda_available,
     load_mesh_as_trimesh,
-    render_frames_with_nvdiffrast,
 )
-from third_party.utils_simba.utils_simba.render import make_mesh_tensors
+
+# nvdiffrast is only required by the rendering main(); helper utilities in this
+# file (load_image_info, build_mesh_in_object_space, ensure_sealed_right_hand_mesh,
+# get_sam3d_mesh_path, load_hand_mesh_*) are reused by pipeline_blender_rendering.py
+# which runs in a Blender env (bpy / py3.11) without nvdiffrast. Lazy-load to
+# avoid import-time failure.
+try:
+    from third_party.utils_simba.utils_simba.eval_vis import render_frames_with_nvdiffrast
+    from third_party.utils_simba.utils_simba.render import make_mesh_tensors
+except ImportError:
+    render_frames_with_nvdiffrast = None
+    make_mesh_tensors = None
 
 
 def _load_gt_valid_flags(seq_name: str, frame_indices: np.ndarray):
